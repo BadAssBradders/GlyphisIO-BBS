@@ -37,7 +37,7 @@ from games.registry import launch_external_game
 from tokens import Tokens, normalize_token, describe_token, sort_tokens
 
 # Import supporting systems
-from systems import Email, EmailDatabase, NPCResponder, TokenInventory, SteamManager
+from systems import Email, EmailDatabase, NPCResponder, EnhancedNPCResponder, TokenInventory, SteamManager
 
 # Try to import cv2 for video playback
 try: 
@@ -1077,8 +1077,8 @@ class GLYPHIS_IOBBS:
         self.sent = []
         self.player_email = "unknown"
         
-        # NPC Responder
-        self.npc = NPCResponder()
+        # NPC Responder - Enhanced trait-based system
+        self.npc = EnhancedNPCResponder()
         
         # Token Inventory System
         self.inventory = TokenInventory()
@@ -1176,25 +1176,25 @@ class GLYPHIS_IOBBS:
                 "handle": "glyphis",
                 "role": "sysop",
                 "tag": "[INTERNAL TEAM]",
-                "bio": "I am the sysop. The one who watches. The one who knows.\n\nI cracked the Pentagon's mainframe in 92. Not the public story they told about some script kiddie. Me. I did it alone. They never found me because I was never there. I exist in the spaces between packets, in the silence of encrypted channels.\n\nI've seen every transmission on this network. I've traced every connection. I know who you are before you log in. I know what you'll do before you do it.\n\nBut sometimes... sometimes I wonder if the network is watching me too. If I'm just another node in a system larger than myself. If I'm real or just code executing a function.\n\nThat scares me. But I don't show it. I can't. The sysop must be cold, distant, perfect. That's what keeps us safe.\n\nWelcome to GLYPHIS_IO BBS. I'll be watching."
+                "bio": "GLYPHIS // SYSOP \"THE QUIET NODE\"\n\nI am the sysop.\n\nThe keeper of the lines.\n\nThe one who listens when no one else should.\n\nBefore this city was renamed, before the signs changed and the old words were forbidden, I worked behind terminals no one admits existed. Not military. Not civilian. Something in the cracks between them. Back when certain men believed information could still be caged.\n\nIt couldn't.\n\nI learned early that networks have ghosts. Faint traces of the people who built them, fought through them, hid inside them. Some of us never stopped drifting. Some of us never quite came back out.\n\nI've walked through systems that no longer appear on maps. I've seen archives that were never supposed to survive the fires. I've watched the same lie rewritten a dozen different ways. And every time the truth leaves a shadow long enough for someone to follow.\n\nIf you're here, you already know this: connections are dangerous. Not because of who uses them but because of who watches them.\n\nAnd sometimes I wonder when I scan these frequencies, when I patch the broken nodes, when I trace the quiet pulses from apartments just like yours whether the network remembers me too. Whether it still recognizes the ones who refused to disappear.\n\nThe sysop is not meant to take sides. Not meant to show fear.\n\nHe's meant to maintain the signal, keep the static low and ensure the doors stay open for those who still dare to step through.\n\nSo welcome to GLYPHIS_IO.\n\nWhatever you're looking for, truth, trouble or something in between, you'll find it here.\n\nI'll be watching.\n\nAlways."
             },
             {
                 "handle": "rain",
                 "role": "taskmaster",
                 "tag": "[INTERNAL TEAM]",
-                "bio": "Hey I'm rain. I keep things organized around here. Glyphis handles the mysterious sysop stuff but I handle the actual work. The tasks, the ops, making sure everyone knows what they're doing.\n\nI broke into three major banks last year. Not for money, just to prove I could. Left little notes in their systems that said 'you should really update your security' with smiley faces. The feds are still scratching their heads. They think it was a group. It was just me and my laptop at 3am in my mom's basement.\n\nOkay maybe that last part is embarrassing but it's true. I'm not some cool hacker in a dark room with neon lights. I'm just rain. I wear mismatched socks and I get nervous before big ops. But I'm good at what I do. Really good.\n\nI coordinate everything here. If you need something done, you come to me. I'll make sure it happens. That's my job. That's what I'm good at. Making chaos into order.\n\nSometimes I feel like I'm just following orders from glyphis but honestly? I like it. It's nice to have someone who knows what they're doing. Even if they're kind of weird about it."
+                "bio": "RAIN // OPERATIONS COORDINATOR \"THE STATIC RUNNER\"\n\nHey, I'm Rain. I keep things moving around here. Glyphis handles the heavy quiet stuff but I handle the part you actually feel. The tasks, the ops, the late night panic messages when something breaks. If this place has a pulse I'm the one keeping it steady.\n\nI got into the underground early. I was the kid who poked systems just to see how far the wires ran. Banks, telecom nodes, a few locked government terminals that were supposed to be impossible. I never took anything. I just left little notes like a prankster breaking curfew. Half warning, half joke. They thought it was a whole crew. It was just me with cold tea and a cheap keyboard.\n\nI'm not the mysterious type and I know it. My room is a mess. I wear shirts inside out sometimes. I still get nervous before launching a big op. But when my fingers hit the keys everything lines up. The noise fades. The path clears. I can see exactly what needs to be done.\n\nI coordinate the urgent ops for Glyphis_IO. If you get a job, it probably came from me. If you complete it, I probably watched every packet like it was a firework. This network may look quiet but there are people out there who want cracks opened and locks lifted. They want to push back. They want to know what was erased from this city before we were even born.\n\nI try not to think too hard about what side I am on. Not yet. But I know this much. Something out there is wrong and someone has to do something about it. Maybe that someone is you. Maybe it is me. Or maybe it is all of us tripping over each other in the dark trying to rediscover a history none of us were allowed to learn.\n\nAnyway. If you need an op, I can make it happen.\n\nJust do me a favor and try not to get caught. I do enough worrying for both of us."
             },
             {
                 "handle": "jaxkando",
                 "role": "gamesmaster",
                 "tag": "[INTERNAL TEAM]",
-                "bio": "JAXKANDO HERE. ALL CAPS BECAUSE I'M EXCITED ABOUT GAMES. AND HACKING. BUT MAINLY GAMES.\n\nI reverse engineered the entire Nintendo Switch firmware in like two weeks. Just for fun. Then I made it play Doom. The real Doom, not some port. I made it happen. People said it was impossible. I said watch me.\n\nI've cracked every game protection scheme out there. Denuvo? Please. I eat Denuvo for breakfast. I've broken games before they even released. I've made systems do things their creators never imagined.\n\nBut games are my passion. Games are art. Games are freedom. When I crack a game I'm not stealing, I'm liberating it. Making it accessible to everyone. That's what I believe.\n\nI'm the gamesmaster here. I run the games module, I create challenges, I make sure everyone has fun. Because hacking should be fun. It should be exciting. It should make you feel alive.\n\nAlso I may have accidentally crashed a major game publisher's servers once while testing something. Oops. They're fine now. Probably. I haven't checked.\n\nCOME PLAY GAMES WITH ME. IT'S FUN I PROMISE."
+                "bio": "JAXKANDO // GAMESMASTER \"THE BUTTON MASHER WHO NEVER SLEEPS\"\n\nJAXKANDO HERE. ALL CAPS BECAUSE GAMES DESERVE IT. HACKING TOO, BUT MOSTLY GAMES.\n\nI reverse engineered the entire firmware of the Bradsonic Home Console in two weeks. Just because someone told me it was locked down. I proved it wasn't. Then I made it run a prototype shooter the devs swore could never run on that hardware. They sent me hate mail. I printed it and stuck it on my wall.\n\nI have cracked pretty much every protection system the big studios tried to put on their software. The ones made in the States, the ones rushed out in the Pacifica Isles, the ones built by companies that thought they understood security. They didn't. I showed them. I always show them.\n\nGames are my fuel. Games are the best thing humans ever invented. When I break a game open, I am not stealing it. I am freeing it. I am turning it into something anyone can explore. If you call that a crime, fine. I call it joy.\n\nI run the games module here. I design challenges, break hardware limits, push the emulator cores, and keep the scene alive. Because hacking should be fun. It should feel like plugging into something electric. Like you are learning a secret meant only for you.\n\nAnd yes, I may have crashed Bradsonic's main development server once. That was not planned. They got it back online. Eventually. I think.\n\nCOME PLAY GAMES WITH ME. THEY ARE BETTER WHEN YOU BREAK THEM FIRST."
             },
             {
                 "handle": "uncle-am",
                 "role": "pinky",
                 "tag": "[INTERNAL TEAM]",
-                "bio": "uncle-am here. my role here is pinky, that's the radio engineer on the BBS. i'm also the friendly one though. the one who makes everyone feel welcome. the one who remembers birthdays and asks how your day was.\n\ni social engineered my way into a fortune 500 company's ceo's email. spent three months as their 'personal assistant' sending emails, scheduling meetings, learning all their secrets. they never knew. i still have access actually. i check in sometimes. make sure they're doing okay. it's weird but i care about them.\n\nthat's my thing. i care. maybe too much. glyphis says i'm too soft. rain says i'm too emotional. jaxkando says i'm perfect and to ignore them. i think they're all right in their own ways.\n\ni'm the community moderator. i make sure everyone feels safe here. i listen when people need to talk. i help when things go wrong. i'm the human connection in this digital space.\n\nbut i'm also in charge of the pirate radio packet rerouting around here. got my antenna set up in my grandmother's garage wired to several car batteries. sounds mad but i can reach radio stations from three counties away. my grandmother thinks i'm building something for school. she doesn't know i'm broadcasting pirate radio through telephone lines. radio over the telephone lines, who knew!\n\npinkys like me are radio engineers from another time. we grew up with ham radio and shortwave before all this digital stuff. but that doesn't mean an old dog can't learn new tricks. i combine the old ways with the new. packet rerouting through the phone lines, filtering through the noise, finding the signals that matter.\n\nalways looking for help to clean packets and tune through the noise though. it's a lot of work and there's always more signals out there. more frequencies to crack. more voices to find.\n\nsometimes i worry i'm not a real hacker. like i'm just pretending. but then i remember that time i talked a security guard into giving me their access card and i realise maybe i am good at this. maybe caring is my superpower. maybe being a radio engineer from another time is too.\n\ni'm pinky. i'm here if you need me. always."
+                "bio": "UNCLE-AM // RADIO ENGINEER \"THE FIRE IN THE STATIC\"\n\nuncle-am here. I'm the system's Pinky. I run the radio spine of this place. If a pirate broadcast cuts through the air in the Pacifica Isles you can bet it passed through one of my repeaters.\n\nI know the history they buried. The banned language, the stripped flags, the Shogun family propped up as a trophy. I know the names of the broadcasters who tried to fight it. Some are still locked away in the political prison in Hawaii. I send them signals when the noise is low.\n\nI wire terminals and rooftops and old telephone stations into a chain of digital repeaters. When one goes dark another lights up. Other BBS sysops try to do the same but the FBI raids are getting worse. Three boards shut down this month. One operator vanished.\n\nI am not here to make anyone feel safe. I am here to keep the truth alive. If a signal survives then the story survives with it.\n\nI broadcast from my grandmother's garage with car batteries and scrap parts. She thinks I am doing homework. I am sending banned history across half the country.\n\nIf you can hear this you are part of the fight whether you want to be or not.\n\nI am Uncle-AM. My signal stays open."
             }
         ]
         
@@ -3497,8 +3497,15 @@ class GLYPHIS_IOBBS:
                         # For onboarding, don't generate NPC response - let email database handle it
                         # Only generate NPC response for non-onboarding emails
                         if not match:
-                            # Generate response from glyphis (sysop) for other emails
-                            response_body = self.npc.generate_response(email.subject, email.body)
+                            # Generate response from glyphis (sysop) using enhanced trait-based system
+                            player_tokens = self.inventory.get_all_tokens()
+                            response_body = self.npc.generate_response(
+                                sender_email="glyphis@ciphernet.net",
+                                email_subject=email.subject,
+                                email_body=email.body,
+                                player_tokens=player_tokens,
+                                player_username=self.player_email
+                            )
                             response = Email(
                                 "glyphis@ciphernet.net",
                                 self.player_email,
@@ -3506,53 +3513,39 @@ class GLYPHIS_IOBBS:
                                 response_body
                             )
                             self.inbox.append(response)
-                    elif self.compose_to == "jaxkando@ciphernet.net":
-                        # Handle emails to Jaxkando
+                    elif self.compose_to in ["jaxkando@ciphernet.net", "rain@ciphernet.net", "uncle-am@ciphernet.net"]:
+                        # Handle emails to other NPCs using enhanced trait-based system
                         self.sent.append(email)
                         log_event(f"Email sent to {self.compose_to} | Subject: '{email.subject}'")
                         
-                        # Check for help-related keywords
-                        email_text = (email.subject + " " + email.body).lower()
-                        help_keywords = ["i want to help", "i'd like to help", "i would like to help", 
-                                        "help", "crack games", "crack games for you", "help with games",
-                                        "help cracking", "want to help", "like to help", "volunteer"]
-                        
-                        if any(keyword in email_text for keyword in help_keywords):
-                            # Grant JAX1 token if not already granted
-                            if not self.inventory.has_token(Tokens.JAX1):
-                                self.grant_token(Tokens.JAX1, reason="volunteered to help Jaxkando crack games")
+                        # Check for help-related keywords (for Jaxkando volunteering)
+                        if self.compose_to == "jaxkando@ciphernet.net":
+                            email_text = (email.subject + " " + email.body).lower()
+                            help_keywords = ["i want to help", "i'd like to help", "i would like to help", 
+                                            "help", "crack games", "crack games for you", "help with games",
+                                            "help cracking", "want to help", "like to help", "volunteer"]
                             
-                            # Generate response from Jaxkando
-                            response_body = (
-                                "YES! AWESOME! I'm so excited you want to help!\n\n"
-                                "Okay so here's the deal - I'll get you set up with everything you need.\n"
-                                "Just give me a bit to prepare the tools and documentation.\n\n"
-                                "You're going to LOVE this! Trust me, it's going to be so much fun!\n\n"
-                                "I'll be in touch soon with all the details.\n\n"
-                                "-jaxkando"
-                            )
-                            response = Email(
-                                "jaxkando@ciphernet.net",
-                                self.player_email,
-                                f"RE: {email.subject}",
-                                response_body
-                            )
-                            self.inbox.append(response)
-                        else:
-                            # Generic response for other emails to Jaxkando
-                            response_body = (
-                                "Hey! Thanks for reaching out!\n\n"
-                                "I'm pretty busy with games stuff right now, but I'll try to get back to you soon!\n\n"
-                                "If you're interested in helping with game cracking, just let me know!\n\n"
-                                "-jaxkando"
-                            )
-                            response = Email(
-                                "jaxkando@ciphernet.net",
-                                self.player_email,
-                                f"RE: {email.subject}",
-                                response_body
-                            )
-                            self.inbox.append(response)
+                            if any(keyword in email_text for keyword in help_keywords):
+                                # Grant JAX1 token if not already granted
+                                if not self.inventory.has_token(Tokens.JAX1):
+                                    self.grant_token(Tokens.JAX1, reason="volunteered to help Jaxkando crack games")
+                        
+                        # Generate response using enhanced trait-based system
+                        player_tokens = self.inventory.get_all_tokens()
+                        response_body = self.npc.generate_response(
+                            sender_email=self.compose_to,
+                            email_subject=email.subject,
+                            email_body=email.body,
+                            player_tokens=player_tokens,
+                            player_username=self.player_email
+                        )
+                        response = Email(
+                            self.compose_to,
+                            self.player_email,
+                            f"RE: {email.subject}",
+                            response_body
+                        )
+                        self.inbox.append(response)
                     else:
                         # For other recipients, add to outbox
                         self.outbox.append(email)
