@@ -1,0 +1,60 @@
+{
+  "posts": [
+    {
+      "id": "mtf_welcome_sysop",
+      "header": "[SYSOP] glyphis  |  03.07.96  |  WELCOME NEW OPERATORS",
+      "bodylines": 1,
+      "body1": "Acknowledge your presence. Observe the rules. Read all welcome threads to initiate onboarding.",
+      "required_tokens": [],
+      "forbidden_tokens": ["GAMES1"],
+      "exclusive_tokens": []
+    },
+    {
+      "id": "mtf_status_sysop",
+      "header": "[SYSOP] glyphis  |  03.07.96  |  NETWORK STATUS: STABLE",
+      "bodylines": 2,
+      "body1": "Secure channels remain hardened. Surveillance nodes report silence.",
+      "body2": "\nStay quiet. Stay unseen.",
+      "required_tokens": [],
+      "forbidden_tokens": ["GAMES1"],
+      "exclusive_tokens": []
+    },
+    {
+      "id": "mtf_protocol_rain",
+      "header": "[TASKMASTER] rain  |  03.07.96  |  APPLICATION PROTOCOL",
+      "bodylines": 2,
+      "body1": "Complete your introduction. Prove you can follow directives.",
+      "body2": "\nPing Glyphis once the Wall acknowledges you.",
+      "required_tokens": [],
+      "forbidden_tokens": ["GAMES1"],
+      "exclusive_tokens": []
+    },
+    {
+      "id": "mtf_clearance_sysop",
+      "header": "[SYSOP] glyphis  |  03.07.96  |  CLEARANCE UNDER REVIEW",
+      "bodylines": 2,
+      "body1": "Your presence is logged. Access remains conditional.",
+      "body2": "\nHold position until we issue a directive.",
+      "required_tokens": ["PSEM", "USERNAME_SET"],
+      "forbidden_tokens": [],
+      "exclusive_tokens": ["PSEM", "USERNAME_SET"]
+    },
+    {
+      "id": "mtf_games_cracking_jaxkando",
+      "header": "[GAMESMASTER] jaxkando  |  03.07.96  |  GAMES NEED CRACKING!",
+      "bodylines": 8,
+      "body1": "HEY EVERYONE! So I just acquired a bunch of games that need cracking",
+      "body2": "\nbefore we can distribute them into the Games section of the BBS.",
+      "body3": "\nThis is SUPER FUN! I'm really excited about this!",
+      "body4": "\nUncle-am is busy getting the pirate radio packet decompressor online,",
+      "body5": "\nso if anyone else wants to help, ALL YOU NEED TO DO is email me",
+      "body6": "\n(jaxkando@ciphernet.net) stating that you want to help with the games",
+      "body7": "\ncracking and I'll get you set up!",
+      "body8": "\nCome on, it'll be fun! Promise!",
+      "required_tokens": ["LAPC1A"],
+      "forbidden_tokens": [],
+      "exclusive_tokens": []
+    }
+  ]
+}
+

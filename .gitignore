@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Steam
+steam_appid.txt
+# Keep steam_api.dll but ignore if you want
+# steam_api.dll
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Game state
+Data/user_state.json
+sent_emails.json
+
+# Logs
+*.log
+
+# Adobe Premiere Pro
+Adobe Premiere Pro Audio Previews/
+Adobe Premiere Pro Auto-Save/
+*.prproj
+*.prin
+
+# Build artifacts
+*.spec
+*.zip
+*.exe
+*.pkg
+
+# Media files - exclude large media files to keep repo size manageable
+# Uncomment these if you want to exclude them from the repository
+# You can use Git LFS for large files if needed (see GITHUB_SETUP.md)
+*.mp4
+*.mov
+# *.wav  # Keep audio files (they're smaller)
+*.psd
+*.pkf
+
+# Temporary/test files
+Claude.py
+Deepseek.py
+GEMINI.py
+GPT4O.py
+GPT5.py
+handshake_001.py
+retro_core_breach.py
+

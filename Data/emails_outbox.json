@@ -1,0 +1,50 @@
+{
+  "email_templates": [
+    {
+      "id": "player_welcome_response",
+      "recipient": "glyphis@ciphernet.net",
+      "subject": "RE: Welcome to GlyphisIO BBS",
+      "body_template": "Thank you for the invitation.\n\nusername: {username}\n\nI have experience with {experience}.\n\nI hope to {hopes}.\n\nThank you.",
+      "token_required": "no",
+      "token_name": null,
+      "auto_send": false
+    },
+    {
+      "id": "player_greeting_glyphis",
+      "recipient": "glyphis@ciphernet.net",
+      "subject": "Greetings",
+      "body_template": "Hello glyphis.\n\nThank you for welcoming me to the network.",
+      "token_required": "no",
+      "token_name": null,
+      "auto_send": false
+    },
+    {
+      "id": "player_contact_rain",
+      "recipient": "rain@ciphernet.net",
+      "subject": "Interested in tasks",
+      "body_template": "Hey rain,\n\nI'm interested in taking on some tasks. Let me know what you have available.",
+      "token_required": "yes",
+      "token_name": "PSEM",
+      "auto_send": false
+    },
+    {
+      "id": "player_contact_jaxkando",
+      "recipient": "jaxkando@ciphernet.net",
+      "subject": "Games!",
+      "body_template": "Hey jaxkando!\n\nI'd love to check out some of your games and challenges.",
+      "token_required": "yes",
+      "token_name": "PSEM",
+      "auto_send": false
+    },
+    {
+      "id": "player_contact_uncle_am",
+      "recipient": "uncle-am@ciphernet.net",
+      "subject": "Hello",
+      "body_template": "Hey uncle-am,\n\nJust wanted to say hi and introduce myself. Looking forward to being part of the community.",
+      "token_required": "yes",
+      "token_name": "PSEM",
+      "auto_send": false
+    }
+  ]
+}
+
