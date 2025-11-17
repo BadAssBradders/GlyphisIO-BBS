@@ -1,0 +1,176 @@
+═══════════════════════════════════════════════════════════════════════════
+GLYPHISIO BBS - GAME STORY OUTLINE
+
+═══════════════════════════════════════════════════════════════════════════
+
+ACT 1: THE INVITATION
+
+An anonymous message arrives.
+Encrypted. Minimal. Intriguing.
+
+It invites the player to join GlyphisIO BBS, an underground network operating beneath the surface of the connected world. The message is signed by glyphis - the sysop, the founder, the ghost in the wires.
+
+Inside the invitation lies a mystery:
+Is glyphis a real person? An emergent intelligence? Or something else entirely?
+
+When the player connects for the first time, the world hums with phosphor-green life. Text scrolls across the screen. A voice - mechanical yet oddly poetic - welcomes them home.
+
+The Operators of GlyphisIO BBS:
+
+glyphis - sysop, founder, unseen architect
+
+rain - taskmaster, organiser of operations
+
+jaxkando - gamesmaster, curator of digital challenges
+
+uncle-am - radio engineer, community moderator, nostalgic optimist
+
+The player is in.
+And nothing will ever feel quite the same again.
+
+ACT 2: INITIAL EXPLORATION
+
+Logging in reveals a strange harmony between chaos and order.
+Messages fill the boards - users sharing cracked games, fragments of poetry, anti-corporate manifestos. It’s a digital commune wrapped in mystery, buzzing with the spirit of early internet counterculture.
+
+The available BBS modules include:
+
+Front Post Board: News, updates, community chatter
+
+Email: Private correspondence with the team
+
+Games: Hacking puzzles and text adventures
+
+Tasks: Missions assigned by rain
+
+Team Info: Dossiers on key members
+
+Pirate Radio: A looping broadcast - part DJ monologue, part world-building poetry
+
+The first contact is simple: the player sends glyphis a thank-you message.
+The response is chillingly brief - as if written by an entity that understands emotion but cannot feel it.
+
+Meanwhile, rain, jaxkando, and uncle-am draw the player in, each showing warmth, humour, and camaraderie. The BBS feels alive - like a family hidden in the circuitry.
+
+ACT 3: BECOMING PART OF THE COMMUNITY
+
+The player begins to belong.
+At first, the tasks are innocent - restoring corrupted data, sharing cracks, decoding forgotten shareware.
+
+Then come the grey-area jobs.
+Local networks. School servers. Media outlets.
+Lines blur. Ethics fade. The thrill takes over.
+
+Through the Pirate Radio station, the world beyond the terminal begins to take shape - a world of surveillance, resistance, and disinformation. The DJ’s monologues blend rebellion and poetry, hinting at a society teetering between freedom and control.
+
+The community grows tighter. The player’s messages become more personal.
+There’s laughter, inside jokes, even trust.
+The BBS hums like a found family - creative, chaotic, and real.
+
+ACT 4: THE SUSPICION
+
+Then comes the whisper.
+Someone among them is not who they claim to be.
+glyphis believes there’s an infiltrator - an FBI plant.
+
+Tension spreads like static through the network.
+Friendships fracture. Every message drips with paranoia.
+Logs are wiped. Threads vanish. Even rain begins to question everyone’s motives.
+
+The player is caught in the middle - trying to maintain their connections while concealing their own growing anxiety.
+
+Each response they send matters now.
+Every word could expose them.
+
+ACT 5: THE REVELATION
+
+The twist arrives quietly, like a system message at 3 a.m.
+The truth: you are the agent.
+
+You were undercover all along, buried under your own constructed identity. Every report you filed, every encrypted note you ignored-it’s all you. Somewhere between the missions and the friendships, your loyalty shifted.
+
+You’ve fallen for the world you were meant to destroy.
+
+As the realisation unfolds, the tone of the BBS changes.
+glyphis speaks directly to you now, with a mixture of sadness and curiosity.
+“Did you ever really believe you were one of us?”
+The line between reality and simulation blurs.
+
+ACT 6: THE CONFLICT
+
+In the end, the player stands at the intersection of two lives.
+
+Duty: Serve your mission. Shut down GlyphisIO. Fulfil your oath.
+
+Loyalty: Protect your friends. Save what’s left of the BBS. Vanish into the digital underground.
+
+Each choice carries weight.
+Each word you type becomes irreversible.
+
+The final message fades into silence.
+A blinking cursor waits.
+What you type next decides everything.
+
+═══════════════════════════════════════════════════════════════════════════
+GAME MECHANICS
+
+═══════════════════════════════════════════════════════════════════════════
+
+BBS MODULES
+
+Front Post Board: Narrative hub for announcements, events, and flavour text.
+
+Email System: Primary storytelling medium; relationships develop through correspondence.
+
+Games: Text-based mini-challenges; hacking, logic, and social puzzles by jaxkando.
+
+Urgent Tasks: Missions from rain that drive narrative branching.
+
+Team Info: Living dossiers that evolve based on player interactions.
+
+Pirate Radio: A diegetic soundtrack and storytelling tool, evolving with each act.
+
+CORE GAMEPLAY LOOP
+
+Explore, communicate, and make moral choices through the BBS interface.
+
+Build relationships with the four operators.
+
+Balance personal emotion with undercover duty.
+
+Shape your story through your tone, timing, and truthfulness in messages.
+
+ATMOSPHERIC TONE
+
+Community warmth: like Animal Crossing
+
+Hacker mystique: like The Matrix
+
+Creative intimacy: like Hypnospace Outlaw
+
+World depth: like GTA, with culture, humour, and hidden rebellion
+
+═══════════════════════════════════════════════════════════════════════════
+THEMES
+
+═══════════════════════════════════════════════════════════════════════════
+
+Identity and Deception: Who are you when your persona becomes real?
+
+Morality and Loyalty: Can connection outweigh duty?
+
+Human vs. Machine: Is glyphis a person… or something born from the network itself?
+
+Surveillance and Resistance: Freedom has a cost - and someone is always watching.
+
+The Cost of Connection: The deeper you go, the harder it is to leave.
+
+glyphis embodies the enigma of modern consciousness - a being that observes yet never participates.
+The others - rain, jaxkando, uncle-am - are its counterbalance, embodying empathy, creativity, and nostalgia.
+Together, they form the heart and mind of the GlyphisIO BBS.
+And somewhere between them, the player must decide who they truly are.
+
+═══════════════════════════════════════════════════════════════════════════
+
+“GLYPHISIO BBS isn’t just a place you log into. It’s a place that logs into you.”
+═══════════════════════════════════════════════════════════════════════════

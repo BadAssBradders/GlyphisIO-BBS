@@ -1,0 +1,180 @@
+# World_Building: The Alternate History of *Glyphis_IO BBS: The Proxy Tapes*
+
+## 1. Overview
+
+This document outlines the complete alternate‑universe historical backdrop for *Glyphis_IO BBS: The Proxy Tapes*. It defines the political, cultural, and technological divergence from real‑world history, the conditions of American‑administered Japan, the rise of rebellious hacker youth, and the narrative context for the player’s role in 1989 Tokyo.
+
+---
+
+## 2. Divergence Point: 1945
+
+### The Destruction of Hiroshima Castle and the Imperial Family
+
+In this timeline, the Imperial Family was visiting Hiroshima Castle in August 1945 to receive classified briefings on troop morale and regional defence logistics. When the atomic bomb detonated, the castle and all occupants—including the entire Imperial Family—were annihilated.
+
+### Collapse of Imperial Legitimacy
+
+With the Emperor and all known heirs gone, Japan lost its ancient stabilising centre of power. With no surviving claimants, no ceremonial pivot, and no imperial continuity, Japan entered political freefall.
+
+### The Shogunate Restored—Symbolically
+
+Amid a leaderless vacuum, surviving members of the Tokugawa lineage emerged as potential cultural symbols. The Americans saw value in this. A direct descendant of the Shogun—previously obscure—was placed back into a ceremonial role. The Shogun returned not as a ruler but as a **controlled, state‑approved symbol** of "Old Japan".
+
+---
+
+## 3. Complete American Administration of Japan
+
+### Japan Becomes a US State
+
+With the Emperor gone and the Shogun co‑opted, Japan was placed under total US administration. By 1952, in this timeline, Japan was formally incorporated as an American state—**State of Pacifica**—its culture, economy, and governance redesigned through US oversight.
+
+### Suppression of Japanese Identity
+
+To stabilise the region and prevent ultranationalist resurgence, strict cultural policies were enforced:
+
+* **Japanese language banned from public life**
+* **Japanese flag criminalised**
+* **Historical Shinto institutions dissolved**
+* **Japanese cultural education removed from schools**
+* **American English mandated as the primary language**
+
+These actions mirror real‑world suppressions such as:
+
+* Francoist Spain’s bans on Basque/Catalan
+* Soviet cultural Russification
+* Nazi bans on Polish cultural symbols
+
+A similar systemic erasure occurs here—slow, intentional, bureaucratically cool.
+
+---
+
+## 4. Rebellious Youth Culture (1980s Pacifica)
+
+By 1989, Japan’s new generations are:
+
+* American‑raised
+* English‑speaking
+* Disconnected from their heritage
+* Surrounded by American brands, tech, and culture
+
+### The Hackers: *Glyphis_IO*
+
+A youth counterculture emerges—tech‑obsessed, anti‑American, and desperate to reclaim a past they never knew. They reject the US system but don’t possess the Japanese language or customs; their rebellion is a **hollow echo**, a yearning shaped through:
+
+* illicit BBS channels
+* cracked game cartridges
+* hidden radio frequencies
+
+They adopt Western names because their families were forced into them. Their rebellion expresses through code, piracy, and data leaks—not tradition.
+
+They are the creators of the pirate BBS: **Glyphis_IO**.
+
+---
+
+## 5. Technology in This Timeline
+
+### Why Japan’s Tech Looks Different
+
+Because US tech dominated the Japanese market immediately after 1945, Japanese consumer electronics evolved from American foundations rather than Japanese ones.
+
+Instead of:
+
+* Sony
+* Panasonic
+* NEC
+
+We get companies like:
+
+* **Bradsonic**
+* **NeoDrive**
+* **Western Beam Electronics**
+
+Japanese engineering talent enhanced American technology, creating a hybrid industry—sleek American styling mixed with Japanese manufacturing precision.
+
+### Resulting Tech Aesthetic
+
+The world’s devices feel:
+
+* heavier
+* chunkier
+* computationally aggressive
+* polygon‑ and vector‑driven
+* closer to Atari and Amiga than Famicom
+
+This is the ecosystem that produced the *Astroliner* console and its cracked cartridges.
+
+---
+
+## 6. Radio in Pacifica (1989)
+
+### AM Radio Suppression and Pirate Signals
+
+Authorities tightly control AM frequencies, but underground broadcasts slip through the cracks.
+
+Radio rebels use:
+
+* low‑power hidden transmitters
+* abandoned factory basements
+* coded dual‑voice speech patterns
+
+Players hear:
+
+* historical fragments
+* banned language samples
+* forbidden facts about the occupation
+* addresses and phone numbers for off‑grid BBS numbers
+
+These pirate stations mirror real history:
+
+* French Resistance radio
+* Polish underground “bibuła” media
+* Soviet dissident broadcasts
+
+---
+
+## 7. Player’s Role
+
+### Identity: A Mystery at First
+
+The player begins unaware of their full identity but follows orders from a Tokyo‑based bureau that functions like an FBI field office.
+
+They:
+
+* intercept BBS chatter
+* investigate hacker cells
+* build psychological profiles
+* carry out morally ambiguous directives
+
+The narrative slowly reveals:
+
+* Their place in the American surveillance apparatus
+* Their purpose within the Pacifica security system
+* Their connection to Glyphis_IO
+
+---
+
+## 8. Summary
+
+The world of *Glyphis_IO BBS: The Proxy Tapes* is defined by:
+
+* total American annexation of Japan after Hiroshima
+* destruction of the Imperial line
+* symbolic restoration of a Shogun
+* enforced cultural erasure
+* rise of Americanised Japanese youth hackers
+* underground radio resistance
+* hybrid American‑Japanese technological evolution
+* the player’s ambiguous role in state intelligence
+
+This forms the political and emotional bedrock for every system, interface, broadcast, and choice within the game world.
+
+---
+
+**Next Steps:** More detailed documents can be created covering:
+
+* Factions
+* Key characters
+* Full political timeline
+* Technology catalog
+* Radio broadcast scripts
+* BBS lore and message samples

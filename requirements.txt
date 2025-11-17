@@ -1,0 +1,3 @@
+pygame>=2.5.0
+steamworks>=1.4.0
+
