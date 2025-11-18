@@ -2316,11 +2316,12 @@ class GLYPHIS_IOBBS:
         warning_text_height = int(18 * self.scale)  # Height for warning text line (font_tiny)
         padding_bottom = int(10 * self.scale)  # Padding below warning
         spacing = int(10 * self.scale) + int(20 * self.scale)  # Spacing between elements
+        extra_line_height = self.font_small.get_linesize()  # One extra character line for moving text down
         
-        # Extend header panel to accommodate ASCII art, navigation text, and warning
-        # Reduced by 5 character rows (5 * ascii_line_height)
+        # Extend header panel to accommodate ASCII art, navigation text, warning, and extra line
+        # Reduced by 5 character rows (5 * ascii_line_height), but add one line for moving text down
         original_header_bottom = header_rect.bottom
-        header_rect.height += ascii_total_height + nav_text_height + warning_text_height + spacing - (5 * ascii_line_height)
+        header_rect.height += ascii_total_height + nav_text_height + warning_text_height + spacing - (5 * ascii_line_height) + extra_line_height
         
         # Redraw header panel border to match new height
         pygame.draw.rect(self.bbs_surface, PANEL_BLUE, header_rect)
@@ -2335,8 +2336,8 @@ class GLYPHIS_IOBBS:
             self.draw_text(line, wall_ascii_font, WHITE, wall_ascii_x, wall_ascii_y)
             wall_ascii_y += ascii_line_height
         
-        # Navigation text below ASCII art (moved up 1 row + 10px, then down 7px)
-        nav_y = wall_ascii_y + int(10 * self.scale) - self.font_small.get_linesize() - 10 + 7
+        # Navigation text below ASCII art (moved down 1 character line from previous position)
+        nav_y = wall_ascii_y + int(10 * self.scale) - self.font_small.get_linesize() - 10 + 7 + self.font_small.get_linesize()
         nav_x = header_rect.x + int(20 * self.scale)
         
         # Draw "Sysop News - Team Requests - On-Boarding" with color changes (centered)
@@ -2369,15 +2370,12 @@ class GLYPHIS_IOBBS:
         current_x += separator2_surface.get_width()
         self.bbs_surface.blit(onboard_surface, (current_x, nav_y))
         
-        # Warning message in dark cyan (same size as TAB text - font_tiny, moved up 10px, then down 7px)
+        # Warning message in white, centered (moved down 1 character line along with nav text)
         warning_y = nav_y + int(20 * self.scale) - 10 + 7
-        self.draw_text(
-            "Shhhh... you found us cuz we invited you, don't forget to NOT spread the word!",
-            self.font_tiny,
-            DARK_CYAN,
-            header_rect.x + int(20 * self.scale),
-            warning_y
-        )
+        warning_text = "Shhhh... you found us cuz we invited you, don't forget to NOT spread the word!"
+        warning_surface = self.font_tiny.render(warning_text, True, WHITE)
+        warning_x_centered = header_rect.x + (header_rect.width - warning_surface.get_width()) // 2
+        self.bbs_surface.blit(warning_surface, (warning_x_centered, warning_y))
         
         # Main content panel - adjusted for shorter header, taller by 5 character rows
         # Bottom line brought up 5px above the blue footer line
@@ -2507,16 +2505,12 @@ class GLYPHIS_IOBBS:
             else:
                 # No posts message
                 empty_y = post_start_y + int(50 * self.scale)
-                empty_rect = pygame.Rect(
-                    content_rect.x + int(20 * self.scale),
-                    empty_y,
-                    content_rect.width - int(40 * self.scale),
-                    int(60 * self.scale)
-                )
-                pygame.draw.rect(self.bbs_surface, PANEL_BLUE, empty_rect)
-                pygame.draw.rect(self.bbs_surface, DARK_CYAN, empty_rect, 1)
-                self.draw_text("No unread posts.", self.font_medium, DARK_CYAN, empty_rect.x + int(15 * self.scale), empty_y + int(15 * self.scale))
-                self.draw_text("Press SPACEBAR to return to the main menu.", self.font_small, DARK_CYAN, empty_rect.x + int(15 * self.scale), empty_y + int(35 * self.scale))
+                # Draw text without box
+                no_unread_y = empty_y + int(15 * self.scale)
+                text_x = content_rect.x + int(20 * self.scale)
+                self.draw_text("No unread posts.", self.font_medium, DARK_CYAN, text_x, no_unread_y)
+                # Add one character line spacing between the two texts
+                self.draw_text("Press SPACEBAR to return to the main menu.", self.font_small, DARK_CYAN, text_x, no_unread_y + self.font_medium.get_linesize())
             
             # Footer
             footer_y = self.bbs_height - int(50 * self.scale)
@@ -3112,12 +3106,19 @@ class GLYPHIS_IOBBS:
             def has_token(token):
                 return self.inventory.has_token(token)
             
+            # Pass token remover function to remove tokens on reset
+            def remove_token(token):
+                if self.inventory.remove_token(token):
+                    log_event(f"Removed token {token} due to CRACKER IDE reset")
+                    self.save_user_state()
+            
             self.active_ops_session = CRACKER_IDE_LAPC1_Driver_Challenge(
                 self.bbs_surface,
                 fonts,
                 self.scale,
                 player,
                 token_checker=has_token,
+                token_remover=remove_token,
             )
         except Exception as exc:
             self.active_ops_session = None
@@ -3922,14 +3923,26 @@ class GLYPHIS_IOBBS:
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     mouse_x, mouse_y = pygame.mouse.get_pos()
                     
-                    # Reset hotspot (551, 1404 to 599, 1419)
-                    reset_hotspot_rect = pygame.Rect(551, 1404, 599 - 551, 1419 - 1404)
+                    # Reset hotspot (scaled from baseline coordinates)
+                    reset_x, reset_y, reset_w, reset_h = RESET_HOTSPOT
+                    reset_hotspot_rect = pygame.Rect(
+                        int(reset_x * self.scale),
+                        int(reset_y * self.scale),
+                        int(reset_w * self.scale),
+                        int(reset_h * self.scale)
+                    )
                     if reset_hotspot_rect.collidepoint(mouse_x, mouse_y):
                         self._reset_to_beginning()
                         continue
                     
-                    # Overlay toggle hotspot (1098, 1079 to 1111, 1109)
-                    overlay_hotspot_rect = pygame.Rect(1098, 1079, 1111 - 1098, 1109 - 1079)
+                    # Overlay toggle hotspot (scaled from baseline coordinates)
+                    overlay_x, overlay_y, overlay_w, overlay_h = OVERLAY_HOTSPOT
+                    overlay_hotspot_rect = pygame.Rect(
+                        int(overlay_x * self.scale),
+                        int(overlay_y * self.scale),
+                        int(overlay_w * self.scale),
+                        int(overlay_h * self.scale)
+                    )
                     if overlay_hotspot_rect.collidepoint(mouse_x, mouse_y):
                         self.bbs_overlay_active = not self.bbs_overlay_active
                         continue
@@ -4188,14 +4201,25 @@ class GLYPHIS_IOBBS:
             self._update_cursor()
             
             # Draw black rectangles if overlay is active
-            overlay_hotspot_rect = pygame.Rect(1098, 1079, 1111 - 1098, 1109 - 1079)
+            overlay_x, overlay_y, overlay_w, overlay_h = OVERLAY_HOTSPOT
+            overlay_hotspot_rect = pygame.Rect(
+                int(overlay_x * self.scale),
+                int(overlay_y * self.scale),
+                int(overlay_w * self.scale),
+                int(overlay_h * self.scale)
+            )
             if self.bbs_overlay_active:
                 # Black rectangle covering entire BBS window
                 bbs_overlay_rect = pygame.Rect(self.bbs_x, self.bbs_y, self.bbs_width, self.bbs_height)
                 pygame.draw.rect(self.screen, BLACK, bbs_overlay_rect)
                 
-                # Black rectangle covering the overlay hotspot (stretched right 20px and down 15px)
-                stretched_hotspot_rect = pygame.Rect(1098, 1079, (1111 - 1098) + 20, (1109 - 1079) + 15)
+                # Black rectangle covering the overlay hotspot (stretched right 20px and down 15px, scaled)
+                stretched_hotspot_rect = pygame.Rect(
+                    int(overlay_x * self.scale),
+                    int(overlay_y * self.scale),
+                    int((overlay_w + 20) * self.scale),
+                    int((overlay_h + 15) * self.scale)
+                )
                 pygame.draw.rect(self.screen, BLACK, stretched_hotspot_rect)
             
             # Periodically check for new emails (every 60 frames = ~1 second at 60fps)

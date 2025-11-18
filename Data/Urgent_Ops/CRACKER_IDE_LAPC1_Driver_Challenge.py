@@ -108,12 +108,13 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
     VIDEO_FPS = 30.0 # Standard FPS for video playback timing
     ANIMATION_DURATION = 4.0 # Seconds the video plays per module jump
 
-    def __init__(self, surface, fonts, scale, player_username, token_checker=None):
+    def __init__(self, surface, fonts, scale, player_username, token_checker=None, token_remover=None):
         self.surface = surface
         self.fonts = fonts
         self.scale = scale
         self.player_username = player_username
         self.token_checker = token_checker  # Function to check if user has a token
+        self.token_remover = token_remover  # Function to remove a token from user's inventory
 
         # Normalised font references for convenience
         self.font_large = self.fonts["large"]
@@ -167,7 +168,7 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         self.parrot_anchor_local = (-11.0, -13.0)
         self.focus_target = "editor"
         self.control_focus = 0
-        self.control_labels = ["STEP", "RUN", "NEXT"]
+        self.control_labels = ["RUN"]
         self.parrot_overlay = None
         self.node_briefings = [
             "Power rail first. Follow that pseudo-code: load literal 01 into A, push it to $C400, verify the LED flips, then ride the jump into the left-channel test.",
@@ -200,9 +201,9 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 "Default gain is #$80, make sure both registers land on that value before you leave.",
             ],
             4: [
-                "Node 5 is just the handoff. I remember it jumping straight into the DATA_CHECK loop.",
-                "Keep it simple, no extra ops, just route execution to DATA_CHECK so the loop can breathe.",
-                "Think of it as the loop entry label. JMP DATA_CHECK and you’re done here.",
+                "Wisdom is sometimes in the knowledge of knowing when to do the simplest thing.",
+                "Just jump us to the next part of the code {username} which is the label DATA_CHECK.",
+                "Just a jump, nothing else. JMP DATA_CHECK - that's all you need.",
             ],
             5: [
                 "Busy-wait loop lives here, pull the flag from $C403 and compare it against #$01.",
@@ -231,6 +232,10 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         self.chat_typing_state: Optional[Dict[str, Any]] = None
         self.chat_scroll_offset = 0
         self.chat_scroll_limit = 0
+        self.modal_scroll_offset = 0
+        self.modal_scroll_limit = 0
+        self.editor_scroll_offset = 0
+        self.editor_scroll_limit = 0
         self.chat_message_queue: List[Dict[str, str]] = []
         self.chat_next_queue_time = 0
         self.intro_sequence_started = False
@@ -304,6 +309,9 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         self.max_wave_samples = 80
         self._power_led_prev_state: bool = False
         self.power_on_sound: Optional[pygame.mixer.Sound] = None
+        self.left_test_sound: Optional[pygame.mixer.Sound] = None
+        self.right_test_sound: Optional[pygame.mixer.Sound] = None
+        self.u1_sound: Optional[pygame.mixer.Sound] = None
         
         # --- Video/Image Resources ---
         self.challenge_completed = False # Flag for total completion (SUCCESS state)
@@ -338,6 +346,49 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         self.reset_state()
         # Restore LED states from tokens after reset
         self._restore_led_states_from_tokens()
+        # Determine starting node based on completed progress
+        starting_node = self._determine_starting_node()
+        self.page_index = starting_node
+        self.editor_focus_node = starting_node
+        
+        # Set initial cursor position based on node type
+        node_lines = self.code_areas_content[starting_node]
+        if starting_node == 5:  # Node 6 (index 5) - has DATA_CHECK: label
+            # Find the label line and position cursor on the blank line after it
+            label_line_idx = -1
+            for i, line in enumerate(node_lines):
+                if line.strip().endswith(":"):
+                    label_line_idx = i
+                    break
+            if label_line_idx >= 0 and label_line_idx + 1 < len(node_lines):
+                self.cursor_pos = (label_line_idx + 1, 0)  # Position after label
+            else:
+                self.cursor_pos = (2, 0)  # Fallback to line 2
+        elif starting_node == 6:  # Node 7 (index 6) - has OUTPUT_SAMPLE: label
+            # Find the label line and position cursor on the blank line after it
+            label_line_idx = -1
+            for i, line in enumerate(node_lines):
+                if line.strip().endswith(":"):
+                    label_line_idx = i
+                    break
+            if label_line_idx >= 0 and label_line_idx + 1 < len(node_lines):
+                self.cursor_pos = (label_line_idx + 1, 0)  # Position after label
+            else:
+                self.cursor_pos = (2, 0)  # Fallback to line 2
+        else:
+            # For nodes without labels (1-5), cursor goes to line 1 (blank line after comment)
+            self.cursor_pos = (1, 0)
+        
+        # Prepare modal for the starting node (not Node 1)
+        self._prepare_modal_for_current_node()
+        # If starting at Node 1, intro sequence will be triggered when modal is dismissed
+        # If starting at a later node, skip intro sequence and show briefing immediately
+        if starting_node > 0:
+            self.intro_sequence_started = True  # Skip intro sequence for later nodes
+            # Set last_briefing_node to one before starting node so briefing will show
+            # (push_node_briefing checks if node_idx == last_briefing_node and skips if so)
+            self.last_briefing_node = starting_node - 1
+            self._push_node_briefing()  # Show briefing for the starting node
 
     def _draw_text_on_surface(self, surface, text, pos, font_key, color):
         """Helper to draw text on an arbitrary surface."""
@@ -438,6 +489,10 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         self.chat_typing_state = None
         self.chat_scroll_offset = 0
         self.chat_scroll_limit = 0
+        self.modal_scroll_offset = 0
+        self.modal_scroll_limit = 0
+        self.editor_scroll_offset = 0
+        self.editor_scroll_limit = 0
         self.chat_message_queue.clear()
         self.chat_next_queue_time = 0
         self.intro_sequence_started = False
@@ -449,6 +504,10 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             self.chat_messages = self.chat_messages[-30:]
         self.chat_scroll_offset = 0
         self.chat_scroll_limit = 0
+        self.modal_scroll_offset = 0
+        self.modal_scroll_limit = 0
+        self.editor_scroll_offset = 0
+        self.editor_scroll_limit = 0
         self.chat_follow_latest = True
 
     def _push_node_briefing(self):
@@ -497,25 +556,32 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             return
         self.intro_sequence_started = True
         self.chat_message_queue.clear()
-        intro_lines = [
-            "HEY THERE {player}! GLAD YOU MADE IT INTO THE CRACKER IDE FEED.",
-            "We spun this console up so the crew can crack locked-down games together.",
-            "It's also a cozy driver lab when you need to nurse finicky hardware.",
-            "I've already patched the backend into your local sound card - enter the right bytes and audio will sing.",
-            "First tip for Node 01: power rail first. Write #$01 (that's 1 byte) into memory address $C400 before poking anything else.",
-        ]
-        for line in intro_lines:
-            if "{player}" in line:
-                raw_name = self.player_username or ""
-                if "@" in raw_name:
-                    raw_name = raw_name.split("@", 1)[0]
-                friendly_name = raw_name.strip() or "OPERATIVE"
-                cleaned_name = re.sub(r"[^A-Za-z0-9_\- ]", "", friendly_name).strip() or "OPERATIVE"
-                line = line.replace("{player}", cleaned_name.upper())
-            self._queue_chat_message(line, "UNCLE-AM")
-        self.chat_next_queue_time = pygame.time.get_ticks() + 600
-        self._begin_next_queued_message()
-        self.last_briefing_node = 0
+        
+        # Only show intro sequence if starting at Node 1 (index 0)
+        # For later nodes, the briefing will be shown instead
+        if self.page_index == 0:
+            intro_lines = [
+                "HEY THERE {player}! GLAD YOU MADE IT INTO THE CRACKER IDE FEED.",
+                "We spun this console up so the crew can crack locked-down games together.",
+                "It's also a cozy driver lab when you need to nurse finicky hardware.",
+                "I've already patched the backend into your local sound card - enter the right bytes and audio will sing.",
+                "First tip for Node 01: power rail first. Write #$01 (that's 1 byte) into memory address $C400 before poking anything else.",
+            ]
+            for line in intro_lines:
+                if "{player}" in line:
+                    raw_name = self.player_username or ""
+                    if "@" in raw_name:
+                        raw_name = raw_name.split("@", 1)[0]
+                    friendly_name = raw_name.strip() or "OPERATIVE"
+                    cleaned_name = re.sub(r"[^A-Za-z0-9_\- ]", "", friendly_name).strip() or "OPERATIVE"
+                    line = line.replace("{player}", cleaned_name.upper())
+                self._queue_chat_message(line, "UNCLE-AM")
+            self.chat_next_queue_time = pygame.time.get_ticks() + 600
+            self._begin_next_queued_message()
+            self.last_briefing_node = 0
+        else:
+            # For later nodes, just show the briefing for the current node
+            self._push_node_briefing()
 
     def _submit_chat_message(self):
         text = self.chat_input.strip()
@@ -534,6 +600,14 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             messages = self.node_help_messages.get(self.page_index)
             if messages:
                 reply = random.choice(messages)
+                # Replace {username} placeholder with player's username
+                if "{username}" in reply:
+                    raw_name = self.player_username or ""
+                    if "@" in raw_name:
+                        raw_name = raw_name.split("@", 1)[0]
+                    friendly_name = raw_name.strip() or "OPERATIVE"
+                    cleaned_name = re.sub(r"[^A-Za-z0-9_\- ]", "", friendly_name).strip() or "OPERATIVE"
+                    reply = reply.replace("{username}", cleaned_name)
             else:
                 reply = "Wish I could dig up docs for this node, but homework's crushing me, keep probing the manuals and stay focused."
         elif self._is_status_check(clean_text):
@@ -712,7 +786,7 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                     "Code outline:",
                     "Typing in assmebly code on the first line type in the code that loads the accumulator with a single byte of data.",
                     "Then on the next line store that data into the Master Power Register at memory location $C400.",
-                    "TAB to STEP or RUN to the end of the code and two things should happen, firstly the simulated LED in Monitor should",
+                    "Press RUN (F5) to execute the code and two things should happen, firstly the simulated LED in Monitor should",
                     "turn green, then your local audio system should power up as well and the program will advance to the next Node.",
                     "DO NOT DELETE placeholder JMP this enables the execution to advance until INIT_POWER is written.",
                 ],
@@ -750,9 +824,13 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             5: {
                 "title": "NODE 05 // STREAM_ENTRY",
                 "lines": [
-                    "Initialization wraps here. This node simply hands control to the streaming loop entry point.",
-                    "Leave the unconditional jump in place so execution lands on DATA_CHECK every time.",
-                    "No extra instructions needed, this is just the bridge from setup into the live loop.",
+                    "Initialization sequence complete. This node transitions to the streaming loop.",
+                    "The driver initialization (Nodes 1-4) is finished. Now we hand control to the",
+                    "continuous packet streaming loop that will process audio data in real-time.",
+                    "",
+                    "Type a single instruction.",
+                    "This unconditional jump routes execution to the DATA_CHECK label where the",
+                    "streaming loop begins. Simple, but essential - don't overlook it!",
                 ],
             },
             6: {
@@ -783,14 +861,19 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             entries.append(node_entry)
         entries.append(
             {
-                "title": "SHORTCUTS",
+                "title": "IMPORTANT",
+                "title_color": self.PINK,
                 "lines": [
+                    "Do not delete the pink placeholder code.",
+                    "",
+                    "SHORTCUTS",
                     "Scroll the chat dialogue with Up / Down arrows.",
                     "",
                     "F4: VIEW DOCUMENTATION",
                     "F7: RESET STATE",
                     "ESC: EXIT TO URGENT OPS",
                 ],
+                "line_color": self.PINK,
             }
         )
         self.modal_data = entries
@@ -874,6 +957,7 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         self.success_modal_active = True
 
     def _init_audio_assets(self):
+        # Load Node 1 power-on sound
         sound_path = get_data_path("Urgent_Ops", "Audio", "On-Test.wav")
         print(f"DEBUG: Looking for audio file at: {sound_path}")
         print(f"DEBUG: File exists: {os.path.exists(sound_path)}")
@@ -897,6 +981,87 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         else:
             print(f"Warning: Audio/On-Test.wav not found at {sound_path}. Node 1 power-on sound disabled.")
             self.power_on_sound = None
+        
+        # Load Node 2 left channel test sound
+        left_sound_path = get_data_path("Urgent_Ops", "Audio", "left-test-tune.wav")
+        print(f"DEBUG: Looking for left test audio file at: {left_sound_path}")
+        print(f"DEBUG: File exists: {os.path.exists(left_sound_path)}")
+        
+        if os.path.exists(left_sound_path):
+            try:
+                if not pygame.mixer.get_init():
+                    try:
+                        pygame.mixer.init()
+                        print("DEBUG: Mixer initialized successfully for left test sound")
+                    except Exception as mixer_error:
+                        print(f"Warning: Unable to initialize mixer for left-test-tune.wav playback: {mixer_error}")
+                        self.left_test_sound = None
+                    else:
+                        self.left_test_sound = pygame.mixer.Sound(left_sound_path)
+                        print(f"DEBUG: Left test sound loaded successfully: {self.left_test_sound}")
+                else:
+                    self.left_test_sound = pygame.mixer.Sound(left_sound_path)
+                    print(f"DEBUG: Left test sound loaded successfully: {self.left_test_sound}")
+            except Exception as sound_error:
+                print(f"Warning: Failed to load left-test-tune.wav: {sound_error}")
+                self.left_test_sound = None
+        else:
+            print(f"Warning: Audio/left-test-tune.wav not found at {left_sound_path}. Node 2 left channel sound disabled.")
+            self.left_test_sound = None
+        
+        # Load Node 3 right channel test sound
+        right_sound_path = get_data_path("Urgent_Ops", "Audio", "right-test-tune.wav")
+        print(f"DEBUG: Looking for right test audio file at: {right_sound_path}")
+        print(f"DEBUG: File exists: {os.path.exists(right_sound_path)}")
+        
+        if os.path.exists(right_sound_path):
+            try:
+                if not pygame.mixer.get_init():
+                    try:
+                        pygame.mixer.init()
+                        print("DEBUG: Mixer initialized successfully for right test sound")
+                    except Exception as mixer_error:
+                        print(f"Warning: Unable to initialize mixer for right-test-tune.wav playback: {mixer_error}")
+                        self.right_test_sound = None
+                    else:
+                        self.right_test_sound = pygame.mixer.Sound(right_sound_path)
+                        print(f"DEBUG: Right test sound loaded successfully: {self.right_test_sound}")
+                else:
+                    self.right_test_sound = pygame.mixer.Sound(right_sound_path)
+                    print(f"DEBUG: Right test sound loaded successfully: {self.right_test_sound}")
+            except Exception as sound_error:
+                print(f"Warning: Failed to load right-test-tune.wav: {sound_error}")
+                self.right_test_sound = None
+        else:
+            print(f"Warning: Audio/right-test-tune.wav not found at {right_sound_path}. Node 3 right channel sound disabled.")
+            self.right_test_sound = None
+        
+        # Load Node 4 completion sound
+        u1_sound_path = get_data_path("Urgent_Ops", "Audio", "u1.wav")
+        print(f"DEBUG: Looking for u1 audio file at: {u1_sound_path}")
+        print(f"DEBUG: File exists: {os.path.exists(u1_sound_path)}")
+        
+        if os.path.exists(u1_sound_path):
+            try:
+                if not pygame.mixer.get_init():
+                    try:
+                        pygame.mixer.init()
+                        print("DEBUG: Mixer initialized successfully for u1 sound")
+                    except Exception as mixer_error:
+                        print(f"Warning: Unable to initialize mixer for u1.wav playback: {mixer_error}")
+                        self.u1_sound = None
+                    else:
+                        self.u1_sound = pygame.mixer.Sound(u1_sound_path)
+                        print(f"DEBUG: u1 sound loaded successfully: {self.u1_sound}")
+                else:
+                    self.u1_sound = pygame.mixer.Sound(u1_sound_path)
+                    print(f"DEBUG: u1 sound loaded successfully: {self.u1_sound}")
+            except Exception as sound_error:
+                print(f"Warning: Failed to load u1.wav: {sound_error}")
+                self.u1_sound = None
+        else:
+            print(f"Warning: Audio/u1.wav not found at {u1_sound_path}. Node 4 completion sound disabled.")
+            self.u1_sound = None
 
     def _parse_immediate_byte(self, operand: str) -> int:
         if not operand or not operand.startswith('#'):
@@ -951,12 +1116,13 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             [
                 "; NODE 05: STREAM_ENTRY (Data Loop Start)",
                 "",
-                "JMP DATA_CHECK",
+                "",
             ],
             [
                 "; NODE 06: DATA_CHECK (Busy Wait for $C403)",
                 "",
                 "DATA_CHECK:",
+                "",
                 "BNE DATA_CHECK",
                 "JMP OUTPUT_SAMPLE",
             ],
@@ -964,6 +1130,7 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 "; NODE 07: OUTPUT_SAMPLE (Transfer Data $C800)",
                 "",
                 "OUTPUT_SAMPLE:",
+                "",
                 "JMP DATA_CHECK",
             ],
         ]
@@ -1002,17 +1169,30 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         # Reset video/completion state
         self.challenge_completed = False
         self.module_animation_timer = 0.0 # Reset animation timer
+        self.video_frame = None # Clear video frame to show static logo instead
         if self.video_cap:
             self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0) # Reset video position
-            self.video_frame = None # Clear current frame
+        
+        # Note: Token removal is handled separately - only when F7 is pressed (explicit reset)
+        # During initialization, tokens are preserved so progress can be restored
 
         self._power_led_prev_state = False
 
+        # Reset to Node 1 (starting node)
         self.page_index = 0
+        self.editor_focus_node = 0
+        self.cursor_pos = (1, 0)  # Position cursor on first editable line (after comment)
         self.focus_target = "editor"
         self.control_focus = 0
         self._ensure_focus_visible()
         self._reset_chat_state()
+        
+        # Reset modal and briefing state - start fresh at Node 1
+        self.modal_active = True
+        self.modal_step = 0
+        self.modal_scroll_offset = 0
+        self.last_briefing_node = -1  # Reset so briefing will show for Node 1
+        self.intro_sequence_started = False  # Reset intro sequence
         self._prepare_modal_for_current_node()
         
         # Reset success modal state
@@ -1037,9 +1217,29 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         
         # Reset pending token grants
         self.pending_token_grants = []
+        
+        # Reset scroll offsets
+        self.editor_scroll_offset = 0
 
         self.parse_code() # Initial parse
         self.cpu_state["instructionIndex"] = self.labels.get(self.node_labels[0], 0)
+    
+    def _remove_progress_tokens(self):
+        """Remove all node completion tokens - only called when user explicitly resets (F7)."""
+        if self.token_remover:
+            node_tokens_to_remove = [
+                "LAPC1A",
+                "LAPC1_NODE1",
+                "LAPC1_NODE2",
+                "LAPC1_NODE3",
+                "LAPC1_NODE4",
+                "LAPC1_NODE5",
+                "LAPC1_NODE6",
+                "LAPC1_NODE7",
+                "AUDIO_ON",
+            ]
+            for token in node_tokens_to_remove:
+                self.token_remover(token)
     
     def _restore_led_states_from_tokens(self):
         """Restore LED states based on tokens the user has earned."""
@@ -1097,6 +1297,44 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 self._node_5_completed = True
                 self._node_6_completed = True
                 self._node_7_completed = True
+    
+    def _determine_starting_node(self) -> int:
+        """Determine which node to start on based on completed tokens.
+        Returns the index (0-6) of the first incomplete node, or 0 if all complete."""
+        if not self.token_checker:
+            return 0
+        
+        # Check each node in order (1-7, indices 0-6)
+        # Node 1 (index 0)
+        if not self.token_checker("LAPC1_NODE1"):
+            return 0
+        
+        # Node 2 (index 1)
+        if not self.token_checker("LAPC1_NODE2"):
+            return 1
+        
+        # Node 3 (index 2)
+        if not self.token_checker("LAPC1_NODE3"):
+            return 2
+        
+        # Node 4 (index 3)
+        if not self.token_checker("LAPC1_NODE4"):
+            return 3
+        
+        # Node 5 (index 4)
+        if not self.token_checker("LAPC1_NODE5"):
+            return 4
+        
+        # Node 6 (index 5)
+        if not self.token_checker("LAPC1_NODE6"):
+            return 5
+        
+        # Node 7 (index 6)
+        if not self.token_checker("LAPC1_NODE7"):
+            return 6
+        
+        # All nodes completed - start at node 1 (index 0) for review
+        return 0
 
     # ... (parse_code, tick_data_stream remain the same) ...
 
@@ -1232,44 +1470,92 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                     
                     # Check for node completion after STA operations
                     if self.game_state not in ("SUCCESS", "ERROR") and not self.success_modal_active:
-                        # Node 2 completion: Left channel written (C401)
+                        # Node 2 completion: Left channel written (C401) while executing Node 2's code (index 1)
                         if addr == REG_LEFT_CHANNEL and current_node == 1 and not hasattr(self, '_node_2_completed'):
                             self._node_2_completed = True
+                            # Play left channel test sound
+                            print(f"DEBUG: Node 2 completed! Attempting to play left test sound...")
+                            print(f"DEBUG: left_test_sound is: {self.left_test_sound}")
+                            if self.left_test_sound:
+                                try:
+                                    # Ensure mixer is initialized before playing
+                                    if not pygame.mixer.get_init():
+                                        print("DEBUG: Mixer not initialized, initializing now...")
+                                        pygame.mixer.init()
+                                    print("DEBUG: Calling left_test_sound.play()...")
+                                    self.left_test_sound.play()
+                                    print("DEBUG: Left test sound play() called successfully")
+                                except Exception as play_error:
+                                    print(f"Warning: Unable to play left-test-tune.wav: {play_error}")
+                                    import traceback
+                                    traceback.print_exc()
+                            else:
+                                print("DEBUG: left_test_sound is None, skipping playback")
                             # Grant token for Node 2 LED
                             if "LAPC1_NODE2" not in self.pending_token_grants:
                                 self.pending_token_grants.append("LAPC1_NODE2")
                             self._prepare_success_modal_for_node(2)
-                            self.pending_node_switch = 2 - 1  # Switch to node 2 (0-based index 1)
-                            if self.video_cap:
-                                self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                            self.module_animation_timer = max(self.module_animation_timer, self.ANIMATION_DURATION)
+                            self.pending_node_switch = 3 - 1  # Switch to node 3 (0-based index 2) after completing node 2
+                            # No parrot animation for individual node completion
                         
-                        # Node 3 completion: Right channel written (C402)
+                        # Node 3 completion: Right channel written (C402) while executing Node 3's code (index 2)
                         elif addr == REG_RIGHT_CHANNEL and current_node == 2 and not hasattr(self, '_node_3_completed'):
                             self._node_3_completed = True
+                            # Play right channel test sound
+                            print(f"DEBUG: Node 3 completed! Attempting to play right test sound...")
+                            print(f"DEBUG: right_test_sound is: {self.right_test_sound}")
+                            if self.right_test_sound:
+                                try:
+                                    # Ensure mixer is initialized before playing
+                                    if not pygame.mixer.get_init():
+                                        print("DEBUG: Mixer not initialized, initializing now...")
+                                        pygame.mixer.init()
+                                    print("DEBUG: Calling right_test_sound.play()...")
+                                    self.right_test_sound.play()
+                                    print("DEBUG: Right test sound play() called successfully")
+                                except Exception as play_error:
+                                    print(f"Warning: Unable to play right-test-tune.wav: {play_error}")
+                                    import traceback
+                                    traceback.print_exc()
+                            else:
+                                print("DEBUG: right_test_sound is None, skipping playback")
                             # Grant token for Node 3 LED
                             if "LAPC1_NODE3" not in self.pending_token_grants:
                                 self.pending_token_grants.append("LAPC1_NODE3")
                             self._prepare_success_modal_for_node(3)
-                            self.pending_node_switch = 3 - 1  # Switch to node 3 (0-based index 2)
-                            if self.video_cap:
-                                self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                            self.module_animation_timer = max(self.module_animation_timer, self.ANIMATION_DURATION)
+                            self.pending_node_switch = 4 - 1  # Switch to node 4 (0-based index 3) after completing node 3
+                            # No parrot animation for individual node completion
                         
-                        # Node 4 completion: Both channels set to default volume
+                        # Node 4 completion: Both channels set to default volume while executing Node 4's code (index 3)
                         elif addr in (REG_LEFT_CHANNEL, REG_RIGHT_CHANNEL) and current_node == 3 and \
                              self.cpu_state["Memory"].get(REG_LEFT_CHANNEL) == DEFAULT_VOLUME and \
                              self.cpu_state["Memory"].get(REG_RIGHT_CHANNEL) == DEFAULT_VOLUME and \
                              not hasattr(self, '_node_4_completed'):
                             self._node_4_completed = True
+                            # Play u1.wav sound
+                            print(f"DEBUG: Node 4 completed! Attempting to play u1 sound...")
+                            print(f"DEBUG: u1_sound is: {self.u1_sound}")
+                            if self.u1_sound:
+                                try:
+                                    # Ensure mixer is initialized before playing
+                                    if not pygame.mixer.get_init():
+                                        print("DEBUG: Mixer not initialized, initializing now...")
+                                        pygame.mixer.init()
+                                    print("DEBUG: Calling u1_sound.play()...")
+                                    self.u1_sound.play()
+                                    print("DEBUG: u1 sound play() called successfully")
+                                except Exception as play_error:
+                                    print(f"Warning: Unable to play u1.wav: {play_error}")
+                                    import traceback
+                                    traceback.print_exc()
+                            else:
+                                print("DEBUG: u1_sound is None, skipping playback")
                             # Grant token for Node 4 LED
                             if "LAPC1_NODE4" not in self.pending_token_grants:
                                 self.pending_token_grants.append("LAPC1_NODE4")
                             self._prepare_success_modal_for_node(4)
-                            self.pending_node_switch = 4 - 1  # Switch to node 4 (0-based index 3)
-                            if self.video_cap:
-                                self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                            self.module_animation_timer = max(self.module_animation_timer, self.ANIMATION_DURATION)
+                            self.pending_node_switch = 5 - 1  # Switch to node 5 (0-based index 4) after completing node 4
+                            # No parrot animation for individual node completion
                 else:
                     raise ValueError(f"Invalid Address: {operand_str}")
 
@@ -1300,12 +1586,8 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
 
         self.cpu_state["instructionIndex"] = next_idx
         
-        # NEW: Trigger animation if a successful jump to a new module occurred
-        if jumped_to_new_module and self.game_state != "SUCCESS":
-            self.module_animation_timer = self.ANIMATION_DURATION
-            if self.video_cap:
-                # Reset video to start frame for a new burst of animation
-                self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        # NOTE: Animation is only triggered on final challenge completion, not on individual node jumps
+        # Individual node completion animations were removed to reduce frequency
         
         # Check for individual node completion (Nodes 5-7 via jumps)
         # Nodes 2-4 are handled in STA handler above
@@ -1346,9 +1628,7 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             if completed_node:
                 self._prepare_success_modal_for_node(completed_node)
                 self.pending_node_switch = completed_node - 1  # Convert to 0-based index
-                if self.video_cap:
-                    self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                self.module_animation_timer = max(self.module_animation_timer, self.ANIMATION_DURATION)
+                # No parrot animation for individual node completion
         
         # Check for SUCCESS (Full Challenge Completion)
         if next_idx == self.labels.get("DATA_CHECK", -1) and self.cpu_state["cycles"] > 10:
@@ -1361,7 +1641,8 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 self.cpu_state["isRunning"] = False
 
                 self.challenge_completed = True
-                self.module_animation_timer = 0.0
+                # Start parrot animation for full challenge completion
+                self.module_animation_timer = self.ANIMATION_DURATION
                 if self.video_cap:
                     self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
@@ -1396,9 +1677,11 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 if event.key in (pygame.K_TAB, pygame.K_RETURN, pygame.K_SPACE):
                     if self.success_modal_step < len(self.success_modal_data) - 1:
                         self.success_modal_step += 1
+                        self.modal_scroll_offset = 0  # Reset scroll when moving to next modal step
                     else:
                         self.success_modal_active = False
                         self.success_modal_step = 0
+                        self.modal_scroll_offset = 0  # Reset scroll when modal closes
                         # Switch to pending node and show its modal
                         if self.pending_node_switch is not None:
                             self._switch_to_page(self.pending_node_switch)
@@ -1410,10 +1693,15 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 if event.key in (pygame.K_TAB, pygame.K_RETURN, pygame.K_SPACE):
                     if self.modal_step < len(self.modal_data) - 1:
                         self.modal_step += 1
+                        self.modal_scroll_offset = 0  # Reset scroll when moving to next modal step
                     else:
                         self.modal_active = False
                         self.modal_step = 0
-                        self._start_intro_sequence()
+                        self.modal_scroll_offset = 0  # Reset scroll when modal closes
+                        # Only start intro sequence if at Node 1 and not already started
+                        # For later nodes, briefing was already shown during initialization
+                        if self.page_index == 0 and not self.intro_sequence_started:
+                            self._start_intro_sequence()
                 return
             
             if event.key == pygame.K_TAB:
@@ -1441,12 +1729,28 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                     if self.chat_scroll_offset >= self.chat_scroll_limit:
                         self.chat_follow_latest = True
                     return
-                if event.key in (pygame.K_LEFT, pygame.K_RIGHT):
-                    return
+                # Handle text input for chat
                 if event.unicode and event.unicode not in ("\r", "\n") and event.unicode.isprintable():
                     if len(self.chat_input) < 120:
                         self.chat_input += event.unicode
                     return
+            
+            # Handle scrolling for modals only (editor uses arrows for cursor movement)
+            if event.key == pygame.K_UP:
+                if self.modal_active or self.success_modal_active:
+                    scroll_step = max(self.font_tiny.get_linesize(), 1)
+                    self.modal_scroll_offset = max(0, self.modal_scroll_offset - scroll_step)
+                    return
+                # Editor focus: let cursor movement handle UP arrow (don't scroll)
+            if event.key == pygame.K_DOWN:
+                if self.modal_active or self.success_modal_active:
+                    scroll_step = max(self.font_tiny.get_linesize(), 1)
+                    self.modal_scroll_offset = min(self.modal_scroll_offset + scroll_step, self.modal_scroll_limit)
+                    return
+                # Editor focus: let cursor movement handle DOWN arrow (don't scroll)
+            
+            if event.key in (pygame.K_LEFT, pygame.K_RIGHT):
+                return
 
             if self.focus_target == "controls":
                 if event.key in (pygame.K_LEFT, pygame.K_UP):
@@ -1471,19 +1775,13 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                         self.cpu_state["isRunning"] = True
                         self.game_state = "RUNNING"
             
-            # F6: Step (TICK)
-            elif event.key == pygame.K_F6:
-                if self.game_state in ("EDITING", "PAUSED", "ERROR"):
-                    self.parse_code()
-                    if self.game_state != "ERROR":
-                        self.tick_data_stream()
-                        self.execute_instruction()
             
-            # F7: Reset
+            # F7: Reset (full reset including token removal)
             elif event.key == pygame.K_F7:
-                self.reset_state()
-                # Restore LED states from tokens after reset
-                self._restore_led_states_from_tokens()
+                self._remove_progress_tokens()  # Remove tokens first
+                self.reset_state()  # Then reset state
+                # Don't restore LED states after reset - user is starting fresh
+                # All LEDs should be off, power is shut down
 
             # Handle editor input - also allow ERROR state for TAB/ENTER handling
             if self.focus_target == "editor" or self.game_state == "ERROR":
@@ -1604,23 +1902,18 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         current_line = lines[current_line_idx]
 
         if event.key == pygame.K_UP:
+            # Move cursor up within current node only
             if current_line_idx > 0:
                 new_row = current_line_idx - 1
                 new_char_idx = min(cursor_char_idx, len(lines[new_row]))
-            elif node_idx > 0:
-                self.editor_focus_node = node_idx - 1
-                new_lines = self.code_areas_content[node_idx - 1]
-                new_row = len(new_lines) - 1
-                new_char_idx = len(new_lines[new_row])
+            # Stay at top line if already at first line
 
         elif event.key == pygame.K_DOWN:
+            # Move cursor down within current node only
             if current_line_idx < len(lines) - 1:
                 new_row = current_line_idx + 1
                 new_char_idx = min(cursor_char_idx, len(lines[new_row]))
-            elif node_idx < len(self.code_areas_content) - 1:
-                self.editor_focus_node = node_idx + 1
-                new_row = 0
-                new_char_idx = 0
+            # Stay at bottom line if already at last line
         
         elif event.key == pygame.K_BACKSPACE:
             if cursor_char_idx > 0:
@@ -1679,7 +1972,38 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             return
         self.page_index = (self.page_index + delta) % total
         self.editor_focus_node = self.page_index
-        self.cursor_pos = (1, 0)
+        
+        # Set cursor position based on node type
+        node_lines = self.code_areas_content[self.page_index]
+        if self.page_index == 5:  # Node 6 (index 5) - has DATA_CHECK: label
+            # Find the label line and position cursor on the blank line after it
+            label_line_idx = -1
+            for i, line in enumerate(node_lines):
+                if line.strip().endswith(":"):
+                    label_line_idx = i
+                    break
+            if label_line_idx >= 0 and label_line_idx + 1 < len(node_lines):
+                self.cursor_pos = (label_line_idx + 1, 0)  # Position after label
+            else:
+                self.cursor_pos = (2, 0)  # Fallback to line 2
+        elif self.page_index == 6:  # Node 7 (index 6) - has OUTPUT_SAMPLE: label
+            # Find the label line and position cursor on the blank line after it
+            label_line_idx = -1
+            for i, line in enumerate(node_lines):
+                if line.strip().endswith(":"):
+                    label_line_idx = i
+                    break
+            if label_line_idx >= 0 and label_line_idx + 1 < len(node_lines):
+                self.cursor_pos = (label_line_idx + 1, 0)  # Position after label
+            else:
+                self.cursor_pos = (2, 0)  # Fallback to line 2
+        else:
+            # For nodes without labels (1-5), cursor goes to line 1 (blank line after comment)
+            self.cursor_pos = (1, 0)
+        
+        # Ensure focus is on editor and game state allows editing
+        self.focus_target = "editor"
+        self.game_state = "EDITING"  # Set to editing mode so cursor is visible
         self._ensure_focus_visible()
         self._push_node_briefing()
         self._prepare_modal_for_current_node()
@@ -1692,7 +2016,40 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             return
         self.page_index = target_index
         self.editor_focus_node = target_index
-        self.cursor_pos = (1, 0)
+        self.editor_scroll_offset = 0  # Reset scroll when switching pages
+        
+        # Set cursor position: skip comment (line 0) and blank line (line 1)
+        # For nodes with labels (6, 7), position cursor after the label
+        node_lines = self.code_areas_content[target_index]
+        if target_index == 5:  # Node 6 (index 5) - has DATA_CHECK: label
+            # Find the label line and position cursor on the blank line after it
+            label_line_idx = -1
+            for i, line in enumerate(node_lines):
+                if line.strip().endswith(":"):
+                    label_line_idx = i
+                    break
+            if label_line_idx >= 0 and label_line_idx + 1 < len(node_lines):
+                self.cursor_pos = (label_line_idx + 1, 0)  # Position after label
+            else:
+                self.cursor_pos = (2, 0)  # Fallback to line 2
+        elif target_index == 6:  # Node 7 (index 6) - has OUTPUT_SAMPLE: label
+            # Find the label line and position cursor on the blank line after it
+            label_line_idx = -1
+            for i, line in enumerate(node_lines):
+                if line.strip().endswith(":"):
+                    label_line_idx = i
+                    break
+            if label_line_idx >= 0 and label_line_idx + 1 < len(node_lines):
+                self.cursor_pos = (label_line_idx + 1, 0)  # Position after label
+            else:
+                self.cursor_pos = (2, 0)  # Fallback to line 2
+        else:
+            # For nodes without labels (1-5), cursor goes to line 1 (blank line after comment)
+            self.cursor_pos = (1, 0)
+        
+        # Ensure focus is on editor and game state allows editing
+        self.focus_target = "editor"
+        self.game_state = "EDITING"  # Set to editing mode so cursor is visible
         self._ensure_focus_visible()
         self._push_node_briefing()
         self._prepare_modal_for_current_node()
@@ -1700,15 +2057,7 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
     def _activate_control(self, label: str):
         """Execute the action associated with a control button."""
         label = label.upper()
-        if label == "STEP":
-            if self.game_state == "RUNNING":
-                self.cpu_state["isRunning"] = False
-                self.game_state = "PAUSED"
-            self.parse_code()
-            if self.game_state != "ERROR":
-                self.tick_data_stream()
-                self.execute_instruction()
-        elif label == "RUN":
+        if label == "RUN":
             if self.game_state == "RUNNING":
                 self.cpu_state["isRunning"] = False
                 self.game_state = "PAUSED"
@@ -1717,8 +2066,6 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 if self.game_state != "ERROR":
                     self.cpu_state["isRunning"] = True
                     self.game_state = "RUNNING"
-        elif label == "NEXT":
-            self._advance_page(1)
         else:
             return
 
@@ -1777,6 +2124,10 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 self.last_tick_time = pygame.time.get_ticks()
                 self.tick_data_stream()
                 self.execute_instruction()
+                # Pause immediately if an error occurred or a node switch is pending
+                if self.game_state == "ERROR" or self.pending_node_switch is not None or self.success_modal_active:
+                    self.cpu_state["isRunning"] = False
+                    self.game_state = "PAUSED"
         
         # Update the video frame if the challenge is completed OR the module animation is active
         if self.challenge_completed or self.module_animation_timer > 0:
@@ -1810,9 +2161,11 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             # Show success modal first, then switch to next node after dismissal
             self._prepare_success_modal_for_node(1)
             self.pending_node_switch = 1
-            if self.video_cap:
-                self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            self.module_animation_timer = max(self.module_animation_timer, self.ANIMATION_DURATION)
+            # Pause execution immediately when Node 1 completes
+            if self.game_state == "RUNNING":
+                self.cpu_state["isRunning"] = False
+                self.game_state = "PAUSED"
+            # No parrot animation for individual node completion
         self._power_led_prev_state = power_led_on
         
         now = pygame.time.get_ticks()
@@ -2013,6 +2366,10 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         else:
             self.chat_scroll_offset = max(0, min(self.chat_scroll_offset, self.chat_scroll_limit))
 
+        # Set clipping rectangle to prevent overflow
+        old_clip = self.surface.get_clip()
+        self.surface.set_clip(message_area)
+        
         if not render_rows:
             placeholder = font_message.render("<< awaiting link-up >>", True, self.DARK_CYAN)
             placeholder_y = message_area.bottom - body_padding - placeholder.get_height()
@@ -2034,6 +2391,9 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 for surface, x in row.get("surfaces", []):
                     y_offset = row_top + (row["height"] - surface.get_height()) // 2
                     self.surface.blit(surface, (x, y_offset))
+        
+        # Restore clipping
+        self.surface.set_clip(old_clip)
 
         pygame.draw.rect(self.surface, self.BLACK, input_rect)
         border_color = self.HIGHLIGHT_CYAN if self.focus_target == "chat" else self.DARK_CYAN
@@ -2096,8 +2456,6 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                     render_label = "PAUSE"
                 else:
                     color = self.GREEN
-            elif label == "NEXT":
-                color = self.YELLOW
             is_active = self.focus_target == "controls" and self.control_focus == idx and not (self.modal_active or self.success_modal_active)
             self._draw_button(render_label, (x, start_y, button_width, button_height), color, active=is_active)
 
@@ -2132,15 +2490,63 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         self.surface.blit(text_surface, (x, y))
 
     def _render_modal_entry(self, modal_rect: pygame.Rect, content_x: int, content_width: int, start_y: int, entry: Dict[str, Any]) -> int:
+        # Calculate total content height first
         y = start_y
-        bottom_limit = modal_rect.bottom - self.padding * 2
-
+        total_height = 0
+        
         title = entry.get("title")
         if title:
-            title_surface = self.font_small.render(title, True, self.CYAN)
-            self.surface.blit(title_surface, (content_x, y))
+            total_height += self.font_small.get_linesize() + int(6 * self.scale)
+        
+        line_color = entry.get("line_color", self.CYAN)
+        shortcuts_seen = False
+        
+        for raw_line in entry.get("lines", []):
+            if not raw_line:
+                total_height += self.font_tiny.get_linesize()
+                continue
+            if raw_line.startswith("    "):
+                total_height += self.font_tiny.get_linesize()
+                continue
+            if raw_line.strip() == "SHORTCUTS":
+                total_height += self.font_small.get_linesize() + int(6 * self.scale)
+                continue
+            
+            wrapped = self._wrap_text(raw_line, self.font_tiny, content_width)
+            if not wrapped:
+                wrapped = [raw_line]
+            total_height += len(wrapped) * self.font_tiny.get_linesize()
+        
+        # Calculate visible area and scroll limits
+        prompt_height = self.font_tiny.get_linesize() + self.padding * 2
+        visible_height = modal_rect.height - (start_y - modal_rect.y) - prompt_height - self.padding * 2
+        self.modal_scroll_limit = max(0, total_height - visible_height)
+        self.modal_scroll_offset = max(0, min(self.modal_scroll_offset, self.modal_scroll_limit))
+        
+        # Set clipping rectangle to prevent overflow
+        clip_rect = pygame.Rect(
+            modal_rect.x + 1,
+            start_y,
+            modal_rect.width - 2,
+            visible_height
+        )
+        old_clip = self.surface.get_clip()
+        self.surface.set_clip(clip_rect)
+        
+        # Render content with scroll offset
+        y = start_y - self.modal_scroll_offset
+        bottom_limit = modal_rect.bottom - prompt_height - self.padding
+        
+        if title:
+            title_color = entry.get("title_color", self.CYAN)
+            title_surface = self.font_small.render(title, True, title_color)
+            if y + title_surface.get_height() >= start_y and y <= bottom_limit:
+                self.surface.blit(title_surface, (content_x, y))
             y += self.font_small.get_linesize() + int(6 * self.scale)
-
+        
+        line_color = entry.get("line_color", self.CYAN)
+        shortcuts_seen = False
+        
         for raw_line in entry.get("lines", []):
             if y > bottom_limit:
                 break
@@ -2149,21 +2555,35 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 continue
             if raw_line.startswith("    "):
                 code_surface = self.font_tiny.render(raw_line, True, self.PINK)
-                self.surface.blit(code_surface, (content_x, y))
+                if y + code_surface.get_height() >= start_y and y <= bottom_limit:
+                    self.surface.blit(code_surface, (content_x, y))
                 y += self.font_tiny.get_linesize()
                 continue
-
+            
+            if raw_line.strip() == "SHORTCUTS":
+                shortcuts_seen = True
+                shortcuts_surface = self.font_small.render(raw_line, True, self.CYAN)
+                if y + shortcuts_surface.get_height() >= start_y and y <= bottom_limit:
+                    self.surface.blit(shortcuts_surface, (content_x, y))
+                y += self.font_small.get_linesize() + int(6 * self.scale)
+                continue
+            
+            current_color = self.CYAN if shortcuts_seen else line_color
             wrapped = self._wrap_text(raw_line, self.font_tiny, content_width)
             if not wrapped:
                 wrapped = [raw_line]
             for segment in wrapped:
                 if y > bottom_limit:
                     break
-                text_surface = self.font_tiny.render(segment, True, self.CYAN)
-                self.surface.blit(text_surface, (content_x, y))
+                text_surface = self.font_tiny.render(segment, True, current_color)
+                if y + text_surface.get_height() >= start_y and y <= bottom_limit:
+                    self.surface.blit(text_surface, (content_x, y))
                 y += self.font_tiny.get_linesize()
-
-        return y
+        
+        # Restore clipping
+        self.surface.set_clip(old_clip)
+        
+        return y + self.modal_scroll_offset
 
     def _draw_initial_modal(self):
         """Draws the narrative modal with uncle-am's questions."""
@@ -2258,9 +2678,36 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         node_lines = self.code_areas_content[node_idx]
         inner_padding = max(int(8 * self.scale), 6)
         text_x = content_rect.x + inner_padding
-        line_y = content_rect.y + inner_padding
         max_text_width = content_rect.width - inner_padding * 2
         cursor_visible = (pygame.time.get_ticks() % 1000) < 500
+        
+        # Calculate total content height
+        total_height = 0
+        for line in node_lines:
+            font_to_use = self.font_small
+            if font_to_use.size(line)[0] > max_text_width:
+                font_to_use = self.font_tiny
+            total_height += font_to_use.get_linesize() + int(4 * self.scale)
+        
+        # Calculate visible area and scroll limits
+        visible_height = content_rect.height - inner_padding * 2
+        self.editor_scroll_limit = max(0, total_height - visible_height)
+        self.editor_scroll_offset = max(0, min(self.editor_scroll_offset, self.editor_scroll_limit))
+        
+        # Set clipping rectangle to prevent overflow
+        clip_rect = pygame.Rect(
+            content_rect.x + 1,
+            content_rect.y + inner_padding,
+            content_rect.width - 2,
+            visible_height
+        )
+        old_clip = self.surface.get_clip()
+        self.surface.set_clip(clip_rect)
+        
+        # Render content with scroll offset
+        start_y = content_rect.y + inner_padding
+        line_y = start_y - self.editor_scroll_offset
+        bottom_limit = content_rect.bottom - inner_padding
 
         for line_idx, line in enumerate(node_lines):
             node_label_index = self.labels.get(self.node_labels[node_idx], -1)
@@ -2274,42 +2721,48 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             elif line_clean.upper() in self.placeholder_lines:
                 text_color = self.PINK
 
-            if is_current_pc:
-                highlight_rect = pygame.Rect(
-                    text_x - int(6 * self.scale),
-                    line_y - int(2 * self.scale),
-                    max(content_rect.width - inner_padding, 1),
-                    self.font_small.get_linesize(),
-                )
-                pygame.draw.rect(self.surface, self.HIGHLIGHT_CYAN, highlight_rect)
-
             font_to_use = self.font_small
             if font_to_use.size(line)[0] > max_text_width:
                 font_to_use = self.font_tiny
-            text_surface = font_to_use.render(line, True, text_color)
-            self.surface.blit(text_surface, (text_x, line_y))
+            
+            # Only render if line is visible
+            if line_y + font_to_use.get_linesize() >= start_y and line_y <= bottom_limit:
+                if is_current_pc:
+                    highlight_rect = pygame.Rect(
+                        text_x - int(6 * self.scale),
+                        line_y - int(2 * self.scale),
+                        max(content_rect.width - inner_padding, 1),
+                        font_to_use.get_linesize(),
+                    )
+                    pygame.draw.rect(self.surface, self.HIGHLIGHT_CYAN, highlight_rect)
 
-            if (
-                self.game_state in ("EDITING", "PAUSED", "ERROR")
-                and self.focus_target == "editor"
-                and node_idx == self.editor_focus_node
-                and line_idx == self.cursor_pos[0]
-                and not (self.modal_active or self.success_modal_active)
-                and cursor_visible
-            ):
-                cursor_font = font_to_use
-                cursor_x = text_x + cursor_font.size(line[: self.cursor_pos[1]])[0]
-                pygame.draw.line(
-                    self.surface,
-                    self.CYAN,
-                    (cursor_x, line_y),
-                    (cursor_x, line_y + cursor_font.get_linesize() - 1),
-                    2,
-                )
+                text_surface = font_to_use.render(line, True, text_color)
+                self.surface.blit(text_surface, (text_x, line_y))
+
+                if (
+                    self.game_state in ("EDITING", "PAUSED", "ERROR")
+                    and self.focus_target == "editor"
+                    and node_idx == self.editor_focus_node
+                    and line_idx == self.cursor_pos[0]
+                    and not (self.modal_active or self.success_modal_active)
+                    and cursor_visible
+                ):
+                    cursor_font = font_to_use
+                    cursor_x = text_x + cursor_font.size(line[: self.cursor_pos[1]])[0]
+                    pygame.draw.line(
+                        self.surface,
+                        self.CYAN,
+                        (cursor_x, line_y),
+                        (cursor_x, line_y + cursor_font.get_linesize() - 1),
+                        2,
+                    )
 
             line_y += font_to_use.get_linesize() + int(4 * self.scale)
-            if line_y > content_rect.bottom - inner_padding:
+            if line_y > bottom_limit:
                 break
+        
+        # Restore clipping
+        self.surface.set_clip(old_clip)
 
     def _draw_monitor_pane(self):
         """Draw CPU instrumentation, waveform visualiser, and parrot feed."""
@@ -2331,6 +2784,10 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             metrics_rect.width,
             min(stats_height, metrics_rect.height - self.font_small.get_linesize() * 3),
         )
+        
+        # Set clipping rectangle to prevent overflow
+        old_clip = self.surface.get_clip()
+        self.surface.set_clip(metrics_rect)
 
         half_split = stats_rect.x + stats_rect.width // 2
         left_x = stats_rect.x + int(12 * self.scale)
@@ -2384,10 +2841,12 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
 
             controls_y = visualizer_rect.bottom + int(8 * self.scale)
             button_height = int(24 * self.scale)
-            button_width = (visualizer_rect.width - int(8 * self.scale)) // 3
-            self._draw_button("F6 STEP", (visualizer_rect.x, controls_y, button_width, button_height), self.CYAN)
-            self._draw_button("F5 RUN/PAUSE", (visualizer_rect.x + button_width + int(4 * self.scale), controls_y, button_width, button_height), self.GREEN)
-            self._draw_button("F7 RESET", (visualizer_rect.x + (button_width + int(4 * self.scale)) * 2, controls_y, button_width, button_height), self.RED)
+            button_width = (visualizer_rect.width - int(8 * self.scale)) // 2
+            self._draw_button("F5 RUN/PAUSE", (visualizer_rect.x, controls_y, button_width, button_height), self.GREEN)
+            self._draw_button("F7 RESET", (visualizer_rect.x + button_width + int(4 * self.scale), controls_y, button_width, button_height), self.RED)
+        
+        # Restore clipping
+        self.surface.set_clip(old_clip)
 
     def _draw_waveform_canvas(self, pane_rect: pygame.Rect):
         """Draws the audio waveform using Pygame drawing primitives."""
