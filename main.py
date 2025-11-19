@@ -39,6 +39,9 @@ from tokens import Tokens, normalize_token, describe_token, sort_tokens
 # Import supporting systems
 from systems import Email, EmailDatabase, NPCResponder, EnhancedNPCResponder, TokenInventory, SteamManager
 
+# Import OS Mode
+from OS.OS_Mode import OSMode
+
 # Try to import cv2 for video playback
 try: 
     import cv2
@@ -558,13 +561,19 @@ class DocumentationViewer:
 
     @staticmethod
     def _wrap_text(text: str, font: pygame.font.Font, max_width: int) -> List[str]:
+        """Wrap text to fit within max_width pixels. Preserves double newlines as blank lines."""
         if not text:
             return []
         lines: List[str] = []
-        for paragraph in text.splitlines():
+        # Split by newlines to preserve paragraph structure and consecutive newlines
+        paragraphs = text.split('\n')
+        for paragraph in paragraphs:
+            # Empty paragraph means a blank line (from \n\n)
+            if paragraph == "":
+                lines.append("")
+                continue
             words = paragraph.split()
             if not words:
-                lines.append("")
                 continue
             current = words[0]
             for word in words[1:]:
@@ -1120,6 +1129,10 @@ class GLYPHIS_IOBBS:
         # BBS window overlay state (for black rectangle overlay)
         self.bbs_overlay_active = False
 
+        # OS Mode state
+        self.os_mode_active = False
+        self.os_mode = None  # Will be initialized when first activated
+
         # Logout confirmation modal
         self.logout_modal_active = False
 
@@ -1298,31 +1311,28 @@ class GLYPHIS_IOBBS:
         
         
     def _wrap_text(self, text, font, max_width):
-        """Helper to wrap text into lines, returns list of lines"""
+        """Helper to wrap text into lines, returns list of lines. Preserves double newlines as blank lines."""
         if text is None:
             return []
-        words = text.split(' ')
-        lines = []
-        current_line = []
         
-        for word in words:
-            # Handle newlines
-            if '\n' in word:
-                parts = word.split('\n')
-                for i, part in enumerate(parts):
-                    if i > 0:
-                        if current_line:
-                            lines.append(' '.join(current_line))
-                        current_line = []
-                    if part:
-                        test_line = ' '.join(current_line + [part]) if current_line else part
-                        if font.size(test_line)[0] <= max_width:
-                            current_line.append(part)
-                        else:
-                            if current_line:
-                                lines.append(' '.join(current_line))
-                            current_line = [part] if part else []
-            else:
+        # First split by newlines to preserve paragraph structure and consecutive newlines
+        paragraphs = text.split('\n')
+        lines = []
+        
+        for para_idx, paragraph in enumerate(paragraphs):
+            # Empty paragraph means a blank line (from \n\n)
+            if paragraph == "":
+                lines.append("")
+                continue
+            
+            # Wrap this paragraph
+            words = paragraph.split(' ')
+            current_line = []
+            
+            for word in words:
+                if not word:  # Skip empty strings from multiple spaces
+                    continue
+                    
                 test_line = ' '.join(current_line + [word]) if current_line else word
                 if font.size(test_line)[0] <= max_width:
                     current_line.append(word)
@@ -1330,9 +1340,9 @@ class GLYPHIS_IOBBS:
                     if current_line:
                         lines.append(' '.join(current_line))
                     current_line = [word]
-        
-        if current_line:
-            lines.append(' '.join(current_line))
+            
+            if current_line:
+                lines.append(' '.join(current_line))
         
         return lines
     
@@ -1527,12 +1537,22 @@ class GLYPHIS_IOBBS:
             return False
 
     def _update_audio_power_state(self) -> None:
-        """Maintain the desktop video state based on the audio power rail and time of day."""
-        desired_state = "audio-pwrd" if self._is_audio_power_led_green() else "default"
+        """Maintain the desktop video state based on CRACKER IDE audio playback and time of day."""
+        # Check if CRACKER IDE audio is playing (from Urgent_Ops/Audio folder)
+        cracker_audio_playing = False
+        if self.state == "urgent_ops_session" and self.active_ops_session:
+            audio_checker = getattr(self.active_ops_session, "is_cracker_ide_audio_playing", None)
+            if callable(audio_checker):
+                try:
+                    cracker_audio_playing = bool(audio_checker())
+                except Exception:
+                    cracker_audio_playing = False
+        
+        desired_state = "audio-playing" if cracker_audio_playing else "default"
         
         # Determine base video filename based on state
-        if desired_state == "audio-pwrd":
-            base_video = "Audio-Desktop-No-Sound.mp4"
+        if desired_state == "audio-playing":
+            base_video = "Audio-Desktop.mp4"
         else:
             base_video = "desktop_steam.mp4"
         
@@ -3835,6 +3855,9 @@ class GLYPHIS_IOBBS:
             self.bbs_x = int(self.baseline_bbs_x * self.scale)
             self.bbs_y = int(self.baseline_bbs_y * self.scale)
             self.documentation_viewer.set_scale(self.scale)
+            # Update OS mode scale if active
+            if self.os_mode_active and self.os_mode:
+                self.os_mode.update_scale(self.scale)
             # Reset content scroll (can be adjusted per screen if needed)
             self.content_scroll_y = 0
             # Recreate BBS surface with new dimensions
@@ -3944,7 +3967,11 @@ class GLYPHIS_IOBBS:
                         int(overlay_h * self.scale)
                     )
                     if overlay_hotspot_rect.collidepoint(mouse_x, mouse_y):
-                        self.bbs_overlay_active = not self.bbs_overlay_active
+                        # If OS mode is active, toggle OS mode overlay instead
+                        if self.os_mode_active and self.os_mode:
+                            self.os_mode.toggle_overlay()
+                        else:
+                            self.bbs_overlay_active = not self.bbs_overlay_active
                         continue
                 
                 # F12 quits the program
@@ -3986,6 +4013,39 @@ class GLYPHIS_IOBBS:
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
                     self.prompt_delete_user()
                     continue
+                
+                # F10: Toggle OS Mode
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_F10:
+                    self.os_mode_active = not self.os_mode_active
+                    if self.os_mode_active:
+                        # Initialize OS mode if not already initialized
+                        if self.os_mode is None:
+                            try:
+                                # Create callback function to reset BBS and exit OS mode
+                                def reset_bbs_and_exit_os():
+                                    self._reset_to_beginning()
+                                    self.os_mode_active = False
+                                
+                                self.os_mode = OSMode(self.screen, self.scale, reset_bbs_and_exit_os)
+                            except Exception as e:
+                                print(f"Warning: Failed to initialize OS Mode: {e}")
+                                self.os_mode_active = False
+                        else:
+                            # Update scale if it changed
+                            self.os_mode.update_scale(self.scale)
+                    # Ensure cursor is visible (OS mode will handle its own cursor switching)
+                    pygame.mouse.set_visible(True)
+                    continue
+
+                # Handle OS Mode events
+                if self.os_mode_active and self.os_mode:
+                    # ESC to exit OS mode
+                    if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                        self.os_mode_active = False
+                        pygame.mouse.set_visible(True)
+                        continue
+                    if self.os_mode.handle_event(event):
+                        continue
 
                 if self.state == "game_session" and self.active_game_session:
                     result = self.active_game_session.handle_event(event)
@@ -4053,6 +4113,17 @@ class GLYPHIS_IOBBS:
                     self._end_ops_session()
 
             self.documentation_viewer.update(dt)
+            
+            # Update OS Mode if active
+            if self.os_mode_active and self.os_mode:
+                self.os_mode.update(dt)
+                # Check if modem modal requested BBS reset and OS exit
+                if hasattr(self.os_mode, 'modem_modal_should_reset_bbs') and self.os_mode.modem_modal_should_reset_bbs:
+                    if hasattr(self.os_mode, 'modem_modal_should_exit_os') and self.os_mode.modem_modal_should_exit_os:
+                        self._reset_to_beginning()
+                        self.os_mode_active = False
+                        self.os_mode.modem_modal_should_reset_bbs = False
+                        self.os_mode.modem_modal_should_exit_os = False
             
             # Run Steam API callbacks (required for achievements/stats to work)
             if hasattr(self, 'steam'):
@@ -4159,6 +4230,10 @@ class GLYPHIS_IOBBS:
                 
                 # Draw BBS window on top
                 self.screen.blit(self.bbs_surface, (self.bbs_x, self.bbs_y))
+            
+            # Draw OS Mode desktop environment (after BBS window)
+            if self.os_mode_active and self.os_mode:
+                self.os_mode.draw()
 
             overlays: list[tuple[pygame.Surface, tuple[int, int]]] = []
             if self.state == "urgent_ops_session" and self.active_ops_session:
@@ -4168,17 +4243,36 @@ class GLYPHIS_IOBBS:
                         overlays = overlay_getter() or []
                     except Exception:
                         overlays = []
-            # Draw thin cyan border around BBS window (on top of everything)
-            pygame.draw.rect(self.screen, CYAN,
-                             (self.bbs_x, self.bbs_y, self.bbs_width, self.bbs_height), 1)
+            # Draw thin cyan border around BBS window (on top of everything, unless OS mode is active)
+            if not self.os_mode_active:
+                pygame.draw.rect(self.screen, CYAN,
+                                 (self.bbs_x, self.bbs_y, self.bbs_width, self.bbs_height), 1)
 
             for overlay_surface, (offset_x, offset_y) in overlays:
                 if overlay_surface:
                     screen_pos = (self.bbs_x + offset_x, self.bbs_y + offset_y)
                     self.screen.blit(overlay_surface, screen_pos)
 
-            if self.scanline_image:
-                # Scale scanline to match BBS window size
+            # Draw OS Mode cursor (before scanlines) if in OS mode and mouse is in desktop
+            if self.os_mode_active and self.os_mode:
+                mouse_x, mouse_y = pygame.mouse.get_pos()
+                if self.os_mode.is_mouse_in_desktop(mouse_x, mouse_y):
+                    # Draw OS cursor as sprite (under scanlines)
+                    self.os_mode.draw_cursor(mouse_x, mouse_y)
+                    # Hide system cursor when using OS cursor
+                    pygame.mouse.set_visible(False)
+                else:
+                    # Mouse outside desktop - show system cursor
+                    pygame.mouse.set_visible(True)
+            
+            # Draw scanline overlay (BBS scanline when not in OS mode, desktop scanline when in OS mode)
+            if self.os_mode_active and self.os_mode:
+                # Draw desktop scanline in OS mode (over cursor)
+                self.os_mode.draw_scanline()
+                # Draw OS mode overlay rectangle (after scanline)
+                self.os_mode.draw_overlay()
+            elif self.scanline_image:
+                # Draw BBS scanline when not in OS mode
                 scanline_scaled = pygame.transform.scale(self.scanline_image, (self.bbs_width, self.bbs_height))
                 self.screen.blit(scanline_scaled, (self.bbs_x, self.bbs_y))
 
@@ -4197,8 +4291,35 @@ class GLYPHIS_IOBBS:
             self.documentation_viewer.draw(self.screen)
             self.documentation_viewer.apply_cursor()
             
-            # Update cursor based on mouse position
-            self._update_cursor()
+            # Update cursor based on mouse position (only for areas outside OS desktop)
+            if self.os_mode_active and self.os_mode:
+                # OS mode is active - cursor drawing is handled above (before scanlines)
+                # Only update system cursor when mouse is outside desktop
+                mouse_x, mouse_y = pygame.mouse.get_pos()
+                if not self.os_mode.is_mouse_in_desktop(mouse_x, mouse_y):
+                    # Mouse is outside desktop - use default cursor (hand cursor)
+                    is_night = _is_tokyo_nighttime()
+                    mouse_buttons = pygame.mouse.get_pressed()
+                    
+                    if is_night:
+                        if mouse_buttons[0] and self.mouse_hand_cursor_click_night:
+                            cursor_to_use = self.mouse_hand_cursor_click_night
+                        else:
+                            cursor_to_use = self.mouse_hand_cursor_night
+                    else:
+                        if mouse_buttons[0] and self.mouse_hand_cursor_click:
+                            cursor_to_use = self.mouse_hand_cursor_click
+                        else:
+                            cursor_to_use = self.mouse_hand_cursor
+                    
+                    if cursor_to_use:
+                        try:
+                            pygame.mouse.set_cursor(cursor_to_use)
+                        except Exception:
+                            pass
+            else:
+                # OS mode not active - use normal cursor logic
+                self._update_cursor()
             
             # Draw black rectangles if overlay is active
             overlay_x, overlay_y, overlay_w, overlay_h = OVERLAY_HOTSPOT

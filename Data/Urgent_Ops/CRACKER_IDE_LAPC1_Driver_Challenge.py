@@ -178,6 +178,8 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             "Initialization is stitched up. Keep this node lean, just route execution into DATA_CHECK so the loop can spin.",
             "Busy wait comes alive here. Read $C403, compare with #$01, branch back until the flag is true. Only fall through when the buffer shouts READY.",
             "Sample transfer finishes the cycle. Pull the byte from $C800, write it to both channels, kick back to DATA_CHECK, and let the loop breathe.",
+            "",
+            "WARNING: The audio stream contains banned content. Keep your volume low and make sure nobody's listening. What you're about to hear was never supposed to survive the purge.",
         ]
         self.node_help_messages: Dict[int, List[str]] = {
             0: [
@@ -312,6 +314,9 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         self.left_test_sound: Optional[pygame.mixer.Sound] = None
         self.right_test_sound: Optional[pygame.mixer.Sound] = None
         self.u1_sound: Optional[pygame.mixer.Sound] = None
+        self.node7_sound: Optional[pygame.mixer.Sound] = None
+        # Track audio channels for video switching
+        self.active_audio_channels: List[pygame.mixer.Channel] = []
         
         # --- Video/Image Resources ---
         self.challenge_completed = False # Flag for total completion (SUCCESS state)
@@ -399,23 +404,36 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             pass
 
     def _wrap_text(self, text: str, font: pygame.font.Font, max_width: int) -> List[str]:
-        """Wrap text to fit within max_width pixels."""
+        """Wrap text to fit within max_width pixels. Preserves double newlines as blank lines."""
         if not text:
             return []
-        words = text.replace("\n", " ").split()
-        if not words:
-            return []
+        
+        # First split by newlines to preserve paragraph structure and consecutive newlines
+        paragraphs = text.split('\n')
         lines: List[str] = []
-        current = words[0]
-        for word in words[1:]:
-            candidate = f"{current} {word}"
-            if font.size(candidate)[0] <= max_width:
-                current = candidate
-            else:
+        
+        for paragraph in paragraphs:
+            # Empty paragraph means a blank line (from \n\n)
+            if paragraph == "":
+                lines.append("")
+                continue
+            
+            # Wrap this paragraph
+            words = paragraph.split()
+            if not words:
+                continue
+            
+            current = words[0]
+            for word in words[1:]:
+                candidate = f"{current} {word}"
+                if font.size(candidate)[0] <= max_width:
+                    current = candidate
+                else:
+                    lines.append(current)
+                    current = word
+            if current:
                 lines.append(current)
-                current = word
-        if current:
-            lines.append(current)
+        
         return lines
 
     def _draw_panel(self, rect: pygame.Rect, title: Optional[str] = None, subtitle: Optional[str] = None,
@@ -851,6 +869,9 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                     "Store the value to $C401 for the left speaker, then immediately to $C402 for the right.",
                     "Kick execution back to DATA_CHECK so the loop keeps tempo with incoming packets.",
                     "Watch the monitor LEDs, both channels should pulse in sync as the loop runs.",
+                    "",
+                    "IMPORTANT: The audio stream you're about to enable contains banned content.",
+                    "Keep your volume low and ensure you're alone. This transmission was never supposed to exist.",
                 ],
             },
         }
@@ -1062,6 +1083,33 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         else:
             print(f"Warning: Audio/u1.wav not found at {u1_sound_path}. Node 4 completion sound disabled.")
             self.u1_sound = None
+        
+        # Load Node 7 completion sound
+        node7_sound_path = get_data_path("Urgent_Ops", "Audio", "NODE7.wav")
+        print(f"DEBUG: Looking for NODE7 audio file at: {node7_sound_path}")
+        print(f"DEBUG: File exists: {os.path.exists(node7_sound_path)}")
+        
+        if os.path.exists(node7_sound_path):
+            try:
+                if not pygame.mixer.get_init():
+                    try:
+                        pygame.mixer.init()
+                        print("DEBUG: Mixer initialized successfully for NODE7 sound")
+                    except Exception as mixer_error:
+                        print(f"Warning: Unable to initialize mixer for NODE7.wav playback: {mixer_error}")
+                        self.node7_sound = None
+                    else:
+                        self.node7_sound = pygame.mixer.Sound(node7_sound_path)
+                        print(f"DEBUG: NODE7 sound loaded successfully: {self.node7_sound}")
+                else:
+                    self.node7_sound = pygame.mixer.Sound(node7_sound_path)
+                    print(f"DEBUG: NODE7 sound loaded successfully: {self.node7_sound}")
+            except Exception as sound_error:
+                print(f"Warning: Failed to load NODE7.wav: {sound_error}")
+                self.node7_sound = None
+        else:
+            print(f"Warning: Audio/NODE7.wav not found at {node7_sound_path}. Node 7 completion sound disabled.")
+            self.node7_sound = None
 
     def _parse_immediate_byte(self, operand: str) -> int:
         if not operand or not operand.startswith('#'):
@@ -1483,7 +1531,9 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                                         print("DEBUG: Mixer not initialized, initializing now...")
                                         pygame.mixer.init()
                                     print("DEBUG: Calling left_test_sound.play()...")
-                                    self.left_test_sound.play()
+                                    channel = self.left_test_sound.play()
+                                    if channel:
+                                        self.active_audio_channels.append(channel)
                                     print("DEBUG: Left test sound play() called successfully")
                                 except Exception as play_error:
                                     print(f"Warning: Unable to play left-test-tune.wav: {play_error}")
@@ -1511,7 +1561,9 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                                         print("DEBUG: Mixer not initialized, initializing now...")
                                         pygame.mixer.init()
                                     print("DEBUG: Calling right_test_sound.play()...")
-                                    self.right_test_sound.play()
+                                    channel = self.right_test_sound.play()
+                                    if channel:
+                                        self.active_audio_channels.append(channel)
                                     print("DEBUG: Right test sound play() called successfully")
                                 except Exception as play_error:
                                     print(f"Warning: Unable to play right-test-tune.wav: {play_error}")
@@ -1542,7 +1594,9 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                                         print("DEBUG: Mixer not initialized, initializing now...")
                                         pygame.mixer.init()
                                     print("DEBUG: Calling u1_sound.play()...")
-                                    self.u1_sound.play()
+                                    channel = self.u1_sound.play()
+                                    if channel:
+                                        self.active_audio_channels.append(channel)
                                     print("DEBUG: u1 sound play() called successfully")
                                 except Exception as play_error:
                                     print(f"Warning: Unable to play u1.wav: {play_error}")
@@ -1623,11 +1677,35 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 # Grant token for Node 7 LED
                 if "LAPC1_NODE7" not in self.pending_token_grants:
                     self.pending_token_grants.append("LAPC1_NODE7")
+                # Warning about banned content before audio starts
+                self._queue_chat_message("FINAL WARNING: The stream is about to go live. Banned content incoming. Keep it quiet and make sure you're alone.", "UNCLE-AM")
+                self.chat_next_queue_time = pygame.time.get_ticks() + 100
+                self._begin_next_queued_message()
+                # Play Node 7 completion sound (banned song)
+                print(f"DEBUG: Node 7 completed! Attempting to play NODE7.wav...")
+                print(f"DEBUG: node7_sound is: {self.node7_sound}")
+                if self.node7_sound:
+                    try:
+                        # Ensure mixer is initialized before playing
+                        if not pygame.mixer.get_init():
+                            print("DEBUG: Mixer not initialized, initializing now...")
+                            pygame.mixer.init()
+                        print("DEBUG: Calling node7_sound.play()...")
+                        channel = self.node7_sound.play()
+                        if channel:
+                            self.active_audio_channels.append(channel)
+                        print("DEBUG: NODE7.wav play() called successfully")
+                    except Exception as play_error:
+                        print(f"Warning: Unable to play NODE7.wav: {play_error}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    print("DEBUG: node7_sound is None, skipping playback")
             
             # Trigger success modal for completed node
             if completed_node:
                 self._prepare_success_modal_for_node(completed_node)
-                self.pending_node_switch = completed_node - 1  # Convert to 0-based index
+                self.pending_node_switch = completed_node  # Move to next node (0-based index)
                 # No parrot animation for individual node completion
         
         # Check for SUCCESS (Full Challenge Completion)
@@ -1749,9 +1827,6 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                     return
                 # Editor focus: let cursor movement handle DOWN arrow (don't scroll)
             
-            if event.key in (pygame.K_LEFT, pygame.K_RIGHT):
-                return
-
             if self.focus_target == "controls":
                 if event.key in (pygame.K_LEFT, pygame.K_UP):
                     self.control_focus = (self.control_focus - 1) % len(self.control_labels)
@@ -2113,6 +2188,13 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
 
     def update(self, dt):
         """Updates the game logic."""
+        # Clean up finished audio channels periodically
+        if self.active_audio_channels:
+            self.active_audio_channels = [
+                ch for ch in self.active_audio_channels 
+                if ch is not None and ch.get_busy()
+            ]
+        
         # Decrement module animation timer
         if self.module_animation_timer > 0:
             self.module_animation_timer -= dt
@@ -2145,7 +2227,9 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                         print("DEBUG: Mixer not initialized, initializing now...")
                         pygame.mixer.init()
                     print("DEBUG: Calling power_on_sound.play()...")
-                    self.power_on_sound.play()
+                    channel = self.power_on_sound.play()
+                    if channel:
+                        self.active_audio_channels.append(channel)
                     print("DEBUG: Sound play() called successfully")
                 except Exception as play_error:
                     print(f"Warning: Unable to play On-Test.wav: {play_error}")
@@ -2918,6 +3002,19 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
 
         pygame.draw.circle(self.surface, color, (x, center_y), radius)
 
+    def is_cracker_ide_audio_playing(self) -> bool:
+        """Check if any CRACKER IDE audio from Urgent_Ops/Audio folder is currently playing."""
+        if not self.active_audio_channels:
+            return False
+        
+        # Clean up finished channels and check if any are still playing
+        self.active_audio_channels = [
+            ch for ch in self.active_audio_channels 
+            if ch is not None and ch.get_busy()
+        ]
+        
+        return len(self.active_audio_channels) > 0
+    
     def is_c400_power_led_on(self) -> bool:
         """Return True when the C400 power rail is active (LED shown as green)."""
         memory = getattr(self, "cpu_state", {}).get("Memory", {}) if hasattr(self, "cpu_state") else {}
