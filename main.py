@@ -939,6 +939,12 @@ class GLYPHIS_IOBBS:
         pygame.display.set_caption("GLYPHIS_IO BBS")
         self.clock = pygame.time.Clock()
         
+        # FPS tracking
+        self.fps_target = 60  # Target FPS
+        self.fps_actual = 0.0  # Actual FPS
+        self.fps_frame_times = []  # List of frame times for FPS calculation
+        self.fps_last_update_time = time.time()
+        
         # Baseline resolution and dimensions (2560x1440)
         # This is the reference resolution where the position and size were originally set
         self.baseline_width = BASELINE_WIDTH
@@ -1487,7 +1493,7 @@ class GLYPHIS_IOBBS:
         pygame.draw.line(self.bbs_surface, DARK_BLUE, (x1, y), (x2, y), 2)
 
     def _set_desktop_video(self, filename: str) -> None:
-        """Load or switch the desktop background video."""
+        """Load or switch the desktop background video. Properly stops and releases the old video before loading the new one."""
         if not _cv2_available:
             return
 
@@ -1498,6 +1504,12 @@ class GLYPHIS_IOBBS:
         if self.desktop_video_filename == filename and self.video_cap:
             return
 
+        # Stop and release the old video capture first (clean shutdown)
+        if self.video_cap:
+            self.video_cap.release()
+            self.video_cap = None
+            self.video_frame = None  # Clear the current frame
+        
         video_path = get_data_path("videos", filename)
 
         new_capture = None
@@ -1513,13 +1525,11 @@ class GLYPHIS_IOBBS:
             print(f"Warning: Could not load {video_path}: {exc}, using normal mode")
             return
 
-        if self.video_cap:
-            self.video_cap.release()
-
+        # Set the new video capture
         self.video_cap = new_capture
         self.desktop_video_filename = filename
-        self.video_frame = None
-        self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        self.video_frame = None  # Ensure frame is cleared for new video
+        self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset to start
 
     def _is_audio_power_led_green(self) -> bool:
         """Check the urgent ops session for the C400 power LED state."""
@@ -1537,7 +1547,7 @@ class GLYPHIS_IOBBS:
             return False
 
     def _update_audio_power_state(self) -> None:
-        """Maintain the desktop video state based on CRACKER IDE audio playback and time of day."""
+        """Maintain the desktop video state based on CRACKER IDE audio playback, OS Mode, and time of day."""
         # Check if CRACKER IDE audio is playing (from Urgent_Ops/Audio folder)
         cracker_audio_playing = False
         if self.state == "urgent_ops_session" and self.active_ops_session:
@@ -1548,15 +1558,41 @@ class GLYPHIS_IOBBS:
                 except Exception:
                     cracker_audio_playing = False
         
-        desired_state = "audio-playing" if cracker_audio_playing else "default"
+        # Determine desired state and base video filename
+        # First, detect if current video has a time prefix (night- or day-)
+        current_filename = self.desktop_video_filename or ""
+        has_time_prefix = current_filename.startswith("night-") or current_filename.startswith("day-")
+        # Strip time prefixes to get the base filename for detection
+        base_filename_for_detection = current_filename.replace("night-", "").replace("day-", "")
         
-        # Determine base video filename based on state
-        if desired_state == "audio-playing":
-            base_video = "Audio-Desktop.mp4"
+        if cracker_audio_playing:
+            desired_state = "audio-playing"
+            # Check if current video is a No-Sound variant (strip -os suffix too for detection)
+            base_for_no_sound_check = base_filename_for_detection.replace("-os.mp4", ".mp4")
+            is_no_sound = ("No-Sound" in base_for_no_sound_check and "Audio-Desktop" in base_for_no_sound_check) or \
+                         ("Audio-Desktop-No-Sound" in base_for_no_sound_check)
+            
+            # In OS Mode, swap Audio-Desktop videos to -os versions
+            if self.os_mode_active:
+                if is_no_sound:
+                    base_video = "Audio-Desktop-No-Sound-os.mp4"
+                else:
+                    base_video = "Audio-Desktop-os.mp4"
+            else:
+                if is_no_sound:
+                    base_video = "Audio-Desktop-No-Sound.mp4"
+                else:
+                    base_video = "Audio-Desktop.mp4"
+        elif self.os_mode_active:
+            # OS Mode is active - use desktop_steam_os.mp4 instead of desktop_steam.mp4
+            desired_state = "os-mode"
+            base_video = "desktop_steam_os.mp4"
         else:
+            desired_state = "default"
             base_video = "desktop_steam.mp4"
         
         # Get time-aware video name (adds 'night-' prefix if nighttime in Tokyo)
+        # This will correctly produce "night-Audio-Desktop-os.mp4", "night-desktop_steam_os.mp4", etc.
         time_aware_video = _get_time_aware_video_name(base_video)
         
         # Only update if state changed OR if time of day changed (video filename changed)
@@ -3858,6 +3894,8 @@ class GLYPHIS_IOBBS:
             # Update OS mode scale if active
             if self.os_mode_active and self.os_mode:
                 self.os_mode.update_scale(self.scale)
+                # Update BBS position for clock positioning
+                self.os_mode.update_bbs_position(self.bbs_x, self.bbs_y, self.bbs_width)
             # Reset content scroll (can be adjusted per screen if needed)
             self.content_scroll_y = 0
             # Recreate BBS surface with new dimensions
@@ -3906,6 +3944,20 @@ class GLYPHIS_IOBBS:
         
         while running:
             dt = self.clock.tick(60) / 1000.0
+            
+            # Update FPS tracking
+            current_time = time.time()
+            if dt > 0:
+                frame_fps = 1.0 / dt
+                self.fps_frame_times.append(frame_fps)
+                # Keep only last 60 frames (1 second at 60fps) for smooth average
+                if len(self.fps_frame_times) > 60:
+                    self.fps_frame_times.pop(0)
+                # Update actual FPS every 0.5 seconds
+                if current_time - self.fps_last_update_time >= 0.5:
+                    if self.fps_frame_times:
+                        self.fps_actual = sum(self.fps_frame_times) / len(self.fps_frame_times)
+                    self.fps_last_update_time = current_time
 
             # Ensure ambient track keeps playing and update fade-in
             if self.ambient_sound:
@@ -4017,6 +4069,9 @@ class GLYPHIS_IOBBS:
                 # F10: Toggle OS Mode
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_F10:
                     self.os_mode_active = not self.os_mode_active
+                    # Immediately update video state when OS Mode is toggled
+                    # This ensures the old video is stopped and the new OS-specific video starts right away
+                    self._update_audio_power_state()
                     if self.os_mode_active:
                         # Initialize OS mode if not already initialized
                         if self.os_mode is None:
@@ -4025,8 +4080,70 @@ class GLYPHIS_IOBBS:
                                 def reset_bbs_and_exit_os():
                                     self._reset_to_beginning()
                                     self.os_mode_active = False
+                                    # Immediately update video state when exiting OS Mode
+                                    # This ensures the OS video is stopped and the regular video starts right away
+                                    self._update_audio_power_state()
                                 
-                                self.os_mode = OSMode(self.screen, self.scale, reset_bbs_and_exit_os)
+                                # Create token checker callback
+                                def has_token(token):
+                                    return self.inventory.has_token(token)
+                                
+                                # Create recording state callbacks
+                                def get_recording_state():
+                                    user = self.get_active_user()
+                                    if user:
+                                        return user.get("recording", False), user.get("recording_start_time")
+                                    return False, None
+                                
+                                def set_recording_state(is_recording, start_time=None):
+                                    user = self.get_active_user()
+                                    if user:
+                                        user["recording"] = is_recording
+                                        user["recording_start_time"] = start_time
+                                        self.save_user_state()
+                                
+                                # Create notes state callbacks
+                                def get_notes():
+                                    user = self.get_active_user()
+                                    if user:
+                                        return user.get("notes", [])
+                                    return []
+                                
+                                def save_notes(notes):
+                                    print(f"[DEBUG] save_notes callback called with {len(notes)} notes")
+                                    user = self.get_active_user()
+                                    if user:
+                                        print(f"[DEBUG] User found: {user.get('username', 'unknown')}")
+                                        user["notes"] = notes
+                                        print(f"[DEBUG] Set user notes, now calling save_user_state")
+                                        self.save_user_state()
+                                        print(f"[DEBUG] save_user_state completed")
+                                    else:
+                                        print(f"[DEBUG] No active user found!")
+
+                                def get_user_credentials():
+                                    user = self.get_active_user()
+                                    if user:
+                                        return user.get("username", ""), user.get("pin", "")
+                                    return "", ""
+                                
+                                def get_chess_stats():
+                                    user = self.get_active_user()
+                                    if user:
+                                        return user.get("chess_stats", {})
+                                    return {}
+                                
+                                def save_chess_stats(stats):
+                                    user = self.get_active_user()
+                                    if user:
+                                        user["chess_stats"] = stats
+                                        self.save_user_state()
+                                
+                                self.os_mode = OSMode(self.screen, self.scale, reset_bbs_and_exit_os, 
+                                                      self.bbs_x, self.bbs_y, self.bbs_width, has_token,
+                                                      get_recording_state, set_recording_state,
+                                                      get_notes, save_notes, get_user_credentials,
+                                                      get_chess_stats, save_chess_stats)
                             except Exception as e:
                                 print(f"Warning: Failed to initialize OS Mode: {e}")
                                 self.os_mode_active = False
@@ -4042,6 +4159,9 @@ class GLYPHIS_IOBBS:
                     # ESC to exit OS mode
                     if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                         self.os_mode_active = False
+                        # Immediately update video state when exiting OS Mode
+                        # This ensures the OS video is stopped and the regular video starts right away
+                        self._update_audio_power_state()
                         pygame.mouse.set_visible(True)
                         continue
                     if self.os_mode.handle_event(event):
@@ -4122,6 +4242,9 @@ class GLYPHIS_IOBBS:
                     if hasattr(self.os_mode, 'modem_modal_should_exit_os') and self.os_mode.modem_modal_should_exit_os:
                         self._reset_to_beginning()
                         self.os_mode_active = False
+                        # Immediately update video state when exiting OS Mode
+                        # This ensures the OS video is stopped and the regular video starts right away
+                        self._update_audio_power_state()
                         self.os_mode.modem_modal_should_reset_bbs = False
                         self.os_mode.modem_modal_should_exit_os = False
             
@@ -4286,7 +4409,17 @@ class GLYPHIS_IOBBS:
             bbs_local_y = (mouse_y - self.bbs_y) / self.scale
             bbs_text = f"BBS Window: {int(bbs_local_x)}, {int(bbs_local_y)}"
             bbs_surface = self.font_tiny.render(bbs_text, True, CYAN)
-            self.screen.blit(bbs_surface, (10, 10 + mouse_surface.get_height() + int(4 * self.scale)))
+            bbs_text_y = 10 + mouse_surface.get_height() + int(4 * self.scale)
+            self.screen.blit(bbs_surface, (10, bbs_text_y))
+            
+            # Draw FPS display below Mouse and BBS Window text
+            try:
+                fps_text = f"FPS: {int(self.fps_actual)}/{self.fps_target}"
+                fps_surface = self.font_tiny.render(fps_text, True, CYAN)
+                fps_y = bbs_text_y + bbs_surface.get_height() + int(4 * self.scale)
+                self.screen.blit(fps_surface, (10, fps_y))
+            except Exception:
+                pass  # Silently fail if font rendering fails
             
             self.documentation_viewer.draw(self.screen)
             self.documentation_viewer.apply_cursor()
@@ -4703,7 +4836,16 @@ class GLYPHIS_IOBBS:
             "sent_emails": [],
             "tokens": [],
             "inbox_emails": [],
-            "username_simulacra_tcs": None
+            "username_simulacra_tcs": None,
+            "recording": False,
+            "recording_start_time": None,
+            "notes": [
+                {
+                    "title": "Mission Objectives",
+                    "content": "1. Receive Invite from Glyphis\n2. Get onto the BBS (0345728891)\n3. Complete a technical challenge to prove yourself\n4. Get invited to crack some games\n5. Obtain access to the Pirate Radio Stream",
+                    "is_locked": True  # First note is non-deletable
+                }
+            ]
         }
 
     def load_user_state(self):
@@ -4725,6 +4867,18 @@ class GLYPHIS_IOBBS:
                                 cleaned["sent_emails"] = list(user.get("sent_emails", []))
                                 user_tokens = [normalize_token(t) for t in user.get("tokens", [])]
                                 cleaned["tokens"] = list(sort_tokens(tok for tok in user_tokens if tok))
+                                cleaned["recording"] = bool(user.get("recording", False))
+                                cleaned["recording_start_time"] = user.get("recording_start_time")
+                                # Load notes, ensure first note exists and is locked
+                                cleaned["notes"] = user.get("notes", [])
+                                if not cleaned["notes"] or not cleaned["notes"][0].get("is_locked", False):
+                                    cleaned["notes"] = [
+                                        {
+                                            "title": "Mission Objectives",
+                                            "content": "1. Receive Invite from Glyphis\n2. Get onto the BBS (0345728891)\n3. Complete a technical challenge to prove yourself\n4. Get invited to crack some games\n5. Obtain access to the Pirate Radio Stream",
+                                            "is_locked": True
+                                        }
+                                    ] + cleaned["notes"][1:] if cleaned["notes"] else cleaned["notes"]
                                 cleaned["inbox_emails"] = []
                                 for stored_email in user.get("inbox_emails", []):
                                     if not isinstance(stored_email, dict):
@@ -4758,6 +4912,18 @@ class GLYPHIS_IOBBS:
                             migrated_user["sent_emails"] = list(data.get("sent_emails", []))
                             migrated_tokens = [normalize_token(t) for t in data.get("tokens", [])]
                             migrated_user["tokens"] = list(sort_tokens(tok for tok in migrated_tokens if tok))
+                            migrated_user["recording"] = bool(data.get("recording", False))
+                            migrated_user["recording_start_time"] = data.get("recording_start_time")
+                            # Load notes, ensure first note exists and is locked
+                            migrated_user["notes"] = data.get("notes", [])
+                            if not migrated_user["notes"] or not migrated_user["notes"][0].get("is_locked", False):
+                                migrated_user["notes"] = [
+                                    {
+                                        "title": "Mission Objectives",
+                                        "content": "1. Receive Invite from Glyphis\n2. Get onto the BBS\n3. Complete a technical challenge to prove yourself\n4. Get invited to crack some games\n5. Obtain access to the Pirate Radio Stream",
+                                        "is_locked": True
+                                    }
+                                ] + migrated_user["notes"][1:] if migrated_user["notes"] else migrated_user["notes"]
                             migrated_user["inbox_emails"] = []
                             for stored_email in data.get("inbox_emails", []):
                                 if not isinstance(stored_email, dict):
@@ -4807,6 +4973,8 @@ class GLYPHIS_IOBBS:
             self.inventory.tokens = set(tok for tok in tokens if tok)
             user["tokens"] = list(sort_tokens(self.inventory.tokens))
             self.email_db.sent_email_ids = set(user.get("sent_emails", []))
+            # Recording state is already loaded in user profile, no need to restore here
+            # It will be accessed via the callbacks passed to OSMode
             self.inbox = []
             for stored_email in user.get("inbox_emails", []):
                 if not isinstance(stored_email, dict):
@@ -4851,6 +5019,20 @@ class GLYPHIS_IOBBS:
         user["pin"] = self.player_pin
         user["tokens"] = list(sort_tokens(self.inventory.tokens))
         user["sent_emails"] = sorted(self.email_db.sent_email_ids)
+        # Preserve recording state (don't overwrite if already set)
+        if "recording" not in user:
+            user["recording"] = False
+        if "recording_start_time" not in user:
+            user["recording_start_time"] = None
+        # Preserve notes (don't overwrite if already set)
+        if "notes" not in user:
+            user["notes"] = [
+                {
+                    "title": "Mission Objectives",
+                    "content": "1. Receive Invite from Glyphis\n2. Get onto the BBS (0345728891)\n3. Complete a technical challenge to prove yourself\n4. Get invited to crack some games\n5. Obtain access to the Pirate Radio Stream",
+                    "is_locked": True
+                }
+            ]
         serialized_inbox = []
         for email in self.inbox:
             if isinstance(email, Email):
