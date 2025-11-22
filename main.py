@@ -1235,6 +1235,15 @@ class GLYPHIS_IOBBS:
         self.desktop_video_filename: Optional[str] = None
         self.desktop_state = "default"
         
+        # Ghost user system (for Node 7 completion sequence)
+        self.ghost_user_active = False
+        self.ghost_user_step = 0
+        self.ghost_user_timer = 0
+        self.ghost_user_beat_duration = 1000  # 1 second per beat (1000ms)
+        self.ghost_user_input_blocked = False  # Block inputs during ghost user sequence
+        self.inputs_disabled = False
+        self.node7_completed = False  # Track if Node 7 was just completed
+        
         # Load video and scanline if available (video mode is default)
         if _cv2_available:
             # Use time-aware video selection (daytime/nighttime based on Tokyo time)
@@ -1549,14 +1558,25 @@ class GLYPHIS_IOBBS:
     def _update_audio_power_state(self) -> None:
         """Maintain the desktop video state based on CRACKER IDE audio playback, OS Mode, and time of day."""
         # Check if CRACKER IDE audio is playing (from Urgent_Ops/Audio folder)
+        # Check even if not in urgent_ops_session state (e.g., during ghost user sequence)
+        # so audio continues playing while NODE7.wav is still active
         cracker_audio_playing = False
-        if self.state == "urgent_ops_session" and self.active_ops_session:
+        if self.active_ops_session:
             audio_checker = getattr(self.active_ops_session, "is_cracker_ide_audio_playing", None)
             if callable(audio_checker):
                 try:
                     cracker_audio_playing = bool(audio_checker())
+                    # Only clear session if we're in ghost_user_sequence state AND audio has finished
+                    # Don't clear it during normal urgent_ops_session - that would break the game!
+                    if not cracker_audio_playing and self.state == "ghost_user_sequence":
+                        # Audio finished during ghost user sequence - clear session to allow video switch
+                        self.active_ops_session = None
                 except Exception:
                     cracker_audio_playing = False
+                    # Only clear session on error if we're in ghost_user_sequence state
+                    # During normal play, errors shouldn't clear the session
+                    if self.state == "ghost_user_sequence":
+                        self.active_ops_session = None
         
         # Determine desired state and base video filename
         # First, detect if current video has a time prefix (night- or day-)
@@ -3183,16 +3203,133 @@ class GLYPHIS_IOBBS:
             return
 
         if _cv2_available:
-            self._play_ops_intro_video(get_data_path("Videos", "IDE-START.mp4"))
+            video_path = get_data_path("Videos", "IDE-START.mp4")
+            print(f"DEBUG: Playing intro video from: {video_path}")
+            self._play_ops_intro_video(video_path)
+        else:
+            print("DEBUG: cv2 not available, skipping intro video")
 
+        # Ensure session is still valid after video playback
+        if not self.active_ops_session:
+            print("ERROR: active_ops_session is None after video playback! Session may have failed to initialize.")
+            self.state = "tasks"
+            return
+
+        print(f"DEBUG: Setting state to urgent_ops_session, active_ops_session={self.active_ops_session}")
         self.state = "urgent_ops_session"
+
+    def _initialize_os_mode_if_needed(self):
+        """Initialize OS mode if it hasn't been initialized yet. Used by ghost user sequence."""
+        if self.os_mode is None:
+            print("DEBUG GHOST USER: OS Mode not initialized, initializing now...")
+            try:
+                # Create callback function to reset BBS and exit OS mode
+                def reset_bbs_and_exit_os():
+                    self._reset_to_beginning()
+                    self.os_mode_active = False
+                    # Immediately update video state when exiting OS Mode
+                    self._update_audio_power_state()
+                
+                # Create token checker callback
+                def has_token(token):
+                    return self.inventory.has_token(token)
+                
+                # Create recording state callbacks
+                def get_recording_state():
+                    user = self.get_active_user()
+                    if user:
+                        return user.get("recording", False), user.get("recording_start_time")
+                    return False, None
+                
+                def set_recording_state(is_recording, start_time=None):
+                    user = self.get_active_user()
+                    if user:
+                        user["recording"] = is_recording
+                        user["recording_start_time"] = start_time
+                        self.save_user_state()
+                
+                # Create notes state callbacks
+                def get_notes():
+                    user = self.get_active_user()
+                    if user:
+                        return user.get("notes", [])
+                    return []
+                
+                def save_notes(notes):
+                    print(f"[DEBUG] save_notes callback called with {len(notes)} notes")
+                    user = self.get_active_user()
+                    if user:
+                        print(f"[DEBUG] User found: {user.get('username', 'unknown')}")
+                        user["notes"] = notes
+                        print(f"[DEBUG] Set user notes, now calling save_user_state")
+                        self.save_user_state()
+                        print(f"[DEBUG] save_user_state completed")
+                    else:
+                        print(f"[DEBUG] No active user found!")
+                
+                def get_user_credentials():
+                    user = self.get_active_user()
+                    if user:
+                        return user.get("username", ""), user.get("pin", "")
+                    return "", ""
+                
+                def get_chess_stats():
+                    user = self.get_active_user()
+                    if user:
+                        return user.get("chess_stats", {})
+                    return {}
+                
+                def save_chess_stats(stats):
+                    user = self.get_active_user()
+                    if user:
+                        user["chess_stats"] = stats
+                        self.save_user_state()
+                
+                self.os_mode = OSMode(self.screen, self.scale, reset_bbs_and_exit_os, 
+                                      self.bbs_x, self.bbs_y, self.bbs_width, has_token,
+                                      get_recording_state, set_recording_state,
+                                      get_notes, save_notes, get_user_credentials,
+                                      get_chess_stats, save_chess_stats)
+                print("DEBUG GHOST USER: OS Mode initialized successfully")
+                return True
+            except Exception as e:
+                print(f"ERROR GHOST USER: Failed to initialize OS Mode: {e}")
+                import traceback
+                traceback.print_exc()
+                return False
+        else:
+            print("DEBUG GHOST USER: OS Mode already initialized")
+            return True
 
     def _end_ops_session(self):
         # Reset achievement unlock flag when session ends
         self._lapc1_achievement_unlocked = False
-        self.active_ops_session = None
-        self.state = "tasks"
-        self.current_task = 0
+        
+        # Check if Node 7 was completed and confirmed (user closed the modal)
+        node7_just_completed = False
+        if self.active_ops_session:
+            node7_just_completed = getattr(self.active_ops_session, 'node7_completed_and_confirmed', False)
+        
+        # If Node 7 was just completed and confirmed, start ghost user sequence after 3 beats
+        # Keep active_ops_session reference during ghost user sequence so we can still check if audio is playing
+        if node7_just_completed:
+            print(f"DEBUG GHOST USER: Node 7 completed and confirmed! Starting ghost user sequence...")
+            print(f"DEBUG GHOST USER: Current state={self.state}, os_mode={self.os_mode}, os_mode_active={self.os_mode_active}")
+            # Initialize OS mode if needed (required for ghost user sequence)
+            self._initialize_os_mode_if_needed()
+            self.state = "ghost_user_sequence"
+            self.ghost_user_input_blocked = False  # Don't block yet - wait 3 beats
+            self.ghost_user_timer = pygame.time.get_ticks()  # Start timer for 3 beats
+            self.ghost_user_step = 0
+            self.ghost_user_active = True
+            # Keep active_ops_session reference so we can still check if NODE7.wav is playing
+            # It will be cleared when ghost user sequence ends
+            print("DEBUG GHOST USER: Ghost user sequence initialized - will block inputs in 3 beats")
+        else:
+            # Only clear active_ops_session if NOT starting ghost user sequence
+            self.active_ops_session = None
+            self.state = "tasks"
+            self.current_task = 0
 
     def _draw_ops_docs_overlay(self):
         overlay = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
@@ -3938,6 +4075,139 @@ class GLYPHIS_IOBBS:
                     # Cycle DJ text
                     self.dj_index = (self.dj_index + 1) % len(self.dj_text)
     
+    def _update_ghost_user_sequence(self):
+        """Update the ghost user automation sequence after Node 7 completion."""
+        current_time = pygame.time.get_ticks()
+        elapsed = current_time - self.ghost_user_timer
+        
+        # Only print debug every 60 frames (once per second at 60fps) to avoid spam
+        if not hasattr(self, '_ghost_user_update_debug_counter'):
+            self._ghost_user_update_debug_counter = 0
+        self._ghost_user_update_debug_counter += 1
+        if self._ghost_user_update_debug_counter % 60 == 0:
+            print(f"DEBUG GHOST USER: Step={self.ghost_user_step}, elapsed={elapsed}ms, state={self.state}, os_mode_active={self.os_mode_active}, ghost_user_input_blocked={self.ghost_user_input_blocked}")
+        
+        # Step 0: Wait 3 beats (3 seconds) before disabling inputs
+        if self.ghost_user_step == 0:
+            print(f"DEBUG GHOST USER STEP 0: Waiting 3 beats ({3 * self.ghost_user_beat_duration}ms), elapsed={elapsed}ms")
+            if elapsed >= 3 * self.ghost_user_beat_duration:
+                self.ghost_user_input_blocked = True
+                self.ghost_user_step = 1
+                self.ghost_user_timer = current_time
+                print("DEBUG GHOST USER: Step 0 complete - Inputs disabled, switching to OS Mode")
+        
+        # Step 1: Switch to OS Mode and open Notes immediately
+        elif self.ghost_user_step == 1:
+            print(f"DEBUG GHOST USER STEP 1: Activating OS Mode, os_mode_active={self.os_mode_active}, os_mode={self.os_mode}")
+            # Ensure OS mode is initialized
+            if self.os_mode is None:
+                print("DEBUG GHOST USER STEP 1: OS Mode not initialized, initializing now...")
+                if not self._initialize_os_mode_if_needed():
+                    print("ERROR GHOST USER STEP 1: Failed to initialize OS Mode! Cannot continue!")
+                    return  # Wait and try again next frame
+            if not self.os_mode_active:
+                self.os_mode_active = True
+                if self.os_mode:
+                    self.os_mode.update_scale(self.scale)
+                    print("DEBUG GHOST USER: OS Mode scale updated")
+                else:
+                    print("ERROR GHOST USER: os_mode is None! Cannot activate OS Mode!")
+                    return  # Wait and try again next frame
+            # Update health monitor immediately
+            if self.os_mode:
+                self.os_mode._set_ghost_user_health_state()
+                print("DEBUG GHOST USER: Health state set")
+            else:
+                print("ERROR GHOST USER: os_mode is None! Cannot set health state!")
+                return  # Wait and try again next frame
+            # Open Notes immediately when OS_Mode opens
+            if self.os_mode:
+                self.os_mode._ghost_open_notes_mission()
+                print("DEBUG GHOST USER: Notes app opened immediately")
+            else:
+                print("ERROR GHOST USER: os_mode is None! Cannot open Notes app!")
+            self.ghost_user_step = 2
+            self.ghost_user_timer = current_time
+            print("DEBUG GHOST USER: Step 1 complete - OS Mode activated, Notes opened")
+        
+        # Step 2: Wait a beat or two, then update network status to DISCONNECTED
+        elif self.ghost_user_step == 2:
+            print(f"DEBUG GHOST USER STEP 2: Waiting 2 beats ({self.ghost_user_beat_duration * 2}ms), elapsed={elapsed}ms")
+            if elapsed >= self.ghost_user_beat_duration * 2:  # Wait 2 beats
+                if self.os_mode:
+                    self.os_mode._set_network_disconnected()
+                    print("DEBUG GHOST USER: Network disconnected")
+                else:
+                    print("ERROR GHOST USER: os_mode is None! Cannot disconnect network!")
+                self.ghost_user_step = 3
+                self.ghost_user_timer = current_time
+                print("DEBUG GHOST USER: Step 2 complete - Network disconnected")
+        
+        # Step 3: Wait 3 seconds, then strike through point 4
+        elif self.ghost_user_step == 3:
+            print(f"DEBUG GHOST USER STEP 3: Waiting 3 seconds (3000ms) before striking through point 4, elapsed={elapsed}ms")
+            if elapsed >= 3000:  # Wait 3 seconds (3000ms)
+                if self.os_mode:
+                    self.os_mode._ghost_strike_through_mission_point(4)
+                    print("DEBUG GHOST USER: Point 4 struck through after 3 seconds")
+                else:
+                    print("ERROR GHOST USER: os_mode is None! Cannot strike through point 4!")
+                self.ghost_user_step = 4
+                self.ghost_user_timer = current_time
+                print("DEBUG GHOST USER: Step 3 complete - Point 4 struck through")
+        
+        # Step 4: Move mouse to Datasette icon and double-click
+        elif self.ghost_user_step == 4:
+            print(f"DEBUG GHOST USER STEP 4: Waiting 1 beat ({self.ghost_user_beat_duration}ms), elapsed={elapsed}ms")
+            if elapsed >= self.ghost_user_beat_duration:
+                if self.os_mode:
+                    self.os_mode._ghost_click_datasette_icon()
+                    print("DEBUG GHOST USER: Datasette icon clicked")
+                else:
+                    print("ERROR GHOST USER: os_mode is None! Cannot click Datasette icon!")
+                self.ghost_user_step = 5
+                self.ghost_user_timer = current_time
+                print("DEBUG GHOST USER: Step 4 complete")
+        
+        # Step 5: Click Record Data button
+        elif self.ghost_user_step == 5:
+            print(f"DEBUG GHOST USER STEP 5: Waiting 1 beat ({self.ghost_user_beat_duration}ms), elapsed={elapsed}ms")
+            if elapsed >= self.ghost_user_beat_duration:
+                if self.os_mode:
+                    self.os_mode._ghost_click_record_data()
+                    print("DEBUG GHOST USER: Record Data clicked")
+                else:
+                    print("ERROR GHOST USER: os_mode is None! Cannot click Record Data!")
+                self.ghost_user_step = 6
+                self.ghost_user_timer = current_time
+                print("DEBUG GHOST USER: Step 5 complete")
+        
+        # Step 6: Wait for video to complete (don't close modal - let video play fully)
+        elif self.ghost_user_step == 6:
+            # Don't close the modal - let the video play fully without interruption
+            # The video will complete naturally and the modal can stay open
+            # Just wait for a reasonable time, then end the sequence
+            print(f"DEBUG GHOST USER STEP 6: Video playing, waiting for completion, elapsed={elapsed}ms")
+            # Wait for video to finish (check if video is completed)
+            if self.os_mode and self.os_mode.tape_modal_video_completed:
+                self.ghost_user_step = 7
+                self.ghost_user_timer = current_time
+                print("DEBUG GHOST USER: Step 6 complete - Video finished playing")
+            # Also allow timeout after 30 seconds to prevent infinite wait
+            elif elapsed >= 30000:  # 30 second timeout
+                self.ghost_user_step = 7
+                self.ghost_user_timer = current_time
+                print("DEBUG GHOST USER: Step 6 complete - Timeout reached, ending sequence")
+        
+        # Step 7: Re-enable inputs and end ghost user sequence
+        elif self.ghost_user_step == 7:
+            if elapsed >= self.ghost_user_beat_duration:
+                self.ghost_user_input_blocked = False
+                self.ghost_user_active = False
+                self.ghost_user_step = 0
+                # Don't clear active_ops_session here - let it clear when audio finishes
+                print("DEBUG GHOST USER: Sequence complete, inputs re-enabled")
+
     def run(self):
         """Main game loop"""
         running = True
@@ -3959,6 +4229,10 @@ class GLYPHIS_IOBBS:
                         self.fps_actual = sum(self.fps_frame_times) / len(self.fps_frame_times)
                     self.fps_last_update_time = current_time
 
+            # Update ghost user sequence if active
+            if self.ghost_user_active:
+                self._update_ghost_user_sequence()
+            
             # Ensure ambient track keeps playing and update fade-in
             if self.ambient_sound:
                 # Check if channel stopped playing (shouldn't happen with loops=-1, but just in case)
@@ -3993,6 +4267,13 @@ class GLYPHIS_IOBBS:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
+                
+                # Block all inputs during ghost user sequence (except QUIT)
+                if self.ghost_user_input_blocked:
+                    print(f"DEBUG GHOST USER: Input blocked - event type={event.type}")
+                    if event.type == pygame.QUIT:
+                        running = False
+                    continue
                 
                 # Check for hotspot clicks
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -4286,7 +4567,31 @@ class GLYPHIS_IOBBS:
                 if self.active_ops_session:
                     self.active_ops_session.draw()
                 else:
+                    # Session was cleared - this shouldn't happen, but log it for debugging
+                    print(f"WARNING: urgent_ops_session state but active_ops_session is None! Resetting to tasks.")
+                    log_event("urgent_ops_session state but active_ops_session is None - resetting to tasks")
                     self.state = "tasks"
+            elif self.state == "ghost_user_sequence":
+                # Draw BBS main menu during ghost user sequence (before OS mode activates)
+                # Once OS mode is active, it will be drawn automatically
+                if not self.os_mode_active:
+                    self.draw_main_menu()
+                elif self.os_mode_active and self.os_mode:
+                    # OS mode is active, draw it
+                    self.os_mode.draw()
+                    # Only print debug every 60 frames (once per second at 60fps) to avoid spam
+                    if hasattr(self, '_ghost_user_draw_debug_counter'):
+                        self._ghost_user_draw_debug_counter += 1
+                    else:
+                        self._ghost_user_draw_debug_counter = 0
+                    if self._ghost_user_draw_debug_counter % 60 == 0:
+                        print(f"DEBUG GHOST USER DRAW: Drawing OS Mode, step={self.ghost_user_step}, os_mode_active={self.os_mode_active}")
+                else:
+                    # Fallback: draw main menu if OS mode isn't ready
+                    if not hasattr(self, '_ghost_user_draw_warned'):
+                        print(f"DEBUG GHOST USER DRAW: OS mode not ready, drawing main menu (os_mode_active={self.os_mode_active}, os_mode={self.os_mode})")
+                        self._ghost_user_draw_warned = True
+                    self.draw_main_menu()
             elif self.state == "login_username":
                 self.draw_login_username_screen()
             elif self.state == "login_pin_create":
@@ -4842,7 +5147,7 @@ class GLYPHIS_IOBBS:
             "notes": [
                 {
                     "title": "Mission Objectives",
-                    "content": "1. Receive Invite from Glyphis\n2. Get onto the BBS (0345728891)\n3. Complete a technical challenge to prove yourself\n4. Get invited to crack some games\n5. Obtain access to the Pirate Radio Stream",
+                    "content": "[s]1. Receive Invite from Glyphis[/s]\n[s]2. Get onto the BBS (0345728891)[/s]\n[s]3. Complete a technical challenge to prove yourself[/s]\n4. Get the audio tech's help to get the computer's sound card streaming from the BBS, and record the first audio stream from Glyphisis_IO using the Datasette!\n5. Get invited to crack some games\n6. Obtain access to the Pirate Radio Stream",
                     "is_locked": True  # First note is non-deletable
                 }
             ]
@@ -4875,7 +5180,7 @@ class GLYPHIS_IOBBS:
                                     cleaned["notes"] = [
                                         {
                                             "title": "Mission Objectives",
-                                            "content": "1. Receive Invite from Glyphis\n2. Get onto the BBS (0345728891)\n3. Complete a technical challenge to prove yourself\n4. Get invited to crack some games\n5. Obtain access to the Pirate Radio Stream",
+                                            "content": "[s]1. Receive Invite from Glyphis[/s]\n[s]2. Get onto the BBS (0345728891)[/s]\n[s]3. Complete a technical challenge to prove yourself[/s]\n4. Get the audio tech's help to get the computer's sound card streaming from the BBS, and record the first audio stream from Glyphisis_IO using the Datasette!\n5. Get invited to crack some games\n6. Obtain access to the Pirate Radio Stream",
                                             "is_locked": True
                                         }
                                     ] + cleaned["notes"][1:] if cleaned["notes"] else cleaned["notes"]
@@ -4920,7 +5225,7 @@ class GLYPHIS_IOBBS:
                                 migrated_user["notes"] = [
                                     {
                                         "title": "Mission Objectives",
-                                        "content": "1. Receive Invite from Glyphis\n2. Get onto the BBS\n3. Complete a technical challenge to prove yourself\n4. Get invited to crack some games\n5. Obtain access to the Pirate Radio Stream",
+                                        "content": "[s]1. Receive Invite from Glyphis[/s]\n[s]2. Get onto the BBS (0345728891)[/s]\n[s]3. Complete a technical challenge to prove yourself[/s]\n4. Get the audio tech's help to get the computer's sound card streaming from the BBS, and record the first audio stream from Glyphisis_IO using the Datasette!\n5. Get invited to crack some games\n6. Obtain access to the Pirate Radio Stream",
                                         "is_locked": True
                                     }
                                 ] + migrated_user["notes"][1:] if migrated_user["notes"] else migrated_user["notes"]
@@ -5029,7 +5334,7 @@ class GLYPHIS_IOBBS:
             user["notes"] = [
                 {
                     "title": "Mission Objectives",
-                    "content": "1. Receive Invite from Glyphis\n2. Get onto the BBS (0345728891)\n3. Complete a technical challenge to prove yourself\n4. Get invited to crack some games\n5. Obtain access to the Pirate Radio Stream",
+                    "content": "[s]1. Receive Invite from Glyphis[/s]\n[s]2. Get onto the BBS (0345728891)[/s]\n[s]3. Complete a technical challenge to prove yourself[/s]\n4. Get the audio tech's help to get the computer's sound card streaming from the BBS, and record the first audio stream from Glyphisis_IO using the Datasette!\n5. Get invited to crack some games\n6. Obtain access to the Pirate Radio Stream",
                     "is_locked": True
                 }
             ]

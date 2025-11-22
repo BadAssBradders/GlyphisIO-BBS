@@ -4,6 +4,7 @@ import time
 import os
 import sys
 import random
+import math
 from typing import List, Dict, Any, Tuple, Optional
 
 # Data path helper - works for both development and built executable
@@ -249,6 +250,13 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         self.success_modal_data: List[Dict[str, Any]] = []
         self.success_modal_step = 0
         self.pending_node_switch: Optional[int] = None  # Node to switch to after success modal
+        self.node7_completion_modal = False  # Special flag for Node 7 completion
+        self.node7_waiting_for_chat = False  # Flag to wait for chat messages before showing modal
+        self.node7_chat_messages_queued = False  # Track if we've queued the messages
+        self.node7_completed_and_confirmed = False  # Flag for ghost user sequence
+        self.node7_modal_countdown_start = None  # Timer for 40 second countdown
+        self.node7_modal_countdown_duration = 40000  # 40 seconds in milliseconds
+        self.fireworks: List[Dict[str, Any]] = []  # Firework particles for Node 7 celebration
 
         header_base = self.padding * 2 + self.font_small.get_linesize() * 2
         self.parrot_display_size = int(self.base_parrot_size * self.scale)
@@ -961,21 +969,27 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             7: {
                 "title": "NODE 07 COMPLETE // OUTPUT STREAM ACTIVE",
                 "lines": [
+                    "Congratulations! You've successfully completed the LAPC-1 driver challenge.",
                     "Sample transfer routine is complete. The loop is reading from $C800 and driving both channels.",
                     "Audio packets are flowing through the system in real-time.",
                     "",
                     "The continuous streaming loop is fully operational.",
+                    "You've proven yourself. The audio stream is now active.",
                 ],
             },
         }
         
         entry = success_messages.get(completed_node)
+        print(f"DEBUG _prepare_success_modal: entry found={entry is not None}")
         if entry:
             self.success_modal_data = [entry]
+            print(f"DEBUG _prepare_success_modal: success_modal_data set, length={len(self.success_modal_data)}")
         else:
             self.success_modal_data = []
+            print(f"DEBUG _prepare_success_modal: WARNING - no entry found for node {completed_node}")
         self.success_modal_step = 0
         self.success_modal_active = True
+        print(f"DEBUG _prepare_success_modal: success_modal_active set to True, step={self.success_modal_step}")
 
     def _init_audio_assets(self):
         # Load Node 1 power-on sound
@@ -1438,6 +1452,107 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 else:
                     self.set_error(f"Unresolved label: {target}", instr["node_idx"], instr["line_idx"])
                     return
+        
+        # Node 7 static check: If we're on Node 7, check if all required instructions are present
+        # No execution needed - just verify the code structure
+        if self.page_index == 6:  # Node 7 (index 6)
+            self._check_node7_completion_static()
+    
+    def _check_node7_completion_static(self):
+        """Check if Node 7 code contains all required instructions (LDA $C800, STA $C401, STA $C402).
+        If found, immediately trigger completion without execution."""
+        # Get all instructions from Node 7 (node_idx == 6)
+        node7_instructions = [instr for instr in self.code_lines_flat if instr["node_idx"] == 6]
+        
+        # Check for required instructions
+        has_lda_c800 = False
+        has_sta_c401 = False
+        has_sta_c402 = False
+        
+        for instr in node7_instructions:
+            opcode = instr.get("opcode", "")
+            operand = instr.get("operand_str", "")
+            
+            if opcode == "LDA" and operand and operand.upper().replace("$", "").replace("0X", "").replace("0x", "") == "C800":
+                has_lda_c800 = True
+            elif opcode == "STA":
+                operand_clean = operand.upper().replace("$", "").replace("0X", "").replace("0x", "") if operand else ""
+                if operand_clean == "C401":
+                    has_sta_c401 = True
+                elif operand_clean == "C402":
+                    has_sta_c402 = True
+        
+        print(f"DEBUG NODE7 STATIC CHECK: LDA $C800={has_lda_c800}, STA $C401={has_sta_c401}, STA $C402={has_sta_c402}")
+        
+        # If all three are present, trigger completion immediately
+        if has_lda_c800 and has_sta_c401 and has_sta_c402:
+            print(f"DEBUG NODE7: All required instructions found! Triggering completion immediately.")
+            
+            # Grant LAPC1_NODE7 token if not already granted
+            has_token = self.token_checker("LAPC1_NODE7") if self.token_checker else False
+            in_pending = "LAPC1_NODE7" in self.pending_token_grants
+            if not has_token and not in_pending:
+                self.pending_token_grants.append("LAPC1_NODE7")
+                print(f"DEBUG NODE7: LAPC1_NODE7 token granted")
+            
+            # Check if all 7 nodes are complete
+            if self.token_checker:
+                node_tokens = ["LAPC1_NODE1", "LAPC1_NODE2", "LAPC1_NODE3", "LAPC1_NODE4", 
+                              "LAPC1_NODE5", "LAPC1_NODE6", "LAPC1_NODE7"]
+                all_nodes_complete = all(
+                    self.token_checker(token) or token in self.pending_token_grants 
+                    for token in node_tokens
+                )
+                
+                if all_nodes_complete and not self.token_checker("AUDIO_ON") and "AUDIO_ON" not in self.pending_token_grants:
+                    print(f"DEBUG NODE7: All 7 nodes complete! Granting AUDIO_ON and triggering completion sequence")
+                    # Grant AUDIO_ON token
+                    if "AUDIO_ON" not in self.pending_token_grants:
+                        self.pending_token_grants.append("AUDIO_ON")
+                    
+                    # Mark Node 7 as completed
+                    self._node_7_completed = True
+                    self.module_animation_timer = 0.0  # Stop parrot animation
+                    
+                    # Queue chat messages first - wait for them to display before showing modal
+                    if not self.node7_chat_messages_queued:
+                        # Queue first message and start it displaying immediately
+                        self._queue_chat_message("LAPC-1 DRIVER ONLINE. I'M GETTING AUDIO FROM YOUR END, FULL STEREO! AMAZING.", "UNCLE-AM")
+                        self.chat_next_queue_time = pygame.time.get_ticks() + 100
+                        self._begin_next_queued_message()  # Start displaying the first message
+                        
+                        # Play Node 7 completion sound (banned song) immediately after first message starts displaying
+                        if self.node7_sound:
+                            try:
+                                if not pygame.mixer.get_init():
+                                    pygame.mixer.init()
+                                channel = self.node7_sound.play()
+                                if channel:
+                                    self.active_audio_channels.append(channel)
+                                print(f"DEBUG NODE7: NODE7.wav started playing immediately after first Uncle-Am message started displaying")
+                            except Exception as play_error:
+                                print(f"Warning: Unable to play NODE7.wav: {play_error}")
+                        
+                        # Queue remaining messages
+                        self._queue_chat_message("Well done. With the audio sub-system online, we can finally get the BBS Radio feed going. Stand by for the next operational brief, hacker. That was seriously impressive work.", "UNCLE-AM")
+                        self._queue_chat_message("This is a banned song by the way, repeat this is a BANNED SONG(!) so be careful not to play it too loud. Absolute melody though, isn't it!?", "UNCLE-AM")
+                        self._queue_chat_message("See you on the other side!", "UNCLE-AM")
+                        
+                        self.node7_chat_messages_queued = True
+                        self.node7_waiting_for_chat = True
+                        print(f"DEBUG NODE7: Chat messages queued, waiting for them to display...")
+                    
+                    # Don't show modal yet - wait for chat messages to finish
+                    self.pending_node_switch = None
+                    self.cpu_state["isRunning"] = False  # Don't run execution
+                    self.game_state = "PAUSED"  # Stay paused
+                    print(f"DEBUG NODE7: Node 7 completion sequence started - waiting for chat messages...")
+                elif not all_nodes_complete:
+                    print(f"DEBUG NODE7: Node 7 code is correct, but other nodes not complete yet.")
+            return True  # Code is valid, completion triggered
+        else:
+            print(f"DEBUG NODE7: Missing required instructions. LDA $C800={has_lda_c800}, STA $C401={has_sta_c401}, STA $C402={has_sta_c402}")
+            return False  # Code incomplete
 
     def tick_data_stream(self):
         """Simulates incoming data packets."""
@@ -1516,8 +1631,17 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                         raise ValueError("Power rail requires byte literal: use '#$01' for ON.")
                     self.cpu_state["Memory"][addr] = self.cpu_state["A"]
                     
+                    # Debug: Log STA operations with full context
+                    print(f"DEBUG STA: addr={hex(addr)}, value={self.cpu_state['A']}, current_node={instr['node_idx']}, instruction_idx={idx}, opcode={instr.get('opcode')}, operand={instr.get('operand_str')}, game_state={self.game_state}, success_modal_active={self.success_modal_active}")
+                    if addr == REG_RIGHT_CHANNEL:
+                        print(f"DEBUG STA C402: This is STA $C402! current_node={instr['node_idx']}, checking if == 6...")
+                    
+                    # Initialize completed_node for this instruction execution
+                    completed_node_from_sta = None
+                    
                     # Check for node completion after STA operations
                     if self.game_state not in ("SUCCESS", "ERROR") and not self.success_modal_active:
+                        print(f"DEBUG: Checking node completion - game_state OK, success_modal_active OK")
                         # Node 2 completion: Left channel written (C401) while executing Node 2's code (index 1)
                         if addr == REG_LEFT_CHANNEL and current_node == 1 and not hasattr(self, '_node_2_completed'):
                             self._node_2_completed = True
@@ -1610,6 +1734,72 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                             self._prepare_success_modal_for_node(4)
                             self.pending_node_switch = 5 - 1  # Switch to node 5 (0-based index 4) after completing node 4
                             # No parrot animation for individual node completion
+                        
+                        # Node 7 completion: Right channel written (C402) while executing Node 7's code (index 6)
+                        # This means we've written the sample to both channels (left then right)
+                        elif addr == REG_RIGHT_CHANNEL and current_node == 6:
+                            print(f"DEBUG NODE7: *** NODE 7 COMPLETION DETECTED! (STA $C402 on Node 7, current_node={current_node}) ***")
+                            self._node_7_completed = True
+                            
+                            # Grant LAPC1_NODE7 token if not already granted or pending
+                            has_token = self.token_checker("LAPC1_NODE7") if self.token_checker else False
+                            in_pending = "LAPC1_NODE7" in self.pending_token_grants
+                            if not has_token and not in_pending:
+                                self.pending_token_grants.append("LAPC1_NODE7")
+                                print(f"DEBUG NODE7: LAPC1_NODE7 token granted")
+                            
+                            # Check if all 7 nodes are complete - if so, trigger completion sequence immediately
+                            if self.token_checker:
+                                node_tokens = ["LAPC1_NODE1", "LAPC1_NODE2", "LAPC1_NODE3", "LAPC1_NODE4", 
+                                              "LAPC1_NODE5", "LAPC1_NODE6", "LAPC1_NODE7"]
+                                all_nodes_complete = all(
+                                    self.token_checker(token) or token in self.pending_token_grants 
+                                    for token in node_tokens
+                                )
+                                
+                                if all_nodes_complete and not self.token_checker("AUDIO_ON") and "AUDIO_ON" not in self.pending_token_grants:
+                                    print(f"DEBUG NODE7: All 7 nodes complete! Granting AUDIO_ON and triggering completion sequence")
+                                    # Grant AUDIO_ON token
+                                    if "AUDIO_ON" not in self.pending_token_grants:
+                                        self.pending_token_grants.append("AUDIO_ON")
+                                    
+                                    # Only trigger completion sequence if not already triggered (prevent duplicate messages)
+                                    if not self.node7_chat_messages_queued:
+                                        # Trigger Node 7 completion sequence
+                                        self.node7_completion_modal = True
+                                        self.module_animation_timer = 0.0  # Stop parrot animation
+                                        self._init_fireworks()
+                                        
+                                        # Queue chat message
+                                        self._queue_chat_message("Well done. With the audio sub-system online, we can finally get the BBS Radio feed going. Stand by for the next operational brief, hacker. That was seriously impressive work.", "UNCLE-AM")
+                                        self._queue_chat_message("This is a banned song by the way, repeat this is a BANNED SONG(!) so be careful not to play it too loud. Absolute melody though, isn't it!?", "UNCLE-AM")
+                                        self._queue_chat_message("See you on the other side!", "UNCLE-AM")
+                                        self.chat_next_queue_time = pygame.time.get_ticks() + 100
+                                        self._begin_next_queued_message()
+                                        
+                                        # Play Node 7 completion sound
+                                        if self.node7_sound:
+                                            try:
+                                                if not pygame.mixer.get_init():
+                                                    pygame.mixer.init()
+                                                channel = self.node7_sound.play()
+                                                if channel:
+                                                    self.active_audio_channels.append(channel)
+                                            except Exception as play_error:
+                                                print(f"Warning: Unable to play NODE7.wav: {play_error}")
+                                        
+                                        # Prepare and show success modal
+                                        self._prepare_success_modal_for_node(7)
+                                        self.node7_chat_messages_queued = True
+                                        self.node7_waiting_for_chat = True
+                                        print(f"DEBUG NODE7: Node 7 completion sequence triggered! Execution stopped.")
+                                    else:
+                                        print(f"DEBUG NODE7: Completion sequence already triggered, skipping duplicate message queue.")
+                                    
+                                    self.pending_node_switch = None
+                                    self.cpu_state["isRunning"] = False  # Stop execution
+                                    self.game_state = "PAUSED"
+                            # No parrot animation for individual node completion
                 else:
                     raise ValueError(f"Invalid Address: {operand_str}")
 
@@ -1677,8 +1867,10 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 # Grant token for Node 7 LED
                 if "LAPC1_NODE7" not in self.pending_token_grants:
                     self.pending_token_grants.append("LAPC1_NODE7")
-                # Warning about banned content before audio starts
-                self._queue_chat_message("FINAL WARNING: The stream is about to go live. Banned content incoming. Keep it quiet and make sure you're alone.", "UNCLE-AM")
+                # Queue messages before audio starts
+                self._queue_chat_message("Well done. With the audio sub-system online, we can finally get the BBS Radio feed going. Stand by for the next operational brief, hacker. That was seriously impressive work.", "UNCLE-AM")
+                self._queue_chat_message("This is a banned song by the way, repeat this is a BANNED SONG(!) so be careful not to play it too loud. Absolute melody though, isn't it!?", "UNCLE-AM")
+                self._queue_chat_message("See you on the other side!", "UNCLE-AM")
                 self.chat_next_queue_time = pygame.time.get_ticks() + 100
                 self._begin_next_queued_message()
                 # Play Node 7 completion sound (banned song)
@@ -1701,20 +1893,45 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                         traceback.print_exc()
                 else:
                     print("DEBUG: node7_sound is None, skipping playback")
+                # Set Node 7 completion modal flag
+                self.node7_completion_modal = True
+                # Initialize fireworks
+                self._init_fireworks()
+                # Grant AUDIO_ON token so health monitor shows LAPC-1 Soundcard as ACTIVE
+                if "AUDIO_ON" not in self.pending_token_grants:
+                    self.pending_token_grants.append("AUDIO_ON")
             
             # Trigger success modal for completed node
             if completed_node:
                 self._prepare_success_modal_for_node(completed_node)
-                self.pending_node_switch = completed_node  # Move to next node (0-based index)
+                if completed_node == 7:
+                    # Don't switch nodes for Node 7 - wait for CONFIRM
+                    self.pending_node_switch = None
+                else:
+                    self.pending_node_switch = completed_node  # Move to next node (0-based index)
                 # No parrot animation for individual node completion
         
         # Check for SUCCESS (Full Challenge Completion)
+        # BUT: Skip if Node 7 completion sequence is active or if we're waiting for Node 7
         if next_idx == self.labels.get("DATA_CHECK", -1) and self.cpu_state["cycles"] > 10:
+            # Skip full challenge completion if Node 7 completion sequence is active
+            if hasattr(self, 'node7_completion_modal') and self.node7_completion_modal:
+                return
+            
+            # Skip if Node 7 token doesn't exist yet (we're still waiting for it)
+            if self.token_checker:
+                has_node7_token = self.token_checker("LAPC1_NODE7")
+                node7_in_pending = "LAPC1_NODE7" in self.pending_token_grants
+                if not has_node7_token and not node7_in_pending:
+                    # We're on Node 7 but haven't detected the STA yet - wait for it
+                    return
+            
             if self.cpu_state["Memory"][REG_MASTER_POWER] == ACTIVATION_BYTE and \
                self.cpu_state["Memory"][REG_LEFT_CHANNEL] == DEFAULT_VOLUME and \
                self.cpu_state["Memory"][REG_RIGHT_CHANNEL] == DEFAULT_VOLUME and \
                self.game_state != "SUCCESS":
-
+                
+                print(f"DEBUG FULL_CHALLENGE: *** FULL CHALLENGE COMPLETION TRIGGERED ***")
                 self.game_state = "SUCCESS"
                 self.cpu_state["isRunning"] = False
 
@@ -1725,8 +1942,9 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                     self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
                 self._queue_chat_message("LAPC-1 DRIVER ONLINE. I'M GETTING AUDIO FROM YOUR END, FULL STEREO! AMAZING.", "UNCLE-AM")
-                self._queue_chat_message("That's the entire driver, from power-on to a continuous, real-time sample loop. Flawless I/O timing.", "UNCLE-AM")
-                self._queue_chat_message("With the audio sub-system online, we can finally get the BBS Radio feed going. Stand by for the next operational brief, hacker. That was seriously impressive work.", "UNCLE-AM")
+                self._queue_chat_message("Well done. With the audio sub-system online, we can finally get the BBS Radio feed going. Stand by for the next operational brief, hacker. That was seriously impressive work.", "UNCLE-AM")
+                self._queue_chat_message("This is a banned song by the way, repeat this is a BANNED SONG(!) so be careful not to play it too loud. Absolute melody though, isn't it!?", "UNCLE-AM")
+                self._queue_chat_message("See you on the other side!", "UNCLE-AM")
                 self.chat_next_queue_time = pygame.time.get_ticks() + 100
                 self._begin_next_queued_message()
 
@@ -1741,47 +1959,76 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
 
     def handle_event(self, event):
         """Handles Pygame events for the game."""
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE:
-                if self.success_modal_active or self.modal_active:
-                    self.exit_requested = True
-                    return "EXIT" # Exit from modal
-                
+        # Handle mouse events first (no CONFIRM button for Node 7 - spacebar closes)
+        if event.type == pygame.MOUSEMOTION:
+            return
+        
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            return
+        
+        # Only process keyboard events from here on
+        if event.type != pygame.KEYDOWN:
+            return
+        
+        # Keyboard event handling
+        if event.key == pygame.K_ESCAPE:
+            if self.success_modal_active or self.modal_active:
                 self.exit_requested = True
-                return "EXIT"
+                return "EXIT" # Exit from modal
             
-            # Success Modal Handling (takes priority)
-            if self.success_modal_active:
+            self.exit_requested = True
+            return "EXIT"
+        
+        # Success Modal Handling (takes priority)
+        if self.success_modal_active:
+            # For Node 7, spacebar/enter/tab closes the modal
+            if self.node7_completion_modal:
                 if event.key in (pygame.K_TAB, pygame.K_RETURN, pygame.K_SPACE):
                     if self.success_modal_step < len(self.success_modal_data) - 1:
                         self.success_modal_step += 1
-                        self.modal_scroll_offset = 0  # Reset scroll when moving to next modal step
+                        self.modal_scroll_offset = 0
                     else:
+                        # Close modal and exit CRACKER IDE
                         self.success_modal_active = False
                         self.success_modal_step = 0
-                        self.modal_scroll_offset = 0  # Reset scroll when modal closes
-                        # Switch to pending node and show its modal
-                        if self.pending_node_switch is not None:
-                            self._switch_to_page(self.pending_node_switch)
-                            self.pending_node_switch = None
+                        self.modal_scroll_offset = 0
+                        self.node7_completion_modal = False
+                        # Set flag for ghost user sequence
+                        self.node7_completed_and_confirmed = True
+                        self.exit_requested = True
+                        return "EXIT"
                 return
-            
-            # Regular Modal Handling
-            if self.modal_active:
-                if event.key in (pygame.K_TAB, pygame.K_RETURN, pygame.K_SPACE):
-                    if self.modal_step < len(self.modal_data) - 1:
-                        self.modal_step += 1
-                        self.modal_scroll_offset = 0  # Reset scroll when moving to next modal step
-                    else:
-                        self.modal_active = False
-                        self.modal_step = 0
-                        self.modal_scroll_offset = 0  # Reset scroll when modal closes
-                        # Only start intro sequence if at Node 1 and not already started
-                        # For later nodes, briefing was already shown during initialization
-                        if self.page_index == 0 and not self.intro_sequence_started:
-                            self._start_intro_sequence()
-                return
-            
+            if event.key in (pygame.K_TAB, pygame.K_RETURN, pygame.K_SPACE):
+                if self.success_modal_step < len(self.success_modal_data) - 1:
+                    self.success_modal_step += 1
+                    self.modal_scroll_offset = 0  # Reset scroll when moving to next modal step
+                else:
+                    self.success_modal_active = False
+                    self.success_modal_step = 0
+                    self.modal_scroll_offset = 0  # Reset scroll when modal closes
+                    # Switch to pending node and show its modal
+                    if self.pending_node_switch is not None:
+                        self._switch_to_page(self.pending_node_switch)
+                        self.pending_node_switch = None
+            return
+        
+        # Regular Modal Handling (keyboard only)
+        if self.modal_active:
+            if event.key in (pygame.K_TAB, pygame.K_RETURN, pygame.K_SPACE):
+                if self.modal_step < len(self.modal_data) - 1:
+                    self.modal_step += 1
+                    self.modal_scroll_offset = 0  # Reset scroll when moving to next modal step
+                else:
+                    self.modal_active = False
+                    self.modal_step = 0
+                    self.modal_scroll_offset = 0  # Reset scroll when modal closes
+                    # Only start intro sequence if at Node 1 and not already started
+                    # For later nodes, briefing was already shown during initialization
+                    if self.page_index == 0 and not self.intro_sequence_started:
+                        self._start_intro_sequence()
+            return
+        
+        if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_TAB:
                 shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
                 self._advance_focus_cycle(backwards=shift)
@@ -1847,8 +2094,10 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 elif self.game_state in ("EDITING", "PAUSED", "ERROR"):
                     self.parse_code()
                     if self.game_state != "ERROR":
-                        self.cpu_state["isRunning"] = True
-                        self.game_state = "RUNNING"
+                        # If Node 7 completion was triggered statically, don't start execution
+                        if not (hasattr(self, 'node7_completion_modal') and self.node7_completion_modal):
+                            self.cpu_state["isRunning"] = True
+                            self.game_state = "RUNNING"
             
             
             # F7: Reset (full reset including token removal)
@@ -2139,8 +2388,10 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             else:
                 self.parse_code()
                 if self.game_state != "ERROR":
-                    self.cpu_state["isRunning"] = True
-                    self.game_state = "RUNNING"
+                    # If Node 7 completion was triggered statically, don't start execution
+                    if not (hasattr(self, 'node7_completion_modal') and self.node7_completion_modal):
+                        self.cpu_state["isRunning"] = True
+                        self.game_state = "RUNNING"
         else:
             return
 
@@ -2200,6 +2451,9 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             self.module_animation_timer -= dt
             if self.module_animation_timer < 0:
                 self.module_animation_timer = 0.0
+        
+        # Note: Node 7 completion is now handled directly in the STA handler when STA $C402 is detected
+        # This update() check is no longer needed - removed to simplify logic
 
         if self.game_state == "RUNNING":
             if pygame.time.get_ticks() - self.last_tick_time > self.sim_speed:
@@ -2270,6 +2524,38 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                     self.chat_next_queue_time = now + 900
         elif self.chat_message_queue and now >= self.chat_next_queue_time:
             self._begin_next_queued_message()
+        
+        # Check if Node 7 chat messages are done - if so, show modal
+        if self.node7_waiting_for_chat:
+            # Check if chat queue is empty and no message is currently typing
+            if not self.chat_message_queue and not self.chat_typing_state:
+                print(f"DEBUG NODE7: Chat messages finished! Now showing modal...")
+                self.node7_waiting_for_chat = False
+                self.node7_completion_modal = True
+                self._init_fireworks()
+                
+                # Note: NODE7.wav is already playing (started when first message was queued)
+                
+                # Prepare and show success modal
+                self._prepare_success_modal_for_node(7)
+                # Start 40 second countdown
+                self.node7_modal_countdown_start = pygame.time.get_ticks()
+                print(f"DEBUG NODE7: Modal shown after chat messages! 40 second countdown started.")
+        
+        # Check 40 second countdown - if expired, auto-close modal and trigger ghost user
+        if self.node7_completion_modal and self.node7_modal_countdown_start:
+            elapsed = pygame.time.get_ticks() - self.node7_modal_countdown_start
+            remaining = max(0, self.node7_modal_countdown_duration - elapsed)
+            if remaining == 0:
+                print(f"DEBUG NODE7: 40 second countdown expired! Auto-closing modal and triggering ghost user.")
+                self.success_modal_active = False
+                self.success_modal_step = 0
+                self.modal_scroll_offset = 0
+                self.node7_completion_modal = False
+                self.node7_modal_countdown_start = None
+                # Set flag for ghost user sequence
+                self.node7_completed_and_confirmed = True
+                self.exit_requested = True
     
     def should_exit(self):
         if self.exit_requested:
@@ -2296,6 +2582,7 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         self._draw_footer_instructions()
 
         if self.success_modal_active:
+            print(f"DEBUG DRAW: Drawing success modal, step={self.success_modal_step}, data_len={len(self.success_modal_data) if self.success_modal_data else 0}, node7_modal={self.node7_completion_modal}")
             self._draw_success_modal()
         elif self.modal_active:
             self._draw_initial_modal()
@@ -2704,6 +2991,7 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
 
     def _draw_success_modal(self):
         """Draws the success modal when a node completes."""
+        print(f"DEBUG _draw_success_modal: Called, step={self.success_modal_step}, data={self.success_modal_data}, node7_modal={self.node7_completion_modal}")
         
         # Black transparent overlay
         overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
@@ -2734,6 +3022,110 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             self.surface.blit(prompt_surface, (modal_rect.centerx - prompt_surface.get_width() // 2, prompt_y))
         else:
             self._draw_text("Press [SPACE], [ENTER], or [TAB] to continue.", (text_x, text_y), "medium", self.GREEN)
+        
+        # For Node 7: Draw fireworks and countdown (spacebar closes - no CONFIRM button)
+        if self.node7_completion_modal:
+            self._update_fireworks()
+            self._draw_fireworks()
+            
+            # Draw 40 second countdown
+            if self.node7_modal_countdown_start:
+                elapsed = pygame.time.get_ticks() - self.node7_modal_countdown_start
+                remaining = max(0, self.node7_modal_countdown_duration - elapsed)
+                remaining_seconds = int(remaining / 1000)
+                
+                # Draw countdown text at bottom of modal
+                countdown_text = f"AUTO-CONTINUE IN {remaining_seconds}s"
+                countdown_surface = self.font_tiny.render(countdown_text, True, self.YELLOW)
+                countdown_x = modal_rect.centerx - countdown_surface.get_width() // 2
+                countdown_y = modal_rect.bottom - int(40 * self.scale)
+                self.surface.blit(countdown_surface, (countdown_x, countdown_y))
+
+    def _init_fireworks(self):
+        """Initialize firework particles for Node 7 celebration."""
+        self.fireworks = []
+        import random
+        # Create multiple firework bursts
+        for _ in range(8):
+            x = random.randint(int(self.width * 0.2), int(self.width * 0.8))
+            y = random.randint(int(self.height * 0.2), int(self.height * 0.6))
+            # Create burst of particles
+            colors = [
+                (0, 255, 255),  # Cyan
+                (255, 255, 255),  # White
+                (100, 150, 255),  # Light blue
+                (200, 200, 220),  # Light grey
+            ]
+            for _ in range(20):
+                color = random.choice(colors)
+                angle = random.uniform(0, 2 * math.pi)
+                speed = random.uniform(2, 6)
+                self.fireworks.append({
+                    "x": x,
+                    "y": y,
+                    "vx": speed * math.cos(angle),
+                    "vy": speed * math.sin(angle),
+                    "color": color,
+                    "life": 1.0,
+                    "decay": random.uniform(0.01, 0.03),
+                    "size": random.randint(2, 4),
+                })
+
+    def _update_fireworks(self):
+        """Update firework particle positions and lifetimes."""
+        import math
+        for fw in self.fireworks[:]:
+            fw["x"] += fw["vx"]
+            fw["y"] += fw["vy"]
+            fw["vy"] += 0.2  # Gravity
+            fw["life"] -= fw["decay"]
+            if fw["life"] <= 0:
+                self.fireworks.remove(fw)
+        
+        # Occasionally add new bursts
+        import random
+        if len(self.fireworks) < 50 and random.random() < 0.1:
+            x = random.randint(int(self.width * 0.2), int(self.width * 0.8))
+            y = random.randint(int(self.height * 0.2), int(self.height * 0.6))
+            colors = [
+                (0, 255, 255),  # Cyan
+                (255, 255, 255),  # White
+                (100, 150, 255),  # Light blue
+                (200, 200, 220),  # Light grey
+            ]
+            for _ in range(15):
+                color = random.choice(colors)
+                angle = random.uniform(0, 2 * math.pi)
+                speed = random.uniform(2, 6)
+                self.fireworks.append({
+                    "x": x,
+                    "y": y,
+                    "vx": speed * math.cos(angle),
+                    "vy": speed * math.sin(angle),
+                    "color": color,
+                    "life": 1.0,
+                    "decay": random.uniform(0.01, 0.03),
+                    "size": random.randint(2, 4),
+                })
+
+    def _draw_fireworks(self):
+        """Draw firework particles with alpha blending."""
+        for fw in self.fireworks:
+            alpha = int(255 * fw["life"])
+            if alpha > 0:
+                size = int(fw["size"] * fw["life"])
+                if size > 0:
+                    # Create surface with alpha for each particle
+                    particle_surface = pygame.Surface((size * 2 + 2, size * 2 + 2), pygame.SRCALPHA)
+                    color_with_alpha = (*fw["color"][:3], alpha)
+                    pygame.draw.circle(
+                        particle_surface,
+                        color_with_alpha,
+                        (size + 1, size + 1),
+                        size
+                    )
+                    self.surface.blit(particle_surface, (int(fw["x"]) - size - 1, int(fw["y"]) - size - 1))
+
 
     def get_screen_overlays(self):
         """Return list of (surface, offset) tuples for screen-level overlays."""
@@ -2904,6 +3296,8 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 is_active = value == ACTIVATION_BYTE
             elif addr == REG_DATA_READY:
                 is_active = value == READY_STATE
+            elif addr == REG_PACKET_BUFFER:
+                is_active = value > 0 and self.cpu_state["Memory"][REG_MASTER_POWER] == ACTIVATION_BYTE
             elif addr in [REG_LEFT_CHANNEL, REG_RIGHT_CHANNEL]:
                 is_active = value > 0 and self.cpu_state["Memory"][REG_MASTER_POWER] == ACTIVATION_BYTE
 

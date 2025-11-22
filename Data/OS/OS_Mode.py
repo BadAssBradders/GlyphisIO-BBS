@@ -38,11 +38,12 @@ COLOR_SELECTION = (0, 180, 255, 120)  # Semi-transparent cyan for text selection
 # Mission note template (non-deletable narrative note)
 MISSION_NOTE_TITLE = "Mission Objectives"
 MISSION_NOTE_CONTENT = (
-    "1. Receive Invite from Glyphis\n"
-    "2. Get onto the BBS (0345728891)\n"
-    "3. Complete a technical challenge to prove yourself\n"
-    "4. Get invited to crack some games\n"
-    "5. Obtain access to the Pirate Radio Stream"
+    "[s]1. Receive Invite from Glyphis[/s]\n"
+    "[s]2. Get onto the BBS (0345728891)[/s]\n"
+    "[s]3. Complete a technical challenge to prove yourself[/s]\n"
+    "4. Get the audio tech's help to get the computer's sound card streaming from the BBS, and record the first audio stream from Glyphisis_IO using the Datasette!\n"
+    "5. Get invited to crack some games\n"
+    "6. Obtain access to the Pirate Radio Stream"
 )
 
 # Animation Constants
@@ -1403,8 +1404,13 @@ class OSMode:
                 self.notes_modal_cursor_blink_timer = 0.0
         
         # Stop video if modal is closed (but keep recording flag)
+        # However, if recording is active, allow video to continue playing even if modal is closed
+        # This ensures the Datasette video plays fully during ghost user sequence
         if "tape" not in self.active_modals and self.tape_modal_video_playing:
-            self._stop_tape_video()
+            is_recording, _ = self.get_recording_state()
+            if not is_recording:
+                # Only stop video if not recording (allows video to play fully during ghost user sequence)
+                self._stop_tape_video()
         
         # Update terminal message timer for delayed messages
         if "tape" in self.active_modals and self.tape_modal_video_playing:
@@ -1763,12 +1769,21 @@ class OSMode:
         
         # Check LAPC-1 Soundcard status (check for AUDIO_ON token which means all 7 nodes complete)
         lapc1_activated = self.has_token("AUDIO_ON")
-        lapc1_status = "ACTIVATED" if lapc1_activated else "INACTIVE"
+        lapc1_status = "ACTIVE" if lapc1_activated else "INACTIVE"
         
         # Check if tape is recording (from user profile)
         is_recording, recording_start_time = self.get_recording_state()
-        datasette_status = "RECORDING" if is_recording else "DETECTED"
-        datasette_status_color = COLOR_CORAL if is_recording else COLOR_GREEN
+        if is_recording:
+            datasette_status = "RECORDING"
+            datasette_status_color = COLOR_CORAL
+        elif recording_start_time is None or recording_start_time == 0:
+            # Never recorded - show INACTIVE
+            datasette_status = "INACTIVE"
+            datasette_status_color = COLOR_GREY
+        else:
+            # Has recorded before but not currently - show DETECTED
+            datasette_status = "DETECTED"
+            datasette_status_color = COLOR_GREEN
         
         # Network status
         if self.network_connected:
@@ -2581,12 +2596,15 @@ class OSMode:
                 notes = [mission_note] + other_notes
                 changed = True
             else:
-                # Mission note exists - ensure content is up to date
-                if first.get("content") != mission_note["content"]:
+                # Mission note exists - preserve existing content (don't overwrite user modifications like strikethroughs)
+                # Only update title and is_locked if they're wrong, but keep the existing content
+                if notes[0].get("title") != mission_note["title"]:
                     notes[0]["title"] = mission_note["title"]
-                    notes[0]["content"] = mission_note["content"]
+                    changed = True
+                if not notes[0].get("is_locked", False):
                     notes[0]["is_locked"] = True
                     changed = True
+                # Don't overwrite content - preserve user modifications
 
         # Enforce max of 10 notes
         if len(notes) > 10:
@@ -2601,10 +2619,25 @@ class OSMode:
     def _save_user_notes(self, notes: List[Dict]) -> None:
         """Persist notes back to user profile, ensuring mission note is first."""
         sanitized: List[Dict] = []
-        mission_note = self._mission_note_template()
-
-        # Always ensure mission note is first
-        sanitized.append(mission_note)
+        
+        # Find existing mission note to preserve its content (including strikethroughs)
+        existing_mission_note = None
+        for note in notes:
+            if note.get("is_locked", False) and note.get("title") == MISSION_NOTE_TITLE:
+                existing_mission_note = note
+                break
+        
+        # Use existing mission note if found, otherwise use template
+        if existing_mission_note:
+            sanitized.append({
+                "title": existing_mission_note.get("title", MISSION_NOTE_TITLE),
+                "content": existing_mission_note.get("content", MISSION_NOTE_CONTENT),
+                "is_locked": True
+            })
+        else:
+            # No existing mission note, use template
+            mission_note = self._mission_note_template()
+            sanitized.append(mission_note)
 
         for note in notes[1:]:
             if note.get("is_locked", False):
@@ -4182,4 +4215,95 @@ class OSMode:
             self.screen.blit(text_surface, (label_x, label_y))
         except Exception:
             pass
+    
+    # -------------------------------------------------------------------------
+    # Ghost User Methods (for Node 7 completion sequence)
+    # -------------------------------------------------------------------------
+    
+    def _set_ghost_user_health_state(self):
+        """Set health monitor state for ghost user sequence."""
+        # System is already OPERATIONAL (hardcoded)
+        # HardDisk is already 50/50 (hardcoded)
+        # LAPC-1 Soundcard will show ACTIVE if AUDIO_ON token exists (handled in draw)
+        # Datasette will be updated when recording starts
+        # Network will be set to DISCONNECTED by _set_network_disconnected()
+        pass
+    
+    def _set_network_disconnected(self):
+        """Set network status to DISCONNECTED."""
+        self.network_connected = False
+    
+    def _ghost_open_notes_mission(self):
+        """Open Notes app and switch to mission tab (first tab)."""
+        # Open notes modal
+        if "notes" not in self.active_modals:
+            self.active_modals.add("notes")
+            if "notes" not in self.modal_positions:
+                modal_w, modal_h = self._get_modal_size("notes")
+                modal_x, modal_y = self._get_modal_position(modal_w, modal_h, "notes")
+                self.modal_positions["notes"] = (modal_x, modal_y)
+        # Ensure mission tab is selected (tab 0)
+        self.notes_modal_current_tab = 0
+    
+    def _ghost_strike_through_mission_point(self, point_number: int):
+        """Strike through a specific mission point in the notes."""
+        notes = self._load_user_notes()
+        if not notes:
+            return
+        
+        mission_note = notes[0]
+        if not mission_note.get("is_locked", False):
+            return
+        
+        content = mission_note.get("content", "")
+        lines = content.split("\n")
+        
+        # Find and strike through the specified point (check if already struck)
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith(f"{point_number}.") and not stripped.startswith("[s]"):
+                # Add strike tags around the line if not already struck
+                lines[i] = f"[s]{line}[/s]"
+                break
+        
+        # Update content
+        mission_note["content"] = "\n".join(lines)
+        notes[0] = mission_note
+        self.save_notes(notes)
+    
+    def _ghost_click_datasette_icon(self):
+        """Simulate double-click on Datasette icon."""
+        # Find tape icon
+        tape_icon = next((icon for icon in self.icons if "tape-icon" in icon["name"]), None)
+        if not tape_icon:
+            return
+        
+        # Simulate double-click by opening the modal
+        if "tape" not in self.active_modals:
+            self.active_modals.add("tape")
+            if "tape" not in self.modal_positions:
+                modal_w, modal_h = self._get_modal_size("tape")
+                modal_x, modal_y = self._get_modal_position(modal_w, modal_h, "tape")
+                self.modal_positions["tape"] = (modal_x, modal_y)
+            self.tape_modal_terminal_text = ""
+            self._stop_tape_video()
+    
+    def _ghost_click_record_data(self):
+        """Simulate click on Record Data button in Datasette modal."""
+        # Clear terminal and start recording sequence
+        self.tape_modal_terminal_lines = []
+        self.tape_modal_message_timer = 0.0
+        
+        # Reset video completion flag so video can play again
+        self.tape_modal_video_completed = False
+        
+        # Start recording (this will update the health monitor status)
+        if self.set_recording_state:
+            self.set_recording_state(True, pygame.time.get_ticks() / 1000.0)
+        
+        # Start video playback
+        self._start_tape_video()
+        
+        # Close the modal after a short delay (handled in update)
+        # We'll close it in the ghost user sequence after the animation starts
 
