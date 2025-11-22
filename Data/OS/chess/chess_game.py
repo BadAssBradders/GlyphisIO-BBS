@@ -898,28 +898,25 @@ class ChessGame:
         content_y = title_y + title_text.get_height() + int(15 * self.scale)
         line_height = int(24 * self.scale)
         
-        # Current game status and AI Difficulty side by side
+        # Current game status
         status_label = body_font.render("CURRENT GAME:", True, COLOR_CYAN)
         self.screen.blit(status_label, (content_x, content_y))
         
-        # AI Difficulty box - aligned with terminal left edge
-        # Calculate content width first
+        # AI Difficulty box (the small "AI BOX") - positioned 120px to the right of "CURRENT GAME:"
         diff_label_text = small_font.render("AI:", True, COLOR_CYAN)
         arrow_size = int(12 * self.scale)
         level_text = small_font.render(str(self.ai_difficulty), True, COLOR_WHITE)
         content_width = diff_label_text.get_width() + int(8 * self.scale) + arrow_size + int(5 * self.scale) + level_text.get_width() + int(5 * self.scale) + arrow_size
         
-        # Box should be 5px padding on each side, so add 10px total
         difficulty_box_width = content_width + int(10 * self.scale)
-        # Align left edge with terminal left edge (content_x)
-        difficulty_box_x = content_x
-        difficulty_box_y = content_y
+        difficulty_box_x = content_x + status_label.get_width() + int(120 * self.scale)  # 120px to the right of "CURRENT GAME:"
+        difficulty_box_y = content_y  # Same vertical position as "CURRENT GAME:"
         difficulty_box_height = int(28 * self.scale)
         difficulty_box_rect = pygame.Rect(difficulty_box_x, difficulty_box_y, difficulty_box_width, difficulty_box_height)
         pygame.draw.rect(self.screen, COLOR_BLACK, difficulty_box_rect)
         pygame.draw.rect(self.screen, COLOR_CYAN, difficulty_box_rect, 1)
         
-        # Difficulty label and controls inside box - 5px padding
+        # Difficulty label and controls inside box
         self.screen.blit(diff_label_text, (difficulty_box_x + int(5 * self.scale), difficulty_box_y + (difficulty_box_height - diff_label_text.get_height()) // 2))
         
         # Difficulty controls
@@ -952,8 +949,8 @@ class ChessGame:
         self.screen.blit(status_text, (content_x + int(5 * self.scale), content_y))
         content_y += int(line_height * 1.2)
         
-        # AI Terminal - moved up to be just under "Your move."
-        terminal_height = int(120 * self.scale)
+        # AI Terminal
+        terminal_height = int(100 * self.scale)  # Slightly smaller to fit better
         terminal_y = content_y
         terminal_rect = pygame.Rect(content_x, terminal_y, stats_width - int(30 * self.scale), terminal_height)
         self.ai_terminal_rect = terminal_rect
@@ -969,9 +966,8 @@ class ChessGame:
         
         if self.ai_thinking_exposed and self.ai_thinking_log:
             max_width = terminal_rect.width - terminal_padding * 2
-            line_spacing = int(5 * self.scale)  # 5px spacing between lines
+            line_spacing = int(5 * self.scale)
             for log_line in self.ai_thinking_log:
-                # Only render if within terminal bounds (clip to terminal)
                 if terminal_inner_y < terminal_rect.y:
                     terminal_inner_y += small_font.get_height() + line_spacing
                     continue
@@ -989,7 +985,6 @@ class ChessGame:
                     else:
                         if current_line:
                             log_surface = small_font.render(current_line, True, COLOR_CYAN)
-                            # Clip to terminal bounds
                             if terminal_inner_y >= terminal_rect.y and terminal_inner_y + small_font.get_height() <= terminal_rect.bottom:
                                 self.screen.blit(log_surface, (terminal_inner_x, terminal_inner_y))
                             terminal_inner_y += small_font.get_height() + line_spacing
@@ -998,7 +993,6 @@ class ChessGame:
                         current_line = word
                 if current_line:
                     log_surface = small_font.render(current_line, True, COLOR_CYAN)
-                    # Clip to terminal bounds
                     if terminal_inner_y >= terminal_rect.y and terminal_inner_y + small_font.get_height() <= terminal_rect.bottom:
                         self.screen.blit(log_surface, (terminal_inner_x, terminal_inner_y))
                 terminal_inner_y += small_font.get_height() + line_spacing
@@ -1010,23 +1004,23 @@ class ChessGame:
                 placeholder = small_font.render("AI thinking hidden", True, COLOR_GREY)
             self.screen.blit(placeholder, (terminal_inner_x, terminal_inner_y))
         
-        content_y = terminal_rect.bottom + int(10 * self.scale)
+        content_y = terminal_rect.bottom + int(8 * self.scale)
         
-        # Radio buttons for AI Thinking Exposed - 10px under label
+        # Radio buttons for AI Thinking Exposed
         radio_label_x = content_x
         radio_label_y = content_y
         
         # Label
         radio_label = small_font.render("AI Thinking Exposed:", True, COLOR_CYAN)
         self.screen.blit(radio_label, (radio_label_x, radio_label_y))
-        radio_y = radio_label_y + radio_label.get_height() + int(10 * self.scale)
+        radio_y = radio_label_y + radio_label.get_height() + int(8 * self.scale)
         radio_size = int(12 * self.scale)
         
         # ON radio button
         radio_on_x = radio_label_x + int(10 * self.scale)
         radio_on_rect = pygame.Rect(radio_on_x, radio_y, radio_size, radio_size)
         self.ai_radio_on_rect = pygame.Rect(radio_on_x - int(5 * self.scale), radio_y - int(2 * self.scale), 
-                                           int(80 * self.scale), int(16 * self.scale))  # Larger clickable area
+                                           int(80 * self.scale), int(16 * self.scale))
         is_on_hovered = self.hovered_button == "ai_radio_on"
         pygame.draw.circle(self.screen, COLOR_CYAN if self.ai_thinking_exposed else COLOR_GREY, 
                           radio_on_rect.center, radio_size // 2, 1)
@@ -1039,7 +1033,7 @@ class ChessGame:
         radio_off_x = radio_on_x + int(60 * self.scale)
         radio_off_rect = pygame.Rect(radio_off_x, radio_y, radio_size, radio_size)
         self.ai_radio_off_rect = pygame.Rect(radio_off_x - int(5 * self.scale), radio_y - int(2 * self.scale), 
-                                             int(80 * self.scale), int(16 * self.scale))  # Larger clickable area
+                                             int(80 * self.scale), int(16 * self.scale))
         is_off_hovered = self.hovered_button == "ai_radio_off"
         pygame.draw.circle(self.screen, COLOR_CYAN if not self.ai_thinking_exposed else COLOR_GREY, 
                           radio_off_rect.center, radio_size // 2, 1)
@@ -1048,13 +1042,13 @@ class ChessGame:
         off_label = small_font.render("OFF", True, COLOR_CYAN if not self.ai_thinking_exposed else COLOR_GREY)
         self.screen.blit(off_label, (radio_off_x + radio_size + int(5 * self.scale), radio_y))
         
-        # Radio button hotspots - cover circle shapes with padding
+        # Radio button hotspots
         self.ai_radio_on_rect = pygame.Rect(radio_on_x - int(4 * self.scale), radio_y - int(4 * self.scale), 
                                            radio_size + int(8 * self.scale), radio_size + int(8 * self.scale))
         self.ai_radio_off_rect = pygame.Rect(radio_off_x - int(4 * self.scale), radio_y - int(4 * self.scale), 
                                              radio_size + int(8 * self.scale), radio_size + int(8 * self.scale))
         
-        content_y = radio_y + int(radio_size * 1.5) + int(10 * self.scale) + int(line_height) - int(30 * self.scale)  # Moved up 30px
+        content_y = radio_y + radio_size + int(10 * self.scale)
         
         # Position Evaluation Display - in terminal-esque box
         eval_box_height = int(24 * self.scale)
@@ -1162,7 +1156,7 @@ class ChessGame:
             self.screen.blit(result_surface, (content_x, content_y))
             content_y += int(line_height * 1.2)
         
-        # Buttons area - inside window, not overlapping text, positioned above bottom bar
+        # Buttons area - inside window, positioned 20px above bottom frame
         bottom_bar_height = int(22 * self.scale)
         bottom_bar_y = stats_y + stats_height - bottom_bar_height
         button_width = int(100 * self.scale)
@@ -1170,9 +1164,9 @@ class ChessGame:
         button_spacing = int(8 * self.scale)
         button_x = stats_x + (stats_width - button_width) // 2
         
-        # Calculate button area - ensure it fits above bottom bar
-        total_button_height = button_height * 3 + button_spacing * 2  # 3 buttons
-        button_y = bottom_bar_y - total_button_height - int(10 * self.scale)
+        # Calculate button area - positioned 20px above bottom bar
+        total_button_height = button_height * 3 + button_spacing * 2  # 3 buttons (resign, wipe, exit)
+        button_y = bottom_bar_y - total_button_height - int(20 * self.scale)
         
         # Resign button (only show when playing) - with hover
         if self.phase == "playing":
@@ -1516,8 +1510,8 @@ class ChessGame:
             
             # Draw captured pieces - under bottom player, above top pieces (25% smaller)
             captured_size = 0.75  # 25% smaller
-            piece_spacing = int(10 * self.scale)
             piece_size = int(self.square_size * captured_size)
+            overlap_offset = piece_size // 2  # Overlap by half a piece width
             
             # Captured by player (bottom)
             player_captured = self.captured_pieces["b" if self.player_color == chess.WHITE else "w"]
@@ -1536,7 +1530,7 @@ class ChessGame:
                     if surface:
                         scaled_surface = pygame.transform.smoothscale(surface, (piece_size, piece_size))
                         self.screen.blit(scaled_surface, (start_x + x_offset, y_pos))
-                        x_offset += piece_size + piece_spacing
+                        x_offset += overlap_offset  # Overlap by half
             
             # Captured by CPU (top)
             cpu_captured = self.captured_pieces["w" if self.player_color == chess.WHITE else "b"]
@@ -1555,7 +1549,7 @@ class ChessGame:
                     if surface:
                         scaled_surface = pygame.transform.smoothscale(surface, (piece_size, piece_size))
                         self.screen.blit(scaled_surface, (start_x + x_offset, y_pos))
-                        x_offset += piece_size + piece_spacing
+                        x_offset += overlap_offset  # Overlap by half
 
             # Draw pieces with proper z-ordering: render from top to bottom
             # This ensures pieces at the bottom of the board render last (appear on top)

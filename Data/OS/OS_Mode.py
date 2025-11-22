@@ -414,21 +414,21 @@ class OSMode:
                 "file": "chess.png",
                 "selected_file": "S-chess.png",
                 "label": "Chess",
-                "default_pos": (30, 40)
+                "default_pos": (20, 40)
             },
             {
                 "name": "solitaire",
                 "file": "solitaire.png",
                 "selected_file": "S-solitaire.png",
                 "label": "Solitaire",
-                "default_pos": (200, 40)
+                "default_pos": (140, 40)
             },
             {
                 "name": "civitas",
                 "file": "civitas_nihilium.png",
                 "selected_file": "S-civitas_nihilium.png",
                 "label": "Civitas Nihilium",
-                "default_pos": (280, 40)
+                "default_pos": (260, 40)
             }
         ]
         self.games_modal_icons: List[Dict[str, object]] = []
@@ -2211,7 +2211,15 @@ class OSMode:
         pygame.draw.rect(self.screen, COLOR_CYAN, content_rect, 1)
         inner_rect = content_rect.inflate(-int(10 * self.scale), -int(10 * self.scale))
         pygame.draw.rect(self.screen, COLOR_BG_DARK, inner_rect)
-        self.games_modal_content_rect = inner_rect
+        # Only update content rect if it changed (to avoid constant re-arrangement)
+        content_changed = (self.games_modal_content_rect is None or 
+                          self.games_modal_content_rect.width != inner_rect.width or
+                          self.games_modal_content_rect.height != inner_rect.height)
+        if content_changed:
+            self.games_modal_content_rect = inner_rect
+            # Always check and fix overlapping icons when content rect is first set or size changes
+            # This ensures icons are properly spaced even if initial positioning had issues
+            self._fix_overlapping_games_icons()
 
         label_font = pygame.font.Font(None, max(int(14 * self.scale), 10))
         for icon in self.games_modal_icons:
@@ -2416,6 +2424,72 @@ class OSMode:
         self.games_modal_selected_icon = None
         self.games_modal_dragging_icon = None
         self.games_modal_content_rect = None
+        
+        # Fix any overlapping icons (only if using default positions, not user-saved positions)
+        if not normalized_positions:
+            self._fix_overlapping_games_icons()
+
+    def _fix_overlapping_games_icons(self) -> None:
+        """Check for overlapping icons and automatically arrange them to prevent overlaps."""
+        if not self.games_modal_icons:
+            return
+        
+        # Check if any icons overlap or are too close together
+        has_overlap = False
+        min_spacing = int(30 * self.scale)  # Minimum spacing between icons
+        
+        for i, icon1 in enumerate(self.games_modal_icons):
+            rect1 = pygame.Rect(icon1["rel_x"], icon1["rel_y"], icon1["width"], icon1["height"])
+            for icon2 in self.games_modal_icons[i + 1:]:
+                rect2 = pygame.Rect(icon2["rel_x"], icon2["rel_y"], icon2["width"], icon2["height"])
+                # Check for actual overlap
+                if rect1.colliderect(rect2):
+                    has_overlap = True
+                    break
+                # Also check if icons are too close (less than min_spacing apart)
+                # Calculate distance between icon centers or edges
+                if abs(rect1.x - rect2.x) < min_spacing and abs(rect1.y - rect2.y) < min_spacing:
+                    # Icons are on same row/column and too close
+                    if (rect1.y == rect2.y and abs(rect1.right - rect2.x) < min_spacing) or \
+                       (rect1.x == rect2.x and abs(rect1.bottom - rect2.y) < min_spacing):
+                        has_overlap = True
+                        break
+            if has_overlap:
+                break
+        
+        # If there are overlaps or icons are too close, arrange icons in a grid
+        if has_overlap:
+            # Calculate grid layout with generous spacing
+            icon_spacing = int(40 * self.scale)  # Increased spacing for better separation
+            start_x = int(30 * self.scale)
+            start_y = int(40 * self.scale)
+            current_x = start_x
+            current_y = start_y
+            
+            # Find the maximum icon dimensions
+            max_icon_width = max(icon["width"] for icon in self.games_modal_icons) if self.games_modal_icons else 0
+            max_icon_height = max(icon["height"] for icon in self.games_modal_icons) if self.games_modal_icons else 0
+            
+            # Use content rect width if available, otherwise estimate
+            if self.games_modal_content_rect:
+                content_width = self.games_modal_content_rect.width
+            else:
+                # Estimate based on typical modal size (will be refined when modal is drawn)
+                content_width = int(500 * self.scale)
+            
+            # Arrange icons in a grid, wrapping to next row when needed
+            for icon in self.games_modal_icons:
+                # Check if this icon would go off the right edge
+                if current_x + icon["width"] > content_width - int(20 * self.scale) and current_x > start_x:
+                    # Move to next row
+                    current_x = start_x
+                    current_y += max_icon_height + icon_spacing
+                
+                icon["rel_x"] = current_x
+                icon["rel_y"] = current_y
+                
+                # Move to next position with generous spacing
+                current_x += icon["width"] + icon_spacing
 
     def _clear_games_icon_selection(self) -> None:
         self.games_modal_selected_icon = None

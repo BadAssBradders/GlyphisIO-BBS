@@ -196,7 +196,7 @@ class SolitaireGame:
         
         # Stats panel width - ensure it's wide enough for help text like "  Waste → Foundation"
         # Use a fixed width that should accommodate the longest text lines
-        stats_panel_width = int(300 * self.scale)  # Increased to ensure "Waste → Foundation" fits
+        stats_panel_width = int(240 * self.scale)  # 20% smaller (was 300)
         
         # Game window dimensions - match OS_mode desktop size exactly
         window_width = self.desktop_size[0]
@@ -741,8 +741,21 @@ class SolitaireGame:
             hover_surface.fill((0, 255, 255, 40))
             self.screen.blit(hover_surface, self.waste_rect.topleft)
         
+        # Check if we're dragging from waste
+        is_dragging_from_waste = self.dragging and self.drag_from and self.drag_from[0] == "waste"
+        
         if self.waste:
-            self._draw_card(self.waste[-1], self.waste_rect)
+            if is_dragging_from_waste:
+                # If dragging from waste, show the card underneath (if there is one)
+                if len(self.waste) > 1:
+                    # Show the card that's underneath the dragged card (second from top)
+                    self._draw_card(self.waste[-2], self.waste_rect)
+                else:
+                    # Dragging the only card, show empty slot
+                    self._draw_empty_slot(self.waste_rect)
+            else:
+                # Not dragging from waste, show top card normally
+                self._draw_card(self.waste[-1], self.waste_rect)
         else:
             # Draw empty outline when waste is empty
             self._draw_empty_slot(self.waste_rect)
@@ -1001,7 +1014,7 @@ class SolitaireGame:
                         (panel_rect.x, panel_rect.bottom), 2)
         
         # Title section
-        title_height = int(30 * self.scale)
+        title_height = int(24 * self.scale)  # 20% smaller (was 30)
         title_rect = pygame.Rect(panel_rect.x, panel_rect.y, panel_rect.width, title_height)
         pygame.draw.rect(self.screen, COLOR_BG_TITLE, title_rect)
         pygame.draw.line(self.screen, COLOR_CYAN,
@@ -1014,12 +1027,12 @@ class SolitaireGame:
         self.screen.blit(title, (title_x, title_y))
 
         # Content area
-        y = panel_rect.y + title_height + int(15 * self.scale)
-        line_h = int(26 * self.scale)
-        content_x = panel_rect.x + int(12 * self.scale)
+        y = panel_rect.y + title_height + int(12 * self.scale)  # 20% smaller (was 15)
+        line_h = int(21 * self.scale)  # 20% smaller (was 26)
+        content_x = panel_rect.x + int(10 * self.scale)  # 20% smaller (was 12)
         
         # Ensure content stays within panel bounds
-        max_y = panel_rect.bottom - int(10 * self.scale)
+        max_y = panel_rect.bottom - int(8 * self.scale)  # 20% smaller (was 10)
 
         # Time
         if y < max_y:
@@ -1028,7 +1041,7 @@ class SolitaireGame:
             time_label = small_font.render("Time:", True, COLOR_CYAN)
             time_value = small_font.render(f"{mins:02d}:{secs:02d}", True, COLOR_WHITE)
             self.screen.blit(time_label, (content_x, y))
-            self.screen.blit(time_value, (content_x + time_label.get_width() + int(8 * self.scale), y))
+            self.screen.blit(time_value, (content_x + time_label.get_width() + int(6 * self.scale), y))  # 20% smaller (was 8)
             y += line_h
 
         # Moves
@@ -1036,16 +1049,16 @@ class SolitaireGame:
             moves_label = small_font.render("Moves:", True, COLOR_CYAN)
             moves_value = small_font.render(str(self.moves), True, COLOR_WHITE)
             self.screen.blit(moves_label, (content_x, y))
-            self.screen.blit(moves_value, (content_x + moves_label.get_width() + int(8 * self.scale), y))
+            self.screen.blit(moves_value, (content_x + moves_label.get_width() + int(6 * self.scale), y))  # 20% smaller (was 8)
             y += line_h
 
         # Separator line
         if y < max_y:
-            y += int(5 * self.scale)
+            y += int(4 * self.scale)  # 20% smaller (was 5)
             pygame.draw.line(self.screen, COLOR_DARK_CYAN, 
-                            (panel_rect.x + int(10 * self.scale), y), 
-                            (panel_rect.right - int(10 * self.scale), y), 1)
-            y += int(15 * self.scale)
+                            (panel_rect.x + int(8 * self.scale), y),  # 20% smaller (was 10)
+                            (panel_rect.right - int(8 * self.scale), y), 1)  # 20% smaller (was 10)
+            y += int(12 * self.scale)  # 20% smaller (was 15)
 
         # Help section
         if y < max_y:
@@ -1055,11 +1068,6 @@ class SolitaireGame:
 
             help_lines = [
                 "• Click STOCK to draw",
-                "• Drag cards to move:",
-                "  Waste → Tableau",
-                "  Waste → Foundation",
-                "  Tableau → Tableau",
-                "  Tableau → Foundation",
                 "",
                 "Rules:",
                 "• Build down, alt colors",
@@ -1068,7 +1076,7 @@ class SolitaireGame:
             ]
             
             # Calculate line height based on font to ensure everything fits
-            line_spacing = int(19 * self.scale)
+            line_spacing = int(15 * self.scale)  # 20% smaller (was 19)
             for line in help_lines:
                 # Check if we have room for this line
                 if y + line_spacing > max_y:
@@ -1078,11 +1086,11 @@ class SolitaireGame:
                     txt = small_font.render(line, True, color)
                     # Ensure text fits within panel width
                     text_width = txt.get_width()
-                    max_text_width = panel_rect.width - (content_x - panel_rect.x) - int(10 * self.scale)
+                    max_text_width = panel_rect.width - (content_x - panel_rect.x) - int(8 * self.scale)  # 20% smaller (was 10)
                     
                     # If text is too wide, skip rendering it (or we could wrap it, but for now skip)
                     if text_width <= max_text_width:
-                        indent = int(20 * self.scale) if line.startswith("  ") else content_x
+                        indent = int(16 * self.scale) if line.startswith("  ") else content_x  # 20% smaller (was 20)
                         self.screen.blit(txt, (indent, y))
                     # Still increment y even if we skip rendering to maintain spacing
                 y += line_spacing
@@ -1092,11 +1100,11 @@ class SolitaireGame:
             msg = "YOU WIN!" if self.win else "GAME OVER"
             msg_color = COLOR_GREEN if self.win else COLOR_RED
             msg_surface = body_font.render(msg, True, msg_color)
-            msg_bg = pygame.Surface((msg_surface.get_width() + int(20 * self.scale), 
-                                    msg_surface.get_height() + int(10 * self.scale)), pygame.SRCALPHA)
+            msg_bg = pygame.Surface((msg_surface.get_width() + int(16 * self.scale),  # 20% smaller (was 20)
+                                    msg_surface.get_height() + int(8 * self.scale)), pygame.SRCALPHA)  # 20% smaller (was 10)
             msg_bg.fill((*msg_color[:3], 30))
             msg_bg_x = panel_rect.x + (panel_rect.width - msg_bg.get_width()) // 2
-            msg_bg_y = panel_rect.bottom - msg_bg.get_height() - int(15 * self.scale)
+            msg_bg_y = panel_rect.bottom - msg_bg.get_height() - int(12 * self.scale)  # 20% smaller (was 15)
             
             # Ensure message stays within bounds
             if msg_bg_y >= panel_rect.y:
@@ -1105,4 +1113,4 @@ class SolitaireGame:
                                (msg_bg_x, msg_bg_y, msg_bg.get_width(), msg_bg.get_height()), 2)
                 self.screen.blit(msg_surface, 
                                (panel_rect.x + (panel_rect.width - msg_surface.get_width()) // 2, 
-                                msg_bg_y + int(5 * self.scale)))
+                                msg_bg_y + int(4 * self.scale)))  # 20% smaller (was 5)
