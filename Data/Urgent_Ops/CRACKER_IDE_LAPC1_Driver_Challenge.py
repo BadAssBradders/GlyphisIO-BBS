@@ -1861,7 +1861,8 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                     self.pending_token_grants.append("LAPC1_NODE6")
             
             # Node 7 completion: Execution reaches OUTPUT_SAMPLE (jump to node 7, which is index 6)
-            elif target_node_idx == 6 and not hasattr(self, '_node_7_completed'):
+            # Only trigger if not already triggered by static or dynamic completion checks
+            elif target_node_idx == 6 and not hasattr(self, '_node_7_completed') and not self.node7_chat_messages_queued:
                 completed_node = 7
                 self._node_7_completed = True
                 # Grant token for Node 7 LED
@@ -1900,6 +1901,9 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 # Grant AUDIO_ON token so health monitor shows LAPC-1 Soundcard as ACTIVE
                 if "AUDIO_ON" not in self.pending_token_grants:
                     self.pending_token_grants.append("AUDIO_ON")
+                # Mark messages as queued to prevent duplicate triggers
+                self.node7_chat_messages_queued = True
+                self.node7_waiting_for_chat = True
             
             # Trigger success modal for completed node
             if completed_node:
@@ -1941,12 +1945,18 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 if self.video_cap:
                     self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
-                self._queue_chat_message("LAPC-1 DRIVER ONLINE. I'M GETTING AUDIO FROM YOUR END, FULL STEREO! AMAZING.", "UNCLE-AM")
-                self._queue_chat_message("Well done. With the audio sub-system online, we can finally get the BBS Radio feed going. Stand by for the next operational brief, hacker. That was seriously impressive work.", "UNCLE-AM")
-                self._queue_chat_message("This is a banned song by the way, repeat this is a BANNED SONG(!) so be careful not to play it too loud. Absolute melody though, isn't it!?", "UNCLE-AM")
-                self._queue_chat_message("See you on the other side!", "UNCLE-AM")
-                self.chat_next_queue_time = pygame.time.get_ticks() + 100
-                self._begin_next_queued_message()
+                # Only queue messages if they haven't been queued already (prevent duplicates from Node 7 completion)
+                if not self.node7_chat_messages_queued:
+                    self._queue_chat_message("LAPC-1 DRIVER ONLINE. I'M GETTING AUDIO FROM YOUR END, FULL STEREO! AMAZING.", "UNCLE-AM")
+                    self._queue_chat_message("Well done. With the audio sub-system online, we can finally get the BBS Radio feed going. Stand by for the next operational brief, hacker. That was seriously impressive work.", "UNCLE-AM")
+                    self._queue_chat_message("This is a banned song by the way, repeat this is a BANNED SONG(!) so be careful not to play it too loud. Absolute melody though, isn't it!?", "UNCLE-AM")
+                    self._queue_chat_message("See you on the other side!", "UNCLE-AM")
+                    self.chat_next_queue_time = pygame.time.get_ticks() + 100
+                    self._begin_next_queued_message()
+                    self.node7_chat_messages_queued = True
+                    print(f"DEBUG FULL_CHALLENGE: Completion messages queued")
+                else:
+                    print(f"DEBUG FULL_CHALLENGE: Messages already queued from Node 7 completion, skipping duplicate")
 
                 # Grant AUDIO_ON token for completing all 7 nodes
                 if "AUDIO_ON" not in self.pending_token_grants:
@@ -2558,8 +2568,6 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 self.exit_requested = True
     
     def should_exit(self):
-        if self.exit_requested:
-            self._stop_start_video()
         return self.exit_requested
 
     # --- Drawing Methods ---
@@ -3019,27 +3027,28 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             prompt = "PRESS SPACE TO CONTINUE"
             prompt_surface = self.font_tiny.render(prompt, True, self.GREEN)
             prompt_y = modal_rect.bottom - self.padding * 2 - prompt_surface.get_height()
-            self.surface.blit(prompt_surface, (modal_rect.centerx - prompt_surface.get_width() // 2, prompt_y))
-        else:
-            self._draw_text("Press [SPACE], [ENTER], or [TAB] to continue.", (text_x, text_y), "medium", self.GREEN)
-        
-        # For Node 7: Draw fireworks and countdown (spacebar closes - no CONFIRM button)
-        if self.node7_completion_modal:
-            self._update_fireworks()
-            self._draw_fireworks()
             
-            # Draw 40 second countdown
-            if self.node7_modal_countdown_start:
+            # For Node 7: Draw countdown above the prompt text
+            if self.node7_completion_modal and self.node7_modal_countdown_start:
                 elapsed = pygame.time.get_ticks() - self.node7_modal_countdown_start
                 remaining = max(0, self.node7_modal_countdown_duration - elapsed)
                 remaining_seconds = int(remaining / 1000)
                 
-                # Draw countdown text at bottom of modal
+                # Draw countdown text above the "PRESS SPACE TO CONTINUE" text
                 countdown_text = f"AUTO-CONTINUE IN {remaining_seconds}s"
                 countdown_surface = self.font_tiny.render(countdown_text, True, self.YELLOW)
                 countdown_x = modal_rect.centerx - countdown_surface.get_width() // 2
-                countdown_y = modal_rect.bottom - int(40 * self.scale)
+                countdown_y = prompt_y - countdown_surface.get_height() - int(10 * self.scale)
                 self.surface.blit(countdown_surface, (countdown_x, countdown_y))
+            
+            self.surface.blit(prompt_surface, (modal_rect.centerx - prompt_surface.get_width() // 2, prompt_y))
+        else:
+            self._draw_text("Press [SPACE], [ENTER], or [TAB] to continue.", (text_x, text_y), "medium", self.GREEN)
+        
+        # For Node 7: Draw fireworks (spacebar closes - no CONFIRM button)
+        if self.node7_completion_modal:
+            self._update_fireworks()
+            self._draw_fireworks()
 
     def _init_fireworks(self):
         """Initialize firework particles for Node 7 celebration."""

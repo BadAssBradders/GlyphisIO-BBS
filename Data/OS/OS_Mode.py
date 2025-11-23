@@ -46,6 +46,11 @@ MISSION_NOTE_CONTENT = (
     "6. Obtain access to the Pirate Radio Stream"
 )
 
+# BBS login note template (non-deletable login information note)
+BBS_LOGIN_NOTE_TITLE = "BBS Numbers and Logins"
+BBS_NAME = "GLYPHIS_IO BBS"
+BBS_NUMBER = "0345728891"
+
 # Animation Constants
 HOVER_ANIMATION_SPEED = 8.0  # pixels per second
 ICON_LABEL_FADE_SPEED = 3.0  # alpha per second
@@ -55,10 +60,27 @@ try:
     import cv2
     import numpy as np
     _cv2_available = True
+    
+    # Define backend constants for GPU acceleration
+    # CAP_MSMF uses Microsoft Media Foundation (hardware-accelerated on Windows)
+    # CAP_DSHOW uses DirectShow (can also use hardware acceleration)
+    # We'll try MSMF first as it's the most modern and GPU-accelerated on Windows 10/11
+    try:
+        _CAP_MSMF = cv2.CAP_MSMF
+    except AttributeError:
+        _CAP_MSMF = 1400  # Fallback if constant not defined
+        
+    try:
+        _CAP_DSHOW = cv2.CAP_DSHOW
+    except AttributeError:
+        _CAP_DSHOW = 700  # Fallback if constant not defined
+        
 except ImportError:
     _cv2_available = False
     cv2 = None
     np = None
+    _CAP_MSMF = None
+    _CAP_DSHOW = None
 
 # Chess game is now in a separate module
 try:
@@ -136,7 +158,7 @@ class OSMode:
     Renders a desktop environment with draggable icons.
     """
     
-    def __init__(self, screen: pygame.Surface, scale: float, reset_bbs_callback=None, bbs_x=None, bbs_y=None, bbs_width=None, has_token_callback=None, get_recording_state_callback=None, set_recording_state_callback=None, get_notes_callback=None, save_notes_callback=None, get_user_credentials_callback=None, get_chess_stats_callback=None, save_chess_stats_callback=None):
+    def __init__(self, screen: pygame.Surface, scale: float, reset_bbs_callback=None, bbs_x=None, bbs_y=None, bbs_width=None, has_token_callback=None, get_recording_state_callback=None, set_recording_state_callback=None, get_notes_callback=None, save_notes_callback=None, get_user_credentials_callback=None, get_chess_stats_callback=None, save_chess_stats_callback=None, is_audio_streaming_callback=None):
         """
         Initialize OS Mode.
         
@@ -152,6 +174,7 @@ class OSMode:
             set_recording_state_callback: Optional callback to set recording state (is_recording, start_time)
             get_notes_callback: Optional callback to get notes list
             save_notes_callback: Optional callback to save notes list
+            is_audio_streaming_callback: Optional callback to check if audio is streaming (returns True if audio other than window-loop.wav is playing)
         """
         self.screen = screen
         self.scale = scale
@@ -167,6 +190,25 @@ class OSMode:
         self.get_user_credentials = get_user_credentials_callback or (lambda: ("", ""))
         self.get_chess_stats = get_chess_stats_callback or (lambda: {})
         self.save_chess_stats = save_chess_stats_callback or (lambda stats: None)
+        self.is_audio_streaming = is_audio_streaming_callback or (lambda: False)
+        
+        # LAPC-1 Audio Output Stream visualizer state
+        self.audio_stream_pixels: List[Dict[str, Any]] = []  # List of pixel rain drops
+        self.audio_stream_pixel_colors = [
+            COLOR_CYAN,
+            COLOR_MAGENTA,  # Pink
+            COLOR_TEAL,
+            COLOR_DEEP_BLUE,  # Dark blue
+            COLOR_NEON_GREEN,  # Light blue (using neon green as light blue)
+            COLOR_WHITE,
+            COLOR_GREY
+        ]
+        self.audio_stream_last_update = 0
+        self.audio_stream_pixel_spawn_rate = 50  # milliseconds between pixel spawns (when audio is playing)
+        # Helix pattern state
+        self.audio_stream_helices: List[Dict[str, Any]] = []  # List of helix patterns
+        self.audio_stream_helix_last_spawn = 0
+        self.audio_stream_helix_spawn_interval = 3000  # milliseconds between helix spawns (3 seconds)
         
         # Baseline coordinates (at 2560x1440 resolution)
         self.baseline_desktop_x = 176
@@ -1238,7 +1280,7 @@ class OSMode:
     
     
     def _start_tape_video(self):
-        """Start playing the Datasette_Load.mp4 video with chroma key."""
+        """Start playing the Datasette_Load.mp4 video with chroma key using GPU acceleration."""
         if not _cv2_available:
             print("Warning: cv2 not available, cannot play video")
             return
@@ -1256,7 +1298,45 @@ class OSMode:
             return
         
         try:
-            self.tape_modal_video_cap = cv2.VideoCapture(video_path)
+            # Try to use GPU-accelerated backend for Datasette_Load.mp4
+            # MSMF (Microsoft Media Foundation) supports hardware decoding on Windows 10/11
+            gpu_backend_used = False
+            
+            # First try MSMF backend (hardware-accelerated on Windows)
+            if _CAP_MSMF is not None:
+                try:
+                    self.tape_modal_video_cap = cv2.VideoCapture(video_path, _CAP_MSMF)
+                    if self.tape_modal_video_cap.isOpened():
+                        # MSMF backend on Windows 10/11 automatically uses GPU hardware acceleration
+                        # when available. The system's GPU decoder will be used automatically.
+                        # We can set buffer size for smoother playback:
+                        try:
+                            # Minimize buffer for lower latency (1 frame buffer)
+                            self.tape_modal_video_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                        except:
+                            pass  # Ignore if property setting fails
+                        gpu_backend_used = True
+                        print("DEBUG: Using MSMF backend (GPU hardware acceleration enabled) for Datasette_Load.mp4")
+                except Exception as e:
+                    print(f"Warning: Failed to use MSMF backend: {e}")
+                    self.tape_modal_video_cap = None
+            
+            # Fallback to DirectShow (also supports hardware acceleration on Windows)
+            if not gpu_backend_used and _CAP_DSHOW is not None:
+                try:
+                    self.tape_modal_video_cap = cv2.VideoCapture(video_path, _CAP_DSHOW)
+                    if self.tape_modal_video_cap.isOpened():
+                        gpu_backend_used = True
+                        print("DEBUG: Using DirectShow backend (may use GPU acceleration) for Datasette_Load.mp4")
+                except Exception as e:
+                    print(f"Warning: Failed to use DirectShow backend: {e}")
+                    self.tape_modal_video_cap = None
+            
+            # Final fallback to default backend (CPU-based)
+            if not gpu_backend_used:
+                self.tape_modal_video_cap = cv2.VideoCapture(video_path)
+                print("DEBUG: Using default backend (CPU-based) for Datasette_Load.mp4")
+            
             if not self.tape_modal_video_cap.isOpened():
                 print(f"Warning: Could not open video: {video_path}")
                 return
@@ -1554,6 +1634,9 @@ class OSMode:
         
         # Draw clock (on same layer as icons, before modals)
         self._draw_clock()
+        
+        # Draw LAPC-1 Audio Output Stream visualizer (on same layer as health monitor)
+        self._draw_lapc1_audio_stream_visualizer()
         
         # Draw all active modals (in order they were opened)
         for modal_name in list(self.active_modals):
@@ -1938,6 +2021,268 @@ class OSMode:
         time_x = box_x + box_padding
         time_y = time_bar_y + (time_bar_height - time_surface.get_height()) // 2
         self.screen.blit(time_surface, (time_x, time_y))
+    
+    def _draw_lapc1_audio_stream_visualizer(self):
+        """Draw the LAPC-1 Audio Output Stream visualizer box with pixel rain effect."""
+        if self.bbs_x is None or self.bbs_y is None or self.bbs_width is None:
+            return
+        
+        # Check if audio is streaming (not window-loop.wav)
+        is_streaming = self.is_audio_streaming()
+        
+        if not is_streaming:
+            # Clear pixels and helices when not streaming
+            self.audio_stream_pixels = []
+            self.audio_stream_helices = []
+            return
+        
+        # Create font for visualizer using system font (scaled)
+        try:
+            title_font_size = max(int(12 * self.scale), 10)
+            title_font = None
+            system_fonts = ["Segoe UI", "Arial", "Helvetica", None]
+            for font_name in system_fonts:
+                try:
+                    if title_font is None:
+                        title_font = pygame.font.SysFont(font_name, title_font_size)
+                    if title_font:
+                        break
+                except Exception:
+                    continue
+            if title_font is None:
+                title_font = pygame.font.SysFont(None, title_font_size)
+        except Exception:
+            return
+        
+        # Title text
+        title_text = "LAPC-1 AUDIO OUTPUT STREAM"
+        title_surface = title_font.render(title_text, True, COLOR_WHITE)
+        
+        # Get health monitor dimensions and position by replicating its calculation
+        # This ensures we match exactly
+        box_padding = int(12 * self.scale)
+        title_bar_height = int(22 * self.scale)
+        time_bar_height = int(20 * self.scale)
+        
+        # Replicate health monitor calculations exactly (from _draw_clock method)
+        # Create status font to match health monitor
+        status_font_size = max(int(11 * self.scale), 9)
+        status_font = None
+        system_fonts = ["Segoe UI", "Arial", "Helvetica", None]
+        for font_name in system_fonts:
+            try:
+                if status_font is None:
+                    status_font = pygame.font.SysFont(font_name, status_font_size)
+                if status_font:
+                    break
+            except Exception:
+                continue
+        if status_font is None:
+            status_font = pygame.font.SysFont(None, status_font_size)
+        
+        # Replicate health monitor width calculation
+        status_label = "STATUS:"
+        status_label_surface = status_font.render(status_label, True, COLOR_WHITE)
+        system_label = "  System: "
+        system_label_surface = status_font.render(system_label, True, COLOR_CYAN)
+        system_value_surface = status_font.render("OPERATIONAL", True, COLOR_GREEN)
+        harddisk_label = "  HardDisk: "
+        harddisk_label_surface = status_font.render(harddisk_label, True, COLOR_CYAN)
+        harddisk_used_surface = status_font.render("50mb", True, COLOR_RED)
+        harddisk_free_surface = status_font.render("/50mb", True, COLOR_GREEN)
+        lapc1_label = "  LAPC-1 Soundcard: "
+        lapc1_label_surface = status_font.render(lapc1_label, True, COLOR_CYAN)
+        lapc1_status_surface = status_font.render("ACTIVE", True, COLOR_GREEN)
+        datasette_label = "  Datasette: "
+        datasette_label_surface = status_font.render(datasette_label, True, COLOR_CYAN)
+        datasette_status_surface = status_font.render("DETECTED", True, COLOR_GREEN)
+        network_label = "  Network: "
+        network_label_surface = status_font.render(network_label, True, COLOR_CYAN)
+        network_value_surface = status_font.render("DISCONNECTED", True, COLOR_GREY)
+        health_title_text = "BRADSONIC 69000 Health Monitor"
+        health_title_surface = title_font.render(health_title_text, True, COLOR_WHITE)
+        
+        # Calculate max width (same as health monitor)
+        health_max_width = max(
+            health_title_surface.get_width(),
+            status_label_surface.get_width(),
+            system_label_surface.get_width() + system_value_surface.get_width(),
+            harddisk_label_surface.get_width() + harddisk_used_surface.get_width() + harddisk_free_surface.get_width(),
+            lapc1_label_surface.get_width() + lapc1_status_surface.get_width(),
+            datasette_label_surface.get_width() + datasette_status_surface.get_width(),
+            network_label_surface.get_width() + network_value_surface.get_width()
+        )
+        health_monitor_box_width = health_max_width + 2 * box_padding
+        
+        # Calculate health monitor position (same as _draw_clock)
+        health_monitor_padding = int(20 * self.scale)
+        health_monitor_offset_right = int(89 * self.scale)  # Move 89px to the right
+        health_monitor_box_x = self.bbs_x + self.bbs_width - health_monitor_box_width - health_monitor_padding + health_monitor_offset_right
+        health_monitor_box_y = self.bbs_y + int(10 * self.scale)
+        
+        # Calculate health monitor height
+        line_height = status_font.get_height() + int(2 * self.scale)
+        health_monitor_content_height = (
+            status_label_surface.get_height() + int(4 * self.scale) +  # Status label + spacing
+            line_height +  # System
+            line_height +  # HardDisk
+            line_height +  # LAPC-1
+            line_height +  # Datasette
+            line_height +  # Network
+            int(20 * self.scale) +  # Padding under Network status
+            int(4 * self.scale)  # Extra spacing before time bar
+        )
+        health_monitor_height = title_bar_height + health_monitor_content_height + time_bar_height
+        
+        # Position audio stream box directly under health monitor, same width
+        box_width = health_monitor_box_width  # Exact same width as health monitor
+        spacing_between = int(2 * self.scale)  # Small gap between health monitor and audio stream
+        box_x = health_monitor_box_x  # Same X position as health monitor
+        box_y = health_monitor_box_y + health_monitor_height + spacing_between  # Directly under health monitor
+        
+        # Calculate height to extend to bottom of desktop environment
+        desktop_bottom = self.desktop_y + self.desktop_size[1]
+        box_height = desktop_bottom - box_y - int(10 * self.scale)  # Leave 10px margin from bottom
+        
+        # Content area height (for pixel rain) is box_height minus title bar
+        content_height = box_height - title_bar_height
+        
+        # Draw box (on same layer as health monitor)
+        box_rect = pygame.Rect(box_x, box_y, box_width, box_height)
+        pygame.draw.rect(self.screen, COLOR_BG_DARK, box_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, box_rect, 2)  # Cyan border
+        
+        # Draw title bar
+        title_bar_rect = pygame.Rect(box_x, box_y, box_width, title_bar_height)
+        pygame.draw.rect(self.screen, COLOR_BG_TITLE, title_bar_rect)
+        pygame.draw.line(self.screen, COLOR_CYAN, (box_x, box_y + title_bar_height), 
+                        (box_x + box_width, box_y + title_bar_height), 1)
+        
+        # Draw title text in title bar (centered, white)
+        title_x = box_x + (box_width - title_surface.get_width()) // 2
+        title_y = box_y + (title_bar_height - title_surface.get_height()) // 2
+        self.screen.blit(title_surface, (title_x, title_y))
+        
+        # Content area for pixel rain
+        content_rect = pygame.Rect(
+            box_x + box_padding,
+            box_y + title_bar_height + int(4 * self.scale),
+            box_width - 2 * box_padding,
+            content_height - int(8 * self.scale)
+        )
+        
+        # Update pixel rain (spawn new pixels and move existing ones)
+        now = pygame.time.get_ticks()
+        time_since_last_update = now - self.audio_stream_last_update
+        
+        # Spawn new pixels based on audio activity (faster when audio is active)
+        if time_since_last_update >= self.audio_stream_pixel_spawn_rate:
+            # Spawn 1-3 pixels at random positions across the width
+            num_pixels = random.randint(1, 3)
+            for _ in range(num_pixels):
+                pixel = {
+                    "x": content_rect.x + random.randint(0, content_rect.width - int(2 * self.scale)),
+                    "y": content_rect.y - int(2 * self.scale),  # Start above the box
+                    "color": random.choice(self.audio_stream_pixel_colors),
+                    "speed": random.uniform(1.5, 3.0) * self.scale,  # Pixels per frame
+                    "twitch": random.uniform(-0.5, 0.5) * self.scale,  # Horizontal twitch
+                    "size": random.randint(int(1 * self.scale), int(3 * self.scale))
+                }
+                self.audio_stream_pixels.append(pixel)
+            self.audio_stream_last_update = now
+        
+        # Update and draw existing pixels
+        pixels_to_remove = []
+        for i, pixel in enumerate(self.audio_stream_pixels):
+            # Move pixel down (speed can vary slightly for more dynamic effect)
+            pixel["y"] += pixel["speed"] + random.uniform(-0.1, 0.1) * self.scale
+            
+            # Apply twitching (horizontal movement) - more dynamic variation
+            twitch_amount = pixel["twitch"] * (0.5 + 0.5 * random.random())  # Vary twitch strength
+            pixel["x"] += twitch_amount + random.uniform(-0.4, 0.4) * self.scale
+            
+            # Keep within bounds horizontally
+            if pixel["x"] < content_rect.x:
+                pixel["x"] = content_rect.x
+                pixel["twitch"] *= -0.5  # Bounce back with reduced force
+            elif pixel["x"] > content_rect.right - pixel["size"]:
+                pixel["x"] = content_rect.right - pixel["size"]
+                pixel["twitch"] *= -0.5  # Bounce back with reduced force
+            
+            # Remove pixels that have fallen below the content area
+            if pixel["y"] > content_rect.bottom:
+                pixels_to_remove.append(i)
+                continue
+            
+            # Draw pixel with slight size variation for flicker effect
+            pixel_size = int(pixel["size"] * (0.9 + 0.2 * random.random()))
+            if pixel_size > 0:
+                pixel_rect = pygame.Rect(int(pixel["x"]), int(pixel["y"]), pixel_size, pixel_size)
+                pygame.draw.rect(self.screen, pixel["color"], pixel_rect)
+        
+        # Remove pixels that have fallen out of view (in reverse order to preserve indices)
+        for i in reversed(pixels_to_remove):
+            self.audio_stream_pixels.pop(i)
+        
+        # Spawn helix patterns occasionally
+        time_since_helix_spawn = now - self.audio_stream_helix_last_spawn
+        if time_since_helix_spawn >= self.audio_stream_helix_spawn_interval:
+            # Spawn a new helix pattern
+            helix_center_x = content_rect.x + random.randint(int(content_rect.width * 0.2), int(content_rect.width * 0.8))
+            helix = {
+                "center_x": helix_center_x,
+                "y": content_rect.y - int(20 * self.scale),  # Start above the box
+                "angle": 0.0,  # Current angle in radians for helix rotation
+                "radius": random.uniform(10, 30) * self.scale,  # Helix radius
+                "speed": random.uniform(2.0, 3.5) * self.scale,  # Vertical speed
+                "rotation_speed": random.uniform(0.08, 0.15),  # Angular speed (radians per frame)
+                "particles": [],  # List of particle positions in the helix
+                "color": random.choice(self.audio_stream_pixel_colors),
+                "particle_count": random.randint(8, 15)  # Number of particles in helix
+            }
+            # Initialize particles in helix pattern
+            for i in range(helix["particle_count"]):
+                particle_angle = (i / helix["particle_count"]) * 2 * math.pi  # Distribute around circle
+                helix["particles"].append({
+                    "local_angle": particle_angle,  # Angle relative to helix center
+                    "size": random.randint(int(1 * self.scale), int(3 * self.scale))
+                })
+            self.audio_stream_helices.append(helix)
+            self.audio_stream_helix_last_spawn = now
+        
+        # Update and draw helix patterns
+        helices_to_remove = []
+        for i, helix in enumerate(self.audio_stream_helices):
+            # Update helix position and rotation
+            helix["y"] += helix["speed"]
+            helix["angle"] += helix["rotation_speed"]
+            
+            # Remove helix if it's gone below the content area
+            if helix["y"] > content_rect.bottom + helix["radius"] * 2:
+                helices_to_remove.append(i)
+                continue
+            
+            # Draw helix particles
+            for particle in helix["particles"]:
+                # Calculate particle position in helix
+                # x = center_x + radius * cos(angle + local_angle)
+                # y = y + radius * sin(angle + local_angle)
+                particle_angle = helix["angle"] + particle["local_angle"]
+                particle_x = helix["center_x"] + helix["radius"] * math.cos(particle_angle)
+                particle_y = helix["y"] + helix["radius"] * math.sin(particle_angle)
+                
+                # Check if particle is within content bounds
+                if (content_rect.x <= particle_x <= content_rect.right and
+                    content_rect.y <= particle_y <= content_rect.bottom):
+                    # Draw particle with slight size variation
+                    particle_size = int(particle["size"] * (0.9 + 0.2 * random.random()))
+                    if particle_size > 0:
+                        particle_rect = pygame.Rect(int(particle_x), int(particle_y), particle_size, particle_size)
+                        pygame.draw.rect(self.screen, helix["color"], particle_rect)
+        
+        # Remove helices that have fallen out of view (in reverse order to preserve indices)
+        for i in reversed(helices_to_remove):
+            self.audio_stream_helices.pop(i)
     
     def draw_scanline(self):
         """Draw the desktop scanline overlay."""
@@ -2572,39 +2917,106 @@ class OSMode:
             "content": MISSION_NOTE_CONTENT,
             "is_locked": True
         }
+    
+    def _bbs_login_note_template(self):
+        """Generate BBS login note with current user credentials."""
+        username, pin = self.get_user_credentials()
+        content = f"{BBS_NAME}\n"
+        content += f"Phone Number: {BBS_NUMBER}\n"
+        content += f"\n"
+        content += f"Username: {username if username else 'Not Set'}\n"
+        content += f"Login PIN: {pin if pin else 'Not Set'}"
+        return {
+            "title": BBS_LOGIN_NOTE_TITLE,
+            "content": content,
+            "is_locked": True
+        }
 
     def _load_user_notes(self) -> List[Dict]:
-        """Load notes from user profile and ensure mission note exists."""
+        """Load notes from user profile and ensure mission note and BBS login note exist."""
         notes = self.get_notes() or []
         mission_note = self._mission_note_template()
+        bbs_login_note = self._bbs_login_note_template()
         changed = False
 
         if not notes:
-            # No notes at all - create mission note
-            notes = [mission_note]
+            # No notes at all - create both permanent notes
+            notes = [mission_note, bbs_login_note]
             changed = True
         else:
-            first = notes[0]
-            # Check if first note is the locked mission note
-            is_mission_note = (first.get("is_locked", False) and 
-                              first.get("title") == mission_note["title"])
+            # Ensure Mission Objectives is first
+            mission_note_index = None
+            bbs_login_note_index = None
             
-            if not is_mission_note:
-                # Mission note is missing or not first - restore it
-                # Remove any other locked notes (shouldn't exist, but be safe)
-                other_notes = [note for note in notes if not note.get("is_locked", False)]
-                notes = [mission_note] + other_notes
+            for i, note in enumerate(notes):
+                if note.get("is_locked", False):
+                    if note.get("title") == MISSION_NOTE_TITLE:
+                        mission_note_index = i
+                    elif note.get("title") == BBS_LOGIN_NOTE_TITLE:
+                        bbs_login_note_index = i
+            
+            # Collect all non-locked notes
+            other_notes = [note for note in notes if not note.get("is_locked", False)]
+            
+            # Ensure Mission Objectives exists and is first
+            if mission_note_index is None:
+                # Mission note is missing - add it first
+                if notes and notes[0].get("is_locked", False) and notes[0].get("title") == BBS_LOGIN_NOTE_TITLE:
+                    # BBS login note is first, swap them
+                    notes = [mission_note, bbs_login_note] + other_notes
+                else:
+                    notes = [mission_note] + ([bbs_login_note] if bbs_login_note_index is None else []) + other_notes
+                changed = True
+            elif mission_note_index != 0:
+                # Mission note exists but is not first - move it to first
+                existing_mission = notes[mission_note_index]
+                remaining_notes = [n for i, n in enumerate(notes) if i != mission_note_index]
+                notes = [existing_mission] + remaining_notes
                 changed = True
             else:
-                # Mission note exists - preserve existing content (don't overwrite user modifications like strikethroughs)
-                # Only update title and is_locked if they're wrong, but keep the existing content
-                if notes[0].get("title") != mission_note["title"]:
-                    notes[0]["title"] = mission_note["title"]
+                # Mission note is first - ensure BBS login note is second
+                if bbs_login_note_index is None:
+                    # BBS login note is missing - add it second
+                    notes = [notes[0], bbs_login_note] + other_notes
                     changed = True
-                if not notes[0].get("is_locked", False):
-                    notes[0]["is_locked"] = True
+                elif bbs_login_note_index != 1:
+                    # BBS login note exists but is not second - move it to second
+                    existing_bbs_login = notes[bbs_login_note_index]
+                    remaining_notes = [notes[0]] + [n for i, n in enumerate(notes) if i not in (0, bbs_login_note_index)]
+                    notes = [notes[0], existing_bbs_login] + remaining_notes
                     changed = True
-                # Don't overwrite content - preserve user modifications
+                else:
+                    # Both permanent notes are in correct positions
+                    # Update BBS login note content with current credentials (it may have changed)
+                    if notes[1].get("title") == BBS_LOGIN_NOTE_TITLE:
+                        # Update content to reflect current credentials
+                        username, pin = self.get_user_credentials()
+                        updated_content = f"{BBS_NAME}\n"
+                        updated_content += f"Phone Number: {BBS_NUMBER}\n"
+                        updated_content += f"\n"
+                        updated_content += f"Username: {username if username else 'Not Set'}\n"
+                        updated_content += f"Login PIN: {pin if pin else 'Not Set'}"
+                        if notes[1].get("content") != updated_content:
+                            notes[1]["content"] = updated_content
+                            changed = True
+                    
+                    # Ensure mission note has correct title and is_locked
+                    if notes[0].get("title") != mission_note["title"]:
+                        notes[0]["title"] = mission_note["title"]
+                        changed = True
+                    if not notes[0].get("is_locked", False):
+                        notes[0]["is_locked"] = True
+                        changed = True
+                    
+                    # Ensure BBS login note has correct title and is_locked
+                    if notes[1].get("title") != bbs_login_note["title"]:
+                        notes[1]["title"] = bbs_login_note["title"]
+                        changed = True
+                    if not notes[1].get("is_locked", False):
+                        notes[1]["is_locked"] = True
+                        changed = True
+                    
+                    # Don't overwrite mission note content - preserve user modifications like strikethroughs
 
         # Enforce max of 10 notes
         if len(notes) > 10:
@@ -2617,15 +3029,18 @@ class OSMode:
         return notes
 
     def _save_user_notes(self, notes: List[Dict]) -> None:
-        """Persist notes back to user profile, ensuring mission note is first."""
+        """Persist notes back to user profile, ensuring mission note is first and BBS login note is second."""
         sanitized: List[Dict] = []
         
-        # Find existing mission note to preserve its content (including strikethroughs)
+        # Find existing permanent notes to preserve their content
         existing_mission_note = None
+        existing_bbs_login_note = None
         for note in notes:
-            if note.get("is_locked", False) and note.get("title") == MISSION_NOTE_TITLE:
-                existing_mission_note = note
-                break
+            if note.get("is_locked", False):
+                if note.get("title") == MISSION_NOTE_TITLE:
+                    existing_mission_note = note
+                elif note.get("title") == BBS_LOGIN_NOTE_TITLE:
+                    existing_bbs_login_note = note
         
         # Use existing mission note if found, otherwise use template
         if existing_mission_note:
@@ -2638,10 +3053,30 @@ class OSMode:
             # No existing mission note, use template
             mission_note = self._mission_note_template()
             sanitized.append(mission_note)
+        
+        # Use existing BBS login note if found, otherwise create new one with current credentials
+        if existing_bbs_login_note:
+            # Update content with current credentials (they may have changed)
+            username, pin = self.get_user_credentials()
+            updated_content = f"{BBS_NAME}\n"
+            updated_content += f"Phone Number: {BBS_NUMBER}\n"
+            updated_content += f"\n"
+            updated_content += f"Username: {username if username else 'Not Set'}\n"
+            updated_content += f"Login PIN: {pin if pin else 'Not Set'}"
+            sanitized.append({
+                "title": existing_bbs_login_note.get("title", BBS_LOGIN_NOTE_TITLE),
+                "content": updated_content,
+                "is_locked": True
+            })
+        else:
+            # No existing BBS login note, create new one
+            bbs_login_note = self._bbs_login_note_template()
+            sanitized.append(bbs_login_note)
 
-        for note in notes[1:]:
+        # Add all non-locked notes
+        for note in notes:
             if note.get("is_locked", False):
-                continue  # Skip any other locked notes to avoid duplicates
+                continue  # Skip locked notes (already handled above)
 
             sanitized.append({
                 "title": note.get("title", "Untitled").strip() or "Untitled",
@@ -3361,10 +3796,12 @@ class OSMode:
         if note.get("is_locked", False):
             return  # Locked notes cannot be deleted
         
-        # Double-check: never delete index 0 (mission note)
+        # Double-check: never delete index 0 (mission note) or index 1 (BBS login note)
         if index == 0:
             return  # Mission note is always protected
-
+        if index == 1:
+            return  # BBS login note is always protected
+        
         del notes[index]
         self._save_user_notes(notes)
         self.notes_modal_edit_mode = False

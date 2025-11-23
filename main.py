@@ -3285,11 +3285,38 @@ class GLYPHIS_IOBBS:
                         user["chess_stats"] = stats
                         self.save_user_state()
                 
+                def is_audio_streaming():
+                    """Check if audio is streaming (excluding window-loop.wav ambient track)."""
+                    # Check if CRACKER IDE audio is playing (NODE7.wav)
+                    if self.active_ops_session:
+                        audio_checker = getattr(self.active_ops_session, "is_cracker_ide_audio_playing", None)
+                        if callable(audio_checker):
+                            try:
+                                return bool(audio_checker())
+                            except Exception:
+                                pass
+                    # Check if any other audio channels are playing (excluding ambient)
+                    try:
+                        # Check if mixer is initialized
+                        if not pygame.mixer.get_init():
+                            return False
+                        # Get all active channels
+                        num_channels = pygame.mixer.get_num_channels()
+                        for i in range(num_channels):
+                            channel = pygame.mixer.Channel(i)
+                            if channel.get_busy():
+                                # Check if this is not the ambient channel
+                                if channel != self.ambient_channel:
+                                    return True
+                    except Exception:
+                        pass
+                    return False
+                
                 self.os_mode = OSMode(self.screen, self.scale, reset_bbs_and_exit_os, 
                                       self.bbs_x, self.bbs_y, self.bbs_width, has_token,
                                       get_recording_state, set_recording_state,
                                       get_notes, save_notes, get_user_credentials,
-                                      get_chess_stats, save_chess_stats)
+                                      get_chess_stats, save_chess_stats, is_audio_streaming)
                 print("DEBUG GHOST USER: OS Mode initialized successfully")
                 return True
             except Exception as e:
@@ -4182,22 +4209,46 @@ class GLYPHIS_IOBBS:
                 self.ghost_user_timer = current_time
                 print("DEBUG GHOST USER: Step 5 complete")
         
-        # Step 6: Wait for video to complete (don't close modal - let video play fully)
+        # Step 6: Close all open modals (Notes and Datasette)
+        # Wait for datasette video to complete before closing modal
         elif self.ghost_user_step == 6:
-            # Don't close the modal - let the video play fully without interruption
-            # The video will complete naturally and the modal can stay open
-            # Just wait for a reasonable time, then end the sequence
-            print(f"DEBUG GHOST USER STEP 6: Video playing, waiting for completion, elapsed={elapsed}ms")
-            # Wait for video to finish (check if video is completed)
-            if self.os_mode and self.os_mode.tape_modal_video_completed:
+            print(f"DEBUG GHOST USER STEP 6: Waiting for video completion, elapsed={elapsed}ms")
+            if self.os_mode:
+                # Close Notes modal immediately
+                if "notes" in self.os_mode.active_modals:
+                    self.os_mode.active_modals.remove("notes")
+                    print("DEBUG GHOST USER: Notes modal closed")
+                
+                # For Datasette modal: wait for video to complete
+                if "tape" in self.os_mode.active_modals:
+                    # Check if video has completed
+                    if self.os_mode.tape_modal_video_completed:
+                        # Video finished - close modal
+                        self.os_mode.active_modals.remove("tape")
+                        print("DEBUG GHOST USER: Datasette modal closed after video completion")
+                        self.ghost_user_step = 7
+                        self.ghost_user_timer = current_time
+                        print("DEBUG GHOST USER: Step 6 complete - All modals closed")
+                    else:
+                        # Video still playing - keep modal open and wait
+                        if not self.os_mode.tape_modal_video_playing:
+                            # Video stopped but not marked as completed (shouldn't happen, but handle it)
+                            print("DEBUG GHOST USER: Video stopped but not completed, closing modal anyway")
+                            self.os_mode.active_modals.remove("tape")
+                            self.ghost_user_step = 7
+                            self.ghost_user_timer = current_time
+                        else:
+                            # Video still playing - stay in step 6 and wait
+                            print("DEBUG GHOST USER: Datasette video still playing, waiting...")
+                else:
+                    # No tape modal to wait for - proceed to next step
+                    self.ghost_user_step = 7
+                    self.ghost_user_timer = current_time
+                    print("DEBUG GHOST USER: Step 6 complete - No datasette modal to wait for")
+            else:
+                # No os_mode - proceed to next step
                 self.ghost_user_step = 7
                 self.ghost_user_timer = current_time
-                print("DEBUG GHOST USER: Step 6 complete - Video finished playing")
-            # Also allow timeout after 30 seconds to prevent infinite wait
-            elif elapsed >= 30000:  # 30 second timeout
-                self.ghost_user_step = 7
-                self.ghost_user_timer = current_time
-                print("DEBUG GHOST USER: Step 6 complete - Timeout reached, ending sequence")
         
         # Step 7: Re-enable inputs and end ghost user sequence
         elif self.ghost_user_step == 7:
@@ -4420,11 +4471,38 @@ class GLYPHIS_IOBBS:
                                         user["chess_stats"] = stats
                                         self.save_user_state()
                                 
+                                def is_audio_streaming():
+                                    """Check if audio is streaming (excluding window-loop.wav ambient track)."""
+                                    # Check if CRACKER IDE audio is playing (NODE7.wav)
+                                    if self.active_ops_session:
+                                        audio_checker = getattr(self.active_ops_session, "is_cracker_ide_audio_playing", None)
+                                        if callable(audio_checker):
+                                            try:
+                                                return bool(audio_checker())
+                                            except Exception:
+                                                pass
+                                    # Check if any other audio channels are playing (excluding ambient)
+                                    try:
+                                        # Check if mixer is initialized
+                                        if not pygame.mixer.get_init():
+                                            return False
+                                        # Get all active channels
+                                        num_channels = pygame.mixer.get_num_channels()
+                                        for i in range(num_channels):
+                                            channel = pygame.mixer.Channel(i)
+                                            if channel.get_busy():
+                                                # Check if this is not the ambient channel
+                                                if channel != self.ambient_channel:
+                                                    return True
+                                    except Exception:
+                                        pass
+                                    return False
+                                
                                 self.os_mode = OSMode(self.screen, self.scale, reset_bbs_and_exit_os, 
                                                       self.bbs_x, self.bbs_y, self.bbs_width, has_token,
                                                       get_recording_state, set_recording_state,
                                                       get_notes, save_notes, get_user_credentials,
-                                                      get_chess_stats, save_chess_stats)
+                                                      get_chess_stats, save_chess_stats, is_audio_streaming)
                             except Exception as e:
                                 print(f"Warning: Failed to initialize OS Mode: {e}")
                                 self.os_mode_active = False
