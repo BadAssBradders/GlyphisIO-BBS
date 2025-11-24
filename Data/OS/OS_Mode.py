@@ -11,7 +11,7 @@ import time
 import math
 import json
 import random
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from datetime import datetime
 
 # Visual Constants
@@ -41,9 +41,9 @@ MISSION_NOTE_CONTENT = (
     "[s]1. Receive Invite from Glyphis[/s]\n"
     "[s]2. Get onto the BBS (0345728891)[/s]\n"
     "[s]3. Complete a technical challenge to prove yourself[/s]\n"
-    "4. Get the audio tech's help to get the computer's sound card streaming from the BBS, and record the first audio stream from Glyphisis_IO using the Datasette!\n"
+    "4. Get the audio tech's help and get the first audio stream from Glyphisis_IO. Record it using the Datasette!\n"
     "5. Get invited to crack some games\n"
-    "6. Obtain access to the Pirate Radio Stream"
+    "6. Obtain access to the group's Pirate Radio Stream!\n"
 )
 
 # BBS login note template (non-deletable login information note)
@@ -158,7 +158,7 @@ class OSMode:
     Renders a desktop environment with draggable icons.
     """
     
-    def __init__(self, screen: pygame.Surface, scale: float, reset_bbs_callback=None, bbs_x=None, bbs_y=None, bbs_width=None, has_token_callback=None, get_recording_state_callback=None, set_recording_state_callback=None, get_notes_callback=None, save_notes_callback=None, get_user_credentials_callback=None, get_chess_stats_callback=None, save_chess_stats_callback=None, is_audio_streaming_callback=None):
+    def __init__(self, screen: pygame.Surface, scale: float, reset_bbs_callback=None, bbs_x=None, bbs_y=None, bbs_width=None, has_token_callback=None, get_recording_state_callback=None, set_recording_state_callback=None, get_notes_callback=None, save_notes_callback=None, get_user_credentials_callback=None, get_chess_stats_callback=None, save_chess_stats_callback=None, is_audio_streaming_callback=None, grant_token_callback=None):
         """
         Initialize OS Mode.
         
@@ -174,6 +174,7 @@ class OSMode:
             set_recording_state_callback: Optional callback to set recording state (is_recording, start_time)
             get_notes_callback: Optional callback to get notes list
             save_notes_callback: Optional callback to save notes list
+            grant_token_callback: Optional callback function to grant a token to the player
             is_audio_streaming_callback: Optional callback to check if audio is streaming (returns True if audio other than window-loop.wav is playing)
         """
         self.screen = screen
@@ -190,6 +191,7 @@ class OSMode:
         self.get_user_credentials = get_user_credentials_callback or (lambda: ("", ""))
         self.get_chess_stats = get_chess_stats_callback or (lambda: {})
         self.save_chess_stats = save_chess_stats_callback or (lambda stats: None)
+        self.grant_token = grant_token_callback or (lambda token, reason=None: False)
         self.is_audio_streaming = is_audio_streaming_callback or (lambda: False)
         
         # LAPC-1 Audio Output Stream visualizer state
@@ -486,12 +488,16 @@ class OSMode:
         # Chess game instance
         if _chess_available and ChessGame:
             try:
+                health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
                 self.chess_game = ChessGame(
                     self.screen,
                     self.scale,
                     self.desktop_x,
                     self.desktop_y,
-                    self.desktop_size
+                    self.desktop_size,
+                    health_monitor_y,
+                    self.bbs_x or 0,
+                    self.bbs_width or 0
                 )
             except Exception as e:
                 print(f"Warning: Failed to initialize ChessGame: {e}")
@@ -743,6 +749,9 @@ class OSMode:
             if "notes" in self.active_modals and self.notes_modal_edit_mode:
                 if self._notes_handle_keydown(event):
                     return True
+            elif "modem" in self.active_modals and not self.modem_modal_connection_started:
+                if self._modem_handle_keydown(event):
+                    return True
 
         elif event.type == pygame.TEXTINPUT:
             if "notes" in self.active_modals and self.notes_modal_edit_mode:
@@ -760,9 +769,9 @@ class OSMode:
             modal_w = int(500 * self.scale)
             modal_h = int(400 * self.scale) + self.modal_title_bar_height
         elif modal_name == "modem":
-            layout = self._get_modem_layout_metrics()
-            modal_w = layout["modal_w"]
-            modal_h = layout["modal_h"]
+            # Simple modem dimensions
+            modal_w = int(340 * self.scale)
+            modal_h = int(480 * self.scale) + self.modal_title_bar_height
         elif modal_name == "notes":
             # Notes modal dimensions
             modal_w = int(700 * self.scale)
@@ -863,6 +872,16 @@ class OSMode:
             self._stop_tape_video()
             return True
         elif record_btn_rect.collidepoint(mouse_x, mouse_y):
+            # Check if already recording - prevent starting new recording if LAPC1 is recording
+            is_recording, _ = self.get_recording_state()
+            if is_recording:
+                # Show error message in terminal
+                self.tape_modal_terminal_lines = []
+                self.tape_modal_terminal_lines.append("Unable to Start Recording. Data Currently Recording")
+                self.tape_modal_terminal_text = "\n".join(self.tape_modal_terminal_lines)
+                self.tape_modal_message_timer = 0.0
+                return True
+            
             # Clear terminal and start recording sequence
             self.tape_modal_terminal_lines = []
             self.tape_modal_message_timer = 0.0
@@ -895,15 +914,10 @@ class OSMode:
     
     def _handle_modem_modal_click(self, mouse_x: int, mouse_y: int) -> bool:
         """Handle clicks within the modem modal. Returns True if click was handled."""
-        layout = self._get_modem_layout_metrics()
-        button_size = layout["button_size"]
-        button_spacing = layout["button_spacing"]
-        gap = layout["gap"]
-        terminal_h = layout["terminal_h"]
-        dial_pad_h = layout["dial_pad_h"]
-        spacing = layout["spacing"]
-        call_btn_h = layout["call_btn_h"]
-        modal_w, modal_h = self._clamp_modal_to_desktop(layout["modal_w"], layout["modal_h"])
+        modal_w, modal_h = self._get_modal_size("modem")
+        
+        # Clamp modal to fit within desktop boundaries
+        modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
         modal_x, modal_y = self.modal_positions.get("modem", (0, 0))
         
         # Check if clicking on close button in title bar
@@ -923,10 +937,18 @@ class OSMode:
         # Don't handle clicks if connection sequence has started
         if self.modem_modal_connection_started:
             return False
+            
+        gap = int(20 * self.scale)
+        terminal_h = int(120 * self.scale)
+        terminal_y = modal_y + self.modal_title_bar_height + gap
         
-        # Calculate positions (accounting for title bar)
-        dial_start_x = modal_x + gap
-        dial_start_y = modal_y + self.modal_title_bar_height + gap + terminal_h + spacing
+        dial_start_y = terminal_y + terminal_h + gap
+        button_size = int(42 * self.scale)
+        button_spacing = int(10 * self.scale)
+        
+        # Calculate centering for dial pad matching _draw_modem_modal
+        dial_width = 3 * button_size + 2 * button_spacing
+        dial_start_x = modal_x + (modal_w - dial_width) // 2
         
         # Dial pad buttons: 1-9, *, 0, #
         dial_buttons = [
@@ -945,13 +967,15 @@ class OSMode:
                 
                 if btn_rect.collidepoint(mouse_x, mouse_y):
                     # Add to dialed sequence
-                    self.modem_modal_dialed_sequence += button_label
+                    if len(self.modem_modal_dialed_sequence) < 20:  # Limit length
+                        self.modem_modal_dialed_sequence += button_label
                     return True
         
-        # CALL button (between dial pad and close button)
-        call_btn_x = modal_x + gap
-        call_btn_y = modal_y + self.modal_title_bar_height + gap + terminal_h + spacing + dial_pad_h + spacing
-        call_btn_w = modal_w - 2 * gap
+        # CALL button
+        call_btn_y = dial_start_y + 4 * (button_size + button_spacing) + int(5 * self.scale)
+        call_btn_w = dial_width
+        call_btn_h = int(40 * self.scale)
+        call_btn_x = dial_start_x
         call_btn_rect = pygame.Rect(call_btn_x, call_btn_y, call_btn_w, call_btn_h)
         
         if call_btn_rect.collidepoint(mouse_x, mouse_y):
@@ -973,13 +997,17 @@ class OSMode:
                 ]
                 self.modem_modal_message_index = 0
                 self.modem_modal_message_timer = 0.0
+                
+                # Grant MODEM1ST token
+                if self.grant_token_callback:
+                    self.grant_token_callback("MODEM1ST", "Modem connection established")
             else:
-                # Show error message if wrong number
-                self.modem_modal_dialed_sequence = ""  # Clear sequence
+                # Show error message or just clear
+                self.modem_modal_dialed_sequence = ""
             return True
-        
+            
         return False
-
+    
     def _handle_games_modal_click(self, mouse_x: int, mouse_y: int) -> bool:
         """Handle clicks within the games modal."""
         modal_w, modal_h = self._get_modal_size("games")
@@ -1099,18 +1127,54 @@ class OSMode:
             print(f"{icon_name.title()} is not available yet.")
 
     def _play_modem_dial_sound(self) -> None:
-        if self.modem_dial_sound_playing or not pygame.mixer.get_init():
-            return
+        """Play dialup.wav on successful connection, interrupting other music if needed."""
+        if not pygame.mixer.get_init():
+            try:
+                pygame.mixer.init()
+            except Exception:
+                print("Warning: Could not initialize mixer for dialup.wav")
+                return
         try:
-            if self.modem_dial_sound is None:
-                audio_path = get_data_path("Audio", "dial.wav")
-                if os.path.exists(audio_path):
-                    self.modem_dial_sound = pygame.mixer.Sound(audio_path)
+            # Stop any currently playing music
+            if pygame.mixer.music.get_busy():
+                pygame.mixer.music.stop()
+            
+            # Stop any currently playing sounds (including this one if already playing)
             if self.modem_dial_sound:
-                self.modem_dial_sound.play()
-                self.modem_dial_sound_playing = True
+                try:
+                    self.modem_dial_sound.stop()
+                except Exception:
+                    pass
+            
+            # Load and play dialup.wav
+            audio_path = get_data_path("Audio", "dialup.wav")
+            if os.path.exists(audio_path):
+                try:
+                    self.modem_dial_sound = pygame.mixer.Sound(audio_path)
+                    # Play the sound - this will interrupt other sounds
+                    channel = self.modem_dial_sound.play()
+                    self.modem_dial_sound_playing = True
+                    print(f"DEBUG: Playing dialup.wav from {audio_path}")
+                except Exception as e:
+                    print(f"Warning: Failed to load/play dialup.wav: {e}")
+                    self.modem_dial_sound = None
+                    self.modem_dial_sound_playing = False
+            else:
+                print(f"Warning: dialup.wav not found at {audio_path}")
+                # Try alternative path
+                alt_path = get_data_path("OS", "Audio", "dialup.wav")
+                if os.path.exists(alt_path):
+                    try:
+                        self.modem_dial_sound = pygame.mixer.Sound(alt_path)
+                        channel = self.modem_dial_sound.play()
+                        self.modem_dial_sound_playing = True
+                        print(f"DEBUG: Playing dialup.wav from alternative path {alt_path}")
+                    except Exception as e:
+                        print(f"Warning: Failed to load/play dialup.wav from alt path: {e}")
         except Exception as e:
-            print(f"Warning: Failed to play dial.wav: {e}")
+            print(f"Warning: Failed to play dialup.wav: {e}")
+            import traceback
+            traceback.print_exc()
             self.modem_dial_sound = None
             self.modem_dial_sound_playing = False
 
@@ -1138,9 +1202,10 @@ class OSMode:
 
         while self.modem_packet_spawn_timer >= spawn_interval:
             self.modem_packet_spawn_timer -= spawn_interval
+            # Spawn packets at the top of the terminal, not outside
             packet = {
                 "x": random.uniform(terminal_left, terminal_right),
-                "y": terminal_top - random.uniform(5, 25),
+                "y": terminal_top + random.uniform(5, 15),  # Start within terminal
                 "speed": random.uniform(110, 190) * self.scale,
                 "length": random.uniform(12, 26) * self.scale,
                 "color": random.choice([
@@ -1154,34 +1219,51 @@ class OSMode:
         survivors = []
         for packet in self.modem_packet_sprites:
             packet["y"] += packet["speed"] * dt
-            if packet["y"] < terminal_bottom + packet["length"]:
+            # Only keep packets that haven't completely left the terminal
+            if packet["y"] < terminal_bottom:
                 survivors.append(packet)
         self.modem_packet_sprites = survivors
 
     def _draw_modem_packet_effect(self, terminal_rect: pygame.Rect) -> None:
-        if not self.modem_modal_connection_started:
+        """Draw packet effect only within the terminal rectangle."""
+        if not self.modem_modal_connection_started or not terminal_rect:
             return
 
-        for packet in self.modem_packet_sprites:
-            start = (int(packet["x"]), int(packet["y"]))
-            end = (int(packet["x"]), int(packet["y"] + packet["length"]))
-            pygame.draw.line(self.screen, packet["color"], start, end, 2)
+        # Clip drawing to terminal rect
+        clip_rect = self.screen.get_clip()
+        self.screen.set_clip(terminal_rect)
+        
+        try:
+            # Draw packets only if they're within terminal bounds
+            for packet in self.modem_packet_sprites:
+                packet_y = int(packet["y"])
+                # Only draw if packet is within terminal bounds
+                if terminal_rect.top <= packet_y <= terminal_rect.bottom:
+                    start = (int(packet["x"]), packet_y)
+                    end = (int(packet["x"]), int(packet["y"] + packet["length"]))
+                    # Clamp end point to terminal bottom
+                    if end[1] > terminal_rect.bottom:
+                        end = (end[0], terminal_rect.bottom)
+                    pygame.draw.line(self.screen, packet["color"], start, end, 2)
 
-        amplitude = max(int(7 * self.scale), 3)
-        wave_colors = [(0, 255, 200), (255, 80, 200)]
-        width = terminal_rect.width
-        if width <= 1:
-            return
-        for idx, color in enumerate(wave_colors):
-            points = []
-            freq = 4 + idx * 2
-            for x in range(width):
-                norm = x / (width - 1)
-                phase = self.modem_wave_phase * (1 + idx * 0.35)
-                y = terminal_rect.y + terminal_rect.height / 2 + math.sin(phase + norm * math.pi * freq) * amplitude * (1 + idx * 0.3)
-                points.append((terminal_rect.x + x, y))
-            if len(points) >= 2:
-                pygame.draw.lines(self.screen, color, False, points, 1)
+            # Draw wave effect only within terminal
+            amplitude = max(int(7 * self.scale), 3)
+            wave_colors = [(0, 255, 200), (255, 80, 200)]
+            width = terminal_rect.width
+            if width > 1:
+                for idx, color in enumerate(wave_colors):
+                    points = []
+                    freq = 4 + idx * 2
+                    for x in range(width):
+                        norm = x / (width - 1)
+                        phase = self.modem_wave_phase * (1 + idx * 0.35)
+                        y = terminal_rect.y + terminal_rect.height / 2 + math.sin(phase + norm * math.pi * freq) * amplitude * (1 + idx * 0.3)
+                        points.append((terminal_rect.x + x, y))
+                    if len(points) >= 2:
+                        pygame.draw.lines(self.screen, color, False, points, 1)
+        finally:
+            # Restore clip
+            self.screen.set_clip(clip_rect)
 
     def _handle_notes_modal_click(self, mouse_x: int, mouse_y: int) -> bool:
         """Handle clicks within the revamped notes modal."""
@@ -1399,6 +1481,33 @@ class OSMode:
                 print(f"Warning: Audio file not found for {video_path}. Video will play without sound.")
                 print("  Expected audio file: Datasette_Load.wav, Datasette_Load.mp3, or Datasette_Load.ogg")
             
+            # Read first frame immediately to prevent "paused" appearance
+            ret, first_frame = self.tape_modal_video_cap.read()
+            if ret and first_frame is not None:
+                # Process first frame immediately
+                frame_rgba = self._apply_chroma_key(first_frame)
+                if frame_rgba is not None:
+                    if self.tape_modal_video_display_size:
+                        frame_resized = cv2.resize(frame_rgba, self.tape_modal_video_display_size, interpolation=cv2.INTER_LINEAR)
+                    else:
+                        frame_resized = frame_rgba
+                    
+                    # Convert to pygame surface
+                    height, width = frame_resized.shape[:2]
+                    frame_resized = np.clip(frame_resized, 0, 255).astype(np.uint8)
+                    rgb_data = frame_resized[:, :, :3]
+                    alpha_data = frame_resized[:, :, 3]
+                    # Apply initial fade alpha (0.0 for fade-in start)
+                    alpha_data = (alpha_data * self.tape_modal_video_fade_alpha).astype(np.uint8)
+                    rgb_swapped = np.swapaxes(rgb_data, 0, 1)
+                    frame_surface = pygame.surfarray.make_surface(rgb_swapped)
+                    frame_surface = frame_surface.convert_alpha()
+                    alpha_swapped = np.swapaxes(alpha_data, 0, 1)
+                    alpha_array = pygame.surfarray.pixels_alpha(frame_surface)
+                    alpha_array[:] = alpha_swapped
+                    del alpha_array
+                    self.tape_modal_video_frame = frame_surface
+            
             self.tape_modal_video_playing = True
         except Exception as e:
             print(f"Warning: Failed to start video: {e}")
@@ -1511,6 +1620,7 @@ class OSMode:
                     self.modem_modal_message_index += 1
                     self.modem_modal_message_timer = 0.0
                     if self.modem_modal_message_index >= len(self.modem_modal_connection_messages):
+                        # Connection successful - reset BBS and exit OS mode
                         self.modem_modal_should_reset_bbs = True
                         self.modem_modal_should_exit_os = True
                         if self.reset_bbs_callback:
@@ -2289,49 +2399,9 @@ class OSMode:
         if self.desktop_scanline_image:
             self.screen.blit(self.desktop_scanline_image, (self.desktop_x, self.desktop_y))
     
-    def _get_modem_layout_metrics(self) -> Dict[str, int]:
-        button_size = int(58 * self.scale)
-        button_spacing = int(12 * self.scale)
-        gap = int(24 * self.scale)
-        terminal_h = int(170 * self.scale)
-        spacing = int(24 * self.scale)
-        call_btn_h = int(40 * self.scale)
-        dial_pad_h = 4 * button_size + 3 * button_spacing
-        modal_w = 3 * button_size + 2 * button_spacing + 2 * gap
-        modal_h = (
-            self.modal_title_bar_height
-            + gap
-            + terminal_h
-            + spacing
-            + dial_pad_h
-            + spacing
-            + call_btn_h
-            + gap
-        )
-        return {
-            "button_size": button_size,
-            "button_spacing": button_spacing,
-            "gap": gap,
-            "terminal_h": terminal_h,
-            "spacing": spacing,
-            "call_btn_h": call_btn_h,
-            "dial_pad_h": dial_pad_h,
-            "modal_w": modal_w,
-            "modal_h": modal_h,
-        }
-    
     def _draw_modem_modal(self):
         """Draw the modem icon modal with telephone dial."""
-        layout = self._get_modem_layout_metrics()
-        button_size = layout["button_size"]
-        button_spacing = layout["button_spacing"]
-        gap = layout["gap"]
-        terminal_h = layout["terminal_h"]
-        dial_pad_h = layout["dial_pad_h"]
-        call_btn_h = layout["call_btn_h"]
-        spacing = layout["spacing"]
-        modal_w = layout["modal_w"]
-        modal_h = layout["modal_h"]
+        modal_w, modal_h = self._get_modal_size("modem")
         
         # Clamp modal to fit within desktop boundaries
         modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
@@ -2388,9 +2458,11 @@ class OSMode:
             pass
         
         # Draw terminal window (below title bar)
+        gap = int(20 * self.scale)
         terminal_x = modal_x + gap
         terminal_y = modal_y + self.modal_title_bar_height + gap
         terminal_w = modal_w - 2 * gap
+        terminal_h = int(120 * self.scale)
         terminal_rect = pygame.Rect(terminal_x, terminal_y, terminal_w, terminal_h)
         pygame.draw.rect(self.screen, (5, 10, 25), terminal_rect)
         pygame.draw.rect(self.screen, COLOR_CYAN, terminal_rect, 1)  # Cyan border
@@ -2412,13 +2484,13 @@ class OSMode:
                 lines_to_render = [
                     "READY FOR INPUT...",
                     f"Dialed: {self.modem_modal_dialed_sequence}",
-                    "Press CALL to attempt handshake."
+                    "Press CALL to connect."
                 ]
             else:
                 lines_to_render = [
-                    "READY FOR INPUT...",
-                    "Dial Sequence:",
-                    "Awaiting user input..."
+                    "BRADSONIC NETLINK 69000",
+                    "RetroSecure Dialer v2.1",
+                    "Awaiting dial sequence..."
                 ]
             
             for i, line in enumerate(lines_to_render):
@@ -2441,36 +2513,21 @@ class OSMode:
             status_text = status_font.render("  Awaiting CALL command.", True, COLOR_TEAL)
             self.screen.blit(status_text, (terminal_x, terminal_y + terminal_h - status_font.get_height() - int(6 * self.scale)))
         
-        # Dial pad base position
-        dial_start_x = modal_x + gap
-        dial_start_y = modal_y + self.modal_title_bar_height + gap + terminal_h + spacing
+        # Draw Dial Pad
+        dial_start_y = terminal_y + terminal_h + gap
+        button_size = int(42 * self.scale)
+        button_spacing = int(10 * self.scale)
+        
+        # Calculate centering for dial pad
+        dial_width = 3 * button_size + 2 * button_spacing
+        dial_start_x = modal_x + (modal_w - dial_width) // 2
+        
         dial_buttons = [
             ["1", "2", "3"],
             ["4", "5", "6"],
             ["7", "8", "9"],
             ["*", "0", "#"]
         ]
-        
-        try:
-            button_font = pygame.font.Font(None, max(int(24 * self.scale), 16))
-            label_font = pygame.font.Font(None, max(int(12 * self.scale), 9))
-        except Exception:
-            button_font = None
-            label_font = None
-        keypad_labels = {
-            "1": "",
-            "2": "ABC",
-            "3": "DEF",
-            "4": "GHI",
-            "5": "JKL",
-            "6": "MNO",
-            "7": "PRS",
-            "8": "TUV",
-            "9": "WXY",
-            "0": "OPR",
-            "*": "",
-            "#": ""
-        }
         
         if not self.modem_modal_connection_started:
             for row_idx, row in enumerate(dial_buttons):
@@ -2479,43 +2536,38 @@ class OSMode:
                     btn_y = dial_start_y + row_idx * (button_size + button_spacing)
                     btn_rect = pygame.Rect(btn_x, btn_y, button_size, button_size)
                     
-                    # Check if button is hovered
                     is_hovered = self.hovered_button == ("modem", f"dial_{button_label}")
-                    btn_color = (25, 35, 60) if not is_hovered else (35, 65, 110)
+                    btn_color = (35, 65, 110) if is_hovered else (25, 35, 60)
                     
-                    pygame.draw.rect(self.screen, (5, 0, 15), btn_rect, border_radius=8)
-                    pygame.draw.rect(self.screen, btn_color, btn_rect.inflate(-6, -6), border_radius=8)
-                    pygame.draw.rect(self.screen, COLOR_CYAN, btn_rect, 2, border_radius=8)
+                    pygame.draw.rect(self.screen, btn_color, btn_rect, border_radius=8)
+                    pygame.draw.rect(self.screen, COLOR_CYAN, btn_rect, 2 if is_hovered else 1, border_radius=8)
                     
-                    # Draw button label
-                    if button_font:
-                        text_surface = button_font.render(button_label, True, COLOR_CYAN)
+                    try:
+                        font = pygame.font.Font(None, max(int(24 * self.scale), 16))
+                        text_surface = font.render(button_label, True, COLOR_CYAN)
                         text_rect = text_surface.get_rect(center=btn_rect.center)
                         self.screen.blit(text_surface, text_rect)
-                    label_text = keypad_labels.get(button_label, "")
-                    if label_font and label_text:
-                        label_surface = label_font.render(label_text, True, COLOR_GREY)
-                        label_rect = label_surface.get_rect(center=(btn_rect.centerx, btn_rect.centery + int(18 * self.scale)))
-                        self.screen.blit(label_surface, label_rect)
-        
-        # Draw CALL button
-        if not self.modem_modal_connection_started:
-            call_btn_x = modal_x + gap
-            call_btn_y = modal_y + self.modal_title_bar_height + gap + terminal_h + spacing + dial_pad_h + spacing
-            call_btn_w = modal_w - 2 * gap
+                    except Exception:
+                        pass
+                        
+            # Call Button
+            call_btn_y = dial_start_y + 4 * (button_size + button_spacing) + int(5 * self.scale)
+            call_btn_w = dial_width
+            call_btn_h = int(40 * self.scale)
+            call_btn_x = dial_start_x
             call_btn_rect = pygame.Rect(call_btn_x, call_btn_y, call_btn_w, call_btn_h)
+            
             is_hovered = self.hovered_button == ("modem", "call")
             btn_color = (20, 60, 40) if is_hovered else (10, 35, 20)
-            pygame.draw.rect(self.screen, COLOR_NEON_GREEN, call_btn_rect.inflate(8, 8), 2, border_radius=12)
-            pygame.draw.rect(self.screen, btn_color, call_btn_rect, border_radius=12)
-            glow_color = (0, 120, 80) if is_hovered else (0, 70, 40)
-            pygame.draw.rect(self.screen, glow_color, call_btn_rect.inflate(-8, -8), border_radius=10)
+            
+            pygame.draw.rect(self.screen, btn_color, call_btn_rect, border_radius=8)
+            pygame.draw.rect(self.screen, COLOR_NEON_GREEN, call_btn_rect, 2 if is_hovered else 1, border_radius=8)
             
             try:
-                button_font = pygame.font.Font(None, max(int(18 * self.scale), 13))
-                call_text = button_font.render("CALL / CONNECT", True, COLOR_NEON_GREEN)
-                call_text_rect = call_text.get_rect(center=call_btn_rect.center)
-                self.screen.blit(call_text, call_text_rect)
+                font = pygame.font.Font(None, max(int(20 * self.scale), 14))
+                text = font.render("CONNECT", True, COLOR_NEON_GREEN)
+                text_rect = text.get_rect(center=call_btn_rect.center)
+                self.screen.blit(text, text_rect)
             except Exception:
                 pass
 
@@ -4538,14 +4590,10 @@ class OSMode:
             
             elif modal_name == "modem":
                 # Check modem modal buttons
-                layout = self._get_modem_layout_metrics()
-                button_size = layout["button_size"]
-                button_spacing = layout["button_spacing"]
-                gap = layout["gap"]
-                terminal_h = layout["terminal_h"]
-                spacing = layout["spacing"]
-                dial_pad_h = layout["dial_pad_h"]
-                call_btn_h = layout["call_btn_h"]
+                gap = int(20 * self.scale)
+                terminal_h = int(120 * self.scale)
+                button_size = int(42 * self.scale)
+                button_spacing = int(10 * self.scale)
                 
                 # Title bar close button
                 close_btn_size = int(20 * self.scale)
@@ -4558,8 +4606,13 @@ class OSMode:
                 
                 # Dial pad buttons
                 if not self.modem_modal_connection_started:
-                    dial_start_x = modal_x + gap
-                    dial_start_y = modal_y + self.modal_title_bar_height + gap + terminal_h + spacing
+                    terminal_y = modal_y + self.modal_title_bar_height + gap
+                    dial_start_y = terminal_y + terminal_h + gap
+                    
+                    # Calculate centering for dial pad matching _draw_modem_modal
+                    dial_width = 3 * button_size + 2 * button_spacing
+                    dial_start_x = modal_x + (modal_w - dial_width) // 2
+                    
                     dial_buttons = [["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["*", "0", "#"]]
                     for row_idx, row in enumerate(dial_buttons):
                         for col_idx, button_label in enumerate(row):
@@ -4570,11 +4623,11 @@ class OSMode:
                                 self.hovered_button = ("modem", f"dial_{button_label}")
                                 return
                 
-                # CALL button
-                if not self.modem_modal_connection_started:
-                    call_btn_x = modal_x + gap
-                    call_btn_y = modal_y + self.modal_title_bar_height + gap + terminal_h + spacing + dial_pad_h + spacing
-                    call_btn_w = modal_w - 2 * gap
+                    # CALL button
+                    call_btn_y = dial_start_y + 4 * (button_size + button_spacing) + int(5 * self.scale)
+                    call_btn_w = dial_width
+                    call_btn_h = int(40 * self.scale)
+                    call_btn_x = dial_start_x
                     call_btn_rect = pygame.Rect(call_btn_x, call_btn_y, call_btn_w, call_btn_h)
                     if call_btn_rect.collidepoint(mouse_x, mouse_y):
                         self.hovered_button = ("modem", "call")

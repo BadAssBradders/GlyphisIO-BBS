@@ -1008,8 +1008,8 @@ class GLYPHIS_IOBBS:
         self.start_video_timer = 0.0
         self.start_video_duration = 0.0
         
-        # Game state
-        self.state = "bbs_scroll"  # bbs_scroll, intro, loading, main_menu, module, compose, inbox, reading
+        # Game state - start with loading screen (status connection bar)
+        self.state = "loading"  # loading, bbs_scroll, intro, main_menu, module, compose, inbox, reading
         
         # BBS Scroll animation state
         self.scroll_image = None
@@ -1028,7 +1028,7 @@ class GLYPHIS_IOBBS:
                 self.scroll_image = pygame.transform.scale(self.scroll_image, (self.bbs_width, new_height))
         except Exception:
             print("Warning: images/BBS_Scroll.png not found, skipping scroll animation")
-            self.state = "intro"  # Skip to intro if image not found
+            # Keep loading state even if scroll image not found
         
         # Intro screen state
         self.intro_timer = 0
@@ -1458,10 +1458,12 @@ class GLYPHIS_IOBBS:
     
     def _reset_to_beginning(self) -> None:
         """Reset the BBS back to the beginning of the game loop"""
-        # Reset game state to initial scroll animation
-        self.state = "bbs_scroll"
+        # Start with loading screen (status connection bar first)
+        self.state = "loading"
+        self.loading_progress = 0
+        self.loading_complete = False
         
-        # Reset scroll animation state
+        # Reset scroll animation state (will be used after loading)
         self.scroll_y = None  # Will be set to start below screen
         self.scroll_pause_frames = 0
         self.scroll_pause_triggered = False
@@ -1561,7 +1563,12 @@ class GLYPHIS_IOBBS:
         # Check even if not in urgent_ops_session state (e.g., during ghost user sequence)
         # so audio continues playing while NODE7.wav is still active
         cracker_audio_playing = False
+        radio_music_active = False
+        
         if self.active_ops_session:
+            # Check for RadioMusic tag (Node 7 playback)
+            radio_music_active = getattr(self.active_ops_session, "RadioMusic", False)
+            
             audio_checker = getattr(self.active_ops_session, "is_cracker_ide_audio_playing", None)
             if callable(audio_checker):
                 try:
@@ -1578,6 +1585,9 @@ class GLYPHIS_IOBBS:
                     if self.state == "ghost_user_sequence":
                         self.active_ops_session = None
         
+        # Check if AUDIO_ON token is present (LAPC-1 is active)
+        has_audio_on = self.inventory.has_token(Tokens.AUDIO_ON)
+        
         # Determine desired state and base video filename
         # First, detect if current video has a time prefix (night- or day-)
         current_filename = self.desktop_video_filename or ""
@@ -1585,7 +1595,8 @@ class GLYPHIS_IOBBS:
         # Strip time prefixes to get the base filename for detection
         base_filename_for_detection = current_filename.replace("night-", "").replace("day-", "")
         
-        if cracker_audio_playing:
+        # Treat RadioMusic same as cracker_audio_playing for video selection
+        if cracker_audio_playing or radio_music_active:
             desired_state = "audio-playing"
             # Check if current video is a No-Sound variant (strip -os suffix too for detection)
             base_for_no_sound_check = base_filename_for_detection.replace("-os.mp4", ".mp4")
@@ -1603,6 +1614,13 @@ class GLYPHIS_IOBBS:
                     base_video = "Audio-Desktop-No-Sound.mp4"
                 else:
                     base_video = "Audio-Desktop.mp4"
+        elif has_audio_on and not (cracker_audio_playing or radio_music_active):
+            # AUDIO_ON is present but music has ended - use No-Sound fallback videos
+            desired_state = "audio-on-no-music"
+            if self.os_mode_active:
+                base_video = "Audio-Desktop-No-Sound-os.mp4"
+            else:
+                base_video = "Audio-Desktop-No-Sound.mp4"
         elif self.os_mode_active:
             # OS Mode is active - use desktop_steam_os.mp4 instead of desktop_steam.mp4
             desired_state = "os-mode"
@@ -1710,7 +1728,7 @@ class GLYPHIS_IOBBS:
                 # Pause - don't scroll, just draw
                 self.bbs_surface.blit(self.scroll_image, (0, self.scroll_y))
                 self.scroll_pause_frames -= 1
-                # After pause completes, end animation
+                # After pause completes, end animation - go to intro (press any key)
                 if self.scroll_pause_frames == 0:
                     self.state = "intro"
                     self.scroll_y = None
@@ -1740,7 +1758,7 @@ class GLYPHIS_IOBBS:
                         self.scroll_pause_frames = 0
                         self.scroll_pause_triggered = False
         else:
-            # If no image, skip directly to intro
+            # If no image, skip directly to intro (press any key screen)
             self.state = "intro"
     
     def draw_intro_screen(self):
@@ -1857,9 +1875,9 @@ class GLYPHIS_IOBBS:
         if self.loading_progress < 30:
             status = "Establishing connection..."
         elif self.loading_progress < 60:
-            status = "Authenticating credentials..."
-        elif self.loading_progress < 90:
             status = "Loading modules..."
+        elif self.loading_progress < 90:
+            status = "Initializing systems..."
         else:
             status = "Connection established!"
         
@@ -1879,12 +1897,11 @@ class GLYPHIS_IOBBS:
             if self.loading_progress >= 100:
                 self.loading_progress = 100
                 self.loading_complete = True
-                # Wait a moment then switch to Terminal Feed
-                pygame.time.wait(500)
-                self.state = "front_post"
-                self.current_module = 0
-                self.current_post = None
-                self.refresh_main_terminal_feed()
+                # After loading complete, switch to scroll animation
+                self.state = "bbs_scroll"
+                self.scroll_y = None  # Will be set to start below screen
+                self.scroll_pause_frames = 0
+                self.scroll_pause_triggered = False
     
     def _draw_background_grid(self):
         stripe_step = max(10, int(24 * self.scale))
@@ -3289,6 +3306,10 @@ class GLYPHIS_IOBBS:
                     """Check if audio is streaming (excluding window-loop.wav ambient track)."""
                     # Check if CRACKER IDE audio is playing (NODE7.wav)
                     if self.active_ops_session:
+                        # Check RadioMusic tag
+                        if getattr(self.active_ops_session, "RadioMusic", False):
+                            return True
+                            
                         audio_checker = getattr(self.active_ops_session, "is_cracker_ide_audio_playing", None)
                         if callable(audio_checker):
                             try:
@@ -3312,11 +3333,16 @@ class GLYPHIS_IOBBS:
                         pass
                     return False
                 
+                def grant_token_callback(token, reason=None):
+                    """Grant a token to the player."""
+                    return self.grant_token(token, reason=reason)
+                
                 self.os_mode = OSMode(self.screen, self.scale, reset_bbs_and_exit_os, 
                                       self.bbs_x, self.bbs_y, self.bbs_width, has_token,
                                       get_recording_state, set_recording_state,
                                       get_notes, save_notes, get_user_credentials,
-                                      get_chess_stats, save_chess_stats, is_audio_streaming)
+                                      get_chess_stats, save_chess_stats, is_audio_streaming,
+                                      grant_token_callback)
                 print("DEBUG GHOST USER: OS Mode initialized successfully")
                 return True
             except Exception as e:
@@ -3338,8 +3364,9 @@ class GLYPHIS_IOBBS:
             node7_just_completed = getattr(self.active_ops_session, 'node7_completed_and_confirmed', False)
         
         # If Node 7 was just completed and confirmed, start ghost user sequence after 3 beats
+        # BUT: Block ghost user if MODEM1ST token exists (user connected via modem first)
         # Keep active_ops_session reference during ghost user sequence so we can still check if audio is playing
-        if node7_just_completed:
+        if node7_just_completed and not self.inventory.has_token(Tokens.MODEM1ST):
             print(f"DEBUG GHOST USER: Node 7 completed and confirmed! Starting ghost user sequence...")
             print(f"DEBUG GHOST USER: Current state={self.state}, os_mode={self.os_mode}, os_mode_active={self.os_mode_active}")
             # Initialize OS mode if needed (required for ghost user sequence)
@@ -4092,7 +4119,13 @@ class GLYPHIS_IOBBS:
                     pass  # If we can't reload, keep the existing scaled image
         
         elif event.key == pygame.K_SPACE:
-            if self.state == "front_post":
+            if self.state == "bbs_scroll":
+                # Spacebar skips scroll animation and moves to next page (intro screen)
+                self.state = "intro"
+                self.scroll_y = None
+                self.scroll_pause_frames = 0
+                self.scroll_pause_triggered = False
+            elif self.state == "front_post":
                 # Spacebar takes us to main menu from Terminal Feed
                 self.state = "main_menu"
                 self.current_module = 0
@@ -4475,6 +4508,10 @@ class GLYPHIS_IOBBS:
                                     """Check if audio is streaming (excluding window-loop.wav ambient track)."""
                                     # Check if CRACKER IDE audio is playing (NODE7.wav)
                                     if self.active_ops_session:
+                                        # Check RadioMusic tag
+                                        if getattr(self.active_ops_session, "RadioMusic", False):
+                                            return True
+                                            
                                         audio_checker = getattr(self.active_ops_session, "is_cracker_ide_audio_playing", None)
                                         if callable(audio_checker):
                                             try:
@@ -4498,11 +4535,16 @@ class GLYPHIS_IOBBS:
                                         pass
                                     return False
                                 
+                                def grant_token_callback(token, reason=None):
+                                    """Grant a token to the player."""
+                                    return self.grant_token(token, reason=reason)
+                                
                                 self.os_mode = OSMode(self.screen, self.scale, reset_bbs_and_exit_os, 
                                                       self.bbs_x, self.bbs_y, self.bbs_width, has_token,
                                                       get_recording_state, set_recording_state,
                                                       get_notes, save_notes, get_user_credentials,
-                                                      get_chess_stats, save_chess_stats, is_audio_streaming)
+                                                      get_chess_stats, save_chess_stats, is_audio_streaming,
+                                                      grant_token_callback)
                             except Exception as e:
                                 print(f"Warning: Failed to initialize OS Mode: {e}")
                                 self.os_mode_active = False
@@ -4538,24 +4580,21 @@ class GLYPHIS_IOBBS:
                         self._end_ops_session()
                     continue
                 
-                # Allow skipping scroll animation with any key
-                if self.state == "bbs_scroll" and event.type == pygame.KEYDOWN:
-                    self.state = "intro"
-                    self.scroll_y = None
-                    self.scroll_pause_frames = 0
-                    self.scroll_pause_triggered = False
-                
-                # Handle intro screen - advance on any keypress
+                # Handle intro screen - advance on any keypress to authentication
                 if self.state == "intro" and event.type == pygame.KEYDOWN:
                     active_user = self.get_active_user()
                     if active_user and active_user.get("username"):
+                        # User exists - go to login/auth
                         self.state = "login_username"
                         self.login_input = ""
                         self.login_error = ""
                         self.login_message = ""
                     else:
-                        self.state = "loading"
-                        self.intro_timer = 0
+                        # No user - go to username creation (which leads to pin)
+                        self.state = "login_username"
+                        self.login_input = ""
+                        self.login_error = ""
+                        self.login_message = ""
                     continue
                 
                 if event.type == pygame.KEYDOWN:
@@ -5914,9 +5953,11 @@ class GLYPHIS_IOBBS:
                 self.login_input = ""
                 self.login_error = ""
                 self.login_message = ""
-                self.loading_progress = 0
-                self.loading_complete = False
-                self.state = "loading"
+                # After successful login, go directly to The Wall (front_post)
+                self.state = "front_post"
+                self.current_module = 0
+                self.current_post = None
+                self.refresh_main_terminal_feed()
             return
 
         if event.type == pygame.KEYDOWN and event.unicode:

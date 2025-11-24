@@ -172,15 +172,14 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         self.control_labels = ["RUN"]
         self.parrot_overlay = None
         self.node_briefings = [
-            "Power rail first. Follow that pseudo-code: load literal 01 into A, push it to $C400, verify the LED flips, then ride the jump into the left-channel test.",
-            "Left channel diagnostic next. Pump #$FF into $C401, mute $C402 with #$00, listen for the pop, then jump forward, mirror logic hits on the next node.",
+            "This is Assembly language 101. Power rail first. Follow that pseudo-code: load literal 01 into A, push it to $C400, verify the LED flips, then ride the jump into the left-channel test. Just ping me: HELP, if you need any tips.",
+            "Left channel diagnostic next. Load #$FF into A and store it into $C401, mute $C402 with #$00, listen for the pop, then jump forward, mirror logic hits on the next node.",
             "Right channel mirror time. Swap the roles: drive $C402 hot with #$FF, silence $C401, confirm both speakers responded before you advance.",
-            "Now set the baseline gain. Load #$80 once, store it to $C401 and $C402, confirm both registers sit at mid volume, and lock it in.",
+            "Now set the baseline gain. Load #$80 once, store it to $C401 and $C402, this sets both registers to sit at mid volume. I've just compressed a lovely little banned song into a single byte, this will be ready by Node 7.",
             "Initialization is stitched up. Keep this node lean, just route execution into DATA_CHECK so the loop can spin.",
-            "Busy wait comes alive here. Read $C403, compare with #$01, branch back until the flag is true. Only fall through when the buffer shouts READY.",
-            "Sample transfer finishes the cycle. Pull the byte from $C800, write it to both channels, kick back to DATA_CHECK, and let the loop breathe.",
-            "",
-            "WARNING: The audio stream contains banned content. Keep your volume low and make sure nobody's listening. What you're about to hear was never supposed to survive the purge.",
+            "Busy wait comes alive here. Read $C403, compare with #$01, branch back until the flag is true. You got some docs with that lovely vanta black machine of yours, read em! (F4)",
+            "Sample transfer finishes the cycle. Pull the byte from $C800, write it to both channels, kick back to DATA_CHECK, and let the loop breathe. This is the track I was telling you about, its so slick, so rebellious, it's everything what this group was built for. JUST MAKE SURE YOU DON'T GET CAUGHT LISTENING TO IT!",
+
         ]
         self.node_help_messages: Dict[int, List[str]] = {
             0: [
@@ -220,7 +219,7 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             ],
         }
         self.chat_busy_messages = [
-            "Sorry Neck-deep wiring the dispatch, keep volume up but not blasting.",
+            "Sorry Neck-deep wiring the dispatch, keep volume up but not blasting. Im getting that banned track ready for ya!",
             "Juggling homework and ops. I'll circle back when I come up for air.",
             "Busy spinning up pirate radio feeds. Give me a sec.",
             "Swamped on my end. You got this.",
@@ -257,6 +256,10 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         self.node7_modal_countdown_start = None  # Timer for 40 second countdown
         self.node7_modal_countdown_duration = 40000  # 40 seconds in milliseconds
         self.fireworks: List[Dict[str, Any]] = []  # Firework particles for Node 7 celebration
+        
+        # RadioMusic tag for external checking
+        self.RadioMusic = False
+        self.node7_channel = None
 
         header_base = self.padding * 2 + self.font_small.get_linesize() * 2
         self.parrot_display_size = int(self.base_parrot_size * self.scale)
@@ -549,9 +552,9 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             if prev_node_idx == 0 and mem.get(REG_MASTER_POWER) == ACTIVATION_BYTE:
                 ack_message = "I see the $C400 master power LED is green! Nice work, the card is live and the left channel test is next."
             elif prev_node_idx == 3 and mem.get(REG_LEFT_CHANNEL) == DEFAULT_VOLUME and mem.get(REG_RIGHT_CHANNEL) == DEFAULT_VOLUME:
-                ack_message = "Gain check is nominal. $C401 and $C402 are logged to $80. We're ready for the continuous streaming loop."
+                ack_message = "Gain check is nominal. $C401 and $C402 are logged to $80. We're ready for the continuous streaming loop, maybe not the banned track just yet, I'm nearly there with the compression."
             elif prev_node_idx == 4 and self.cpu_state["cycles"] > 5:
-                ack_message = "Initialization is complete. We've entered the main loop. Now the real-time clock race starts."
+                ack_message = "Initialization is complete. We've entered the main loop. Now the real-time clock race starts. The banned track is almost ready, just a few more bytes to go."
 
             if ack_message:
                 self._append_chat("UNCLE-AM", ack_message.upper())
@@ -588,10 +591,10 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         if self.page_index == 0:
             intro_lines = [
                 "HEY THERE {player}! GLAD YOU MADE IT INTO THE CRACKER IDE FEED.",
-                "We spun this console up so the crew can crack locked-down games together.",
+                "We spun this console up so the crew can crack locked-down games together. In the shadows away from the eyes of the Pacfica pigs that run this place.",
                 "It's also a cozy driver lab when you need to nurse finicky hardware.",
                 "I've already patched the backend into your local sound card - enter the right bytes and audio will sing.",
-                "First tip for Node 01: power rail first. Write #$01 (that's 1 byte) into memory address $C400 before poking anything else.",
+                "First tip for Node 01: power rail first. Write #$01 (that's 1 byte) into memory address $C400 before poking anything else. It's simple assembly language, I think you got a guide for it (F4).",
             ]
             for line in intro_lines:
                 if "{player}" in line:
@@ -635,7 +638,7 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                     cleaned_name = re.sub(r"[^A-Za-z0-9_\- ]", "", friendly_name).strip() or "OPERATIVE"
                     reply = reply.replace("{username}", cleaned_name)
             else:
-                reply = "Wish I could dig up docs for this node, but homework's crushing me, keep probing the manuals and stay focused."
+                reply = "Wish I could dig up docs for this node, but homework's crushing me, keep probing the manuals (F4) and stay focused."
         elif self._is_status_check(clean_text):
             reply = "Yeah, I'm good, just buried under wiring and homework right now."
         else:
@@ -809,11 +812,12 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 "lines": [
                     "Bring the LAPC-1 online by enabling $C400.",
                     "The card requires the activation byte #$01 to start the circuit logic. Load this immediate value into the Accumulator, then store it into the Master Power Register at $C400.",
+                    "",
                     "Code outline:",
-                    "Typing in assmebly code on the first line type in the code that loads the accumulator with a single byte of data.",
-                    "Then on the next line store that data into the Master Power Register at memory location $C400.",
-                    "Press RUN (F5) to execute the code and two things should happen, firstly the simulated LED in Monitor should",
-                    "turn green, then your local audio system should power up as well and the program will advance to the next Node.",
+                    "Typing in assmebly code on the first line type in the code that loads the accumulator with a single byte of data. Then on the next line store that data into the Master Power Register at memory location $C400.",
+                    "",
+                    "Press RUN to execute the code and two things should happen, firstly the simulated LED in Monitor should turn green, then your local audio system should power up as well and the program will advance to the next Node.",
+                    "",
                     "DO NOT DELETE placeholder JMP this enables the execution to advance until INIT_POWER is written.",
                 ],
             },
@@ -821,9 +825,13 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 "title": "NODE 02 // DIAG_LEFT",
                 "lines": [
                     "Time for the left channel diagnostic. Drive the speaker hot, keep the right side quiet, then advance.",
+                    "",
                     "Load #$FF into the accumulator and store it to $C401 to fire the loud test tone on the left speaker.",
+                    "",
                     "Swap to #$00 and store that value into $C402 so the right channel stays muted while you listen.",
+                    "",
                     "Glance at the monitor window, the left channel LED should light while the right stays dark.",
+                    "",
                     "Once you confirm the behavior, keep the placeholder jump in place so execution flows into Node 03.",
                 ],
             },
@@ -831,19 +839,21 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 "title": "NODE 03 // DIAG_RIGHT",
                 "lines": [
                     "Mirror the diagnostic on the right channel so both speakers get checked before volume staging.",
+                    "",
                     "Reload #$FF and push it into $C402 to send the tone out of the right speaker.",
+                    "",
                     "Mute the left side by loading #$00 and storing it to $C401, keeps the test focused on the right.",
+                    "",
                     "Verify in the monitor that the right channel indicator pulses while the left remains quiet.",
+                    "",
                     "Leave the jump at the end so control proceeds into Node 04 once the test concludes.",
                 ],
             },
             4: {
                 "title": "NODE 04 // INIT_VOL",
                 "lines": [
-                    "Lock both channels to the neutral mix level before handing off to the streaming loop.",
-                    "Load #$80 into the accumulator once, then store it into $C401 for the left channel.",
-                    "Without reloading, store the same value into $C402 so the right matches the left.",
-                    "Check the monitor registers, both channels should read #$80 when the writes land.",
+                    "Lock both channels to the neutral mix level before handing off to the streaming loop. Load #$80 into the accumulator once, then store it into $C401 for the left channel. Without reloading, store the same value into $C402 so the right matches the left. Check the monitor registers, both channels should read #$80 when the writes land.",
+                    "",
                     "Keep the trailing jump that routes execution into Node 05; you need that pathway intact.",
                 ],
             },
@@ -851,42 +861,55 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 "title": "NODE 05 // STREAM_ENTRY",
                 "lines": [
                     "Initialization sequence complete. This node transitions to the streaming loop.",
+                    "",
                     "The driver initialization (Nodes 1-4) is finished. Now we hand control to the",
+                    "",
                     "continuous packet streaming loop that will process audio data in real-time.",
                     "",
                     "Type a single instruction.",
-                    "This unconditional jump routes execution to the DATA_CHECK label where the",
-                    "streaming loop begins. Simple, but essential - don't overlook it!",
+                    "This unconditional jump routes execution to the DATA_CHECK label where the streaming loop begins. Simple, but essential - don't overlook it!",
                 ],
             },
             6: {
                 "title": "NODE 06 // DATA_CHECK",
                 "lines": [
                     "Here’s the busy-wait loop. Poll the data-ready register until a fresh sample arrives.",
+                    "",
                     "Read $C403 into the accumulator and compare it against the ready flag value #$01.",
+                    "",
                     "If the compare says not ready, branch straight back to the DATA_CHECK label and keep spinning.",
+                    "",
                     "When the flag finally equals #$01, fall through to Node 07 so you can process the waiting sample.",
+                    "",
                     "Keep the label and branch structure intact, they anchor the loop timing for the audio stream.",
                 ],
             },
             7: {
                 "title": "NODE 07 // OUTPUT_SAMPLE",
                 "lines": [
-                    "Move the audio packet from the buffer to both channels, then swing back to poll for the next byte.",
-                    "Read the sample from $C800 into the accumulator, remember that register is read-only.",
-                    "Store the value to $C401 for the left speaker, then immediately to $C402 for the right.",
-                    "Kick execution back to DATA_CHECK so the loop keeps tempo with incoming packets.",
-                    "Watch the monitor LEDs, both channels should pulse in sync as the loop runs.",
+                    "IMPORTANT: The stream we're about to enable contains banned content. Ensure you're alone. This transmission was never supposed to exist, and this song is at the very top of the American Pacfica blacklist. Once we have it streaming it'll download into a temp area in the Brandsonic's ram and continue playing even if you disconnect.",
                     "",
-                    "IMPORTANT: The audio stream you're about to enable contains banned content.",
-                    "Keep your volume low and ensure you're alone. This transmission was never supposed to exist.",
-                ],
+                    "Let's get the song streaming. Move the audio packet from the buffer to both channels. Read the sample from $C800 into the accumulator, remember that register is read-only. Store the value to $C401 for the left speaker, then immediately to $C402 for the right.",
+                    "",
+                    "I have added the pink code which ends with the execution back to DATA_CHECK so the loop keeps tempo with incoming packets.",
+                    "Domo Arigato <USERNAME>",
+                    "",
+                
+   ],
             },
         }
 
         entries: List[Dict[str, Any]] = []
         node_entry = node_entries.get(node_number)
         if node_entry:
+            # Replace <USERNAME> placeholder with actual username in lines
+            if "lines" in node_entry:
+                username = self.player_username or "Hacker"
+                node_entry = node_entry.copy()  # Don't modify the original dict
+                node_entry["lines"] = [
+                    line.replace("<USERNAME>", username) if "<USERNAME>" in line else line
+                    for line in node_entry["lines"]
+                ]
             entries.append(node_entry)
         entries.append(
             {
@@ -970,11 +993,12 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 "title": "NODE 07 COMPLETE // OUTPUT STREAM ACTIVE",
                 "lines": [
                     "Congratulations! You've successfully completed the LAPC-1 driver challenge.",
-                    "Sample transfer routine is complete. The loop is reading from $C800 and driving both channels.",
+                    "",
                     "Audio packets are flowing through the system in real-time.",
                     "",
-                    "The continuous streaming loop is fully operational.",
-                    "You've proven yourself. The audio stream is now active.",
+                    "The continuous streaming loop is now fully online, carrying both the BBS Radio feed and the audio output from Glyphisis_IO. The next step is getting you hacking alongside us. And really, what more does a hacker need than the driving pulse of the underground?",
+                    "",
+                    "You've proven yourself useful to our cause! Thank you. Glyphis will be in touch soon.",
                 ],
             },
         }
@@ -1517,7 +1541,7 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                     # Queue chat messages first - wait for them to display before showing modal
                     if not self.node7_chat_messages_queued:
                         # Queue first message and start it displaying immediately
-                        self._queue_chat_message("LAPC-1 DRIVER ONLINE. I'M GETTING AUDIO FROM YOUR END, FULL STEREO! AMAZING.", "UNCLE-AM")
+                        self._queue_chat_message("LAPC-1 DRIVER ONLINE. AUDIO FEED. FULL STEREO. AMAZING!", "UNCLE-AM")
                         self.chat_next_queue_time = pygame.time.get_ticks() + 100
                         self._begin_next_queued_message()  # Start displaying the first message
                         
@@ -1529,14 +1553,16 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                                 channel = self.node7_sound.play()
                                 if channel:
                                     self.active_audio_channels.append(channel)
+                                    self.node7_channel = channel
+                                    self.RadioMusic = True
                                 print(f"DEBUG NODE7: NODE7.wav started playing immediately after first Uncle-Am message started displaying")
                             except Exception as play_error:
                                 print(f"Warning: Unable to play NODE7.wav: {play_error}")
                         
                         # Queue remaining messages
-                        self._queue_chat_message("Well done. With the audio sub-system online, we can finally get the BBS Radio feed going. Stand by for the next operational brief, hacker. That was seriously impressive work.", "UNCLE-AM")
-                        self._queue_chat_message("This is a banned song by the way, repeat this is a BANNED SONG(!) so be careful not to play it too loud. Absolute melody though, isn't it!?", "UNCLE-AM")
-                        self._queue_chat_message("See you on the other side!", "UNCLE-AM")
+                        self._queue_chat_message("Death to American Pacfica!","UNCLE-AM")
+                        self._queue_chat_message("RISE NIPPON, WE ARE THE FORGOTTEN JAPANESE!", "UNCLE-AM")
+                        self._queue_chat_message("See you on the other side, you're one of us now!", "UNCLE-AM")
                         
                         self.node7_chat_messages_queued = True
                         self.node7_waiting_for_chat = True
@@ -1785,6 +1811,8 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                                                 channel = self.node7_sound.play()
                                                 if channel:
                                                     self.active_audio_channels.append(channel)
+                                                    self.node7_channel = channel
+                                                    self.RadioMusic = True
                                             except Exception as play_error:
                                                 print(f"Warning: Unable to play NODE7.wav: {play_error}")
                                         
@@ -1887,6 +1915,8 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                         channel = self.node7_sound.play()
                         if channel:
                             self.active_audio_channels.append(channel)
+                            self.node7_channel = channel
+                            self.RadioMusic = True
                         print("DEBUG: NODE7.wav play() called successfully")
                     except Exception as play_error:
                         print(f"Warning: Unable to play NODE7.wav: {play_error}")
@@ -2455,6 +2485,20 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
                 ch for ch in self.active_audio_channels 
                 if ch is not None and ch.get_busy()
             ]
+        
+        # Update RadioMusic tag status
+        if self.RadioMusic:
+            is_playing = False
+            if self.node7_channel:
+                try:
+                    if self.node7_channel.get_busy():
+                        is_playing = True
+                except Exception:
+                    pass
+            
+            if not is_playing:
+                self.RadioMusic = False
+                self.node7_channel = None
         
         # Decrement module animation timer
         if self.module_animation_timer > 0:

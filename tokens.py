@@ -36,6 +36,7 @@ class Tokens:
     LAPC1_NODE7 = "LAPC1_NODE7"  # Node 7 output sample loop reached
     JAX1 = "JAX1"  # Volunteered to help Jaxkando with game cracking
     AUDIO_ON = "AUDIO_ON"  # Completed all 7 nodes, all LEDs green
+    MODEM1ST = "MODEM1ST"  # First successful modem connection established
 
     # Narrative/game unlocks (planned)
     OPS_ACCESS = "OPS_ACCESS"
@@ -150,6 +151,11 @@ TOKEN_METADATA: Dict[str, TokenMeta] = {
         code=Tokens.AUDIO_ON,
         label="AUDIO_ON",
         description="Completed full LAPC-1 driver initialization (all nodes operational)",
+    ),
+    Tokens.MODEM1ST: TokenMeta(
+        code=Tokens.MODEM1ST,
+        label="MODEM1ST",
+        description="First successful modem connection to GLYPHIS_IO BBS established",
     ),
 }
 
