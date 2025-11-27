@@ -52,7 +52,8 @@ class ChessGame:
     def __init__(self, screen: pygame.Surface, scale: float, desktop_x: int, desktop_y: int, desktop_size: Tuple[int, int],
                  health_monitor_y: int, bbs_x: int, bbs_width: int,
                  get_chess_stats_callback: Optional[Callable] = None,
-                 save_chess_stats_callback: Optional[Callable] = None):
+                 save_chess_stats_callback: Optional[Callable] = None,
+                 get_radio_music_callback: Optional[Callable] = None):
         """
         Initialize the chess game.
         
@@ -67,6 +68,7 @@ class ChessGame:
             bbs_width: Width of BBS window
             get_chess_stats_callback: Function to get chess stats from user profile
             save_chess_stats_callback: Function to save chess stats to user profile
+            get_radio_music_callback: Function to check if RadioMusic is playing
         """
         self.screen = screen
         self.scale = scale
@@ -78,6 +80,7 @@ class ChessGame:
         self.bbs_width = bbs_width
         self.get_chess_stats = get_chess_stats_callback or (lambda: {})
         self.save_chess_stats = save_chess_stats_callback or (lambda stats: None)
+        self.get_radio_music = get_radio_music_callback or (lambda: False)
         
         # Game state
         self.active = False

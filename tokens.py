@@ -35,6 +35,7 @@ class Tokens:
     LAPC1_NODE6 = "LAPC1_NODE6"  # Node 6 data check loop reached
     LAPC1_NODE7 = "LAPC1_NODE7"  # Node 7 output sample loop reached
     JAX1 = "JAX1"  # Volunteered to help Jaxkando with game cracking
+    ASTROMINER = "ASTROMINER"
     AUDIO_ON = "AUDIO_ON"  # Completed all 7 nodes, all LEDs green
     MODEM1ST = "MODEM1ST"  # First successful modem connection established
 
@@ -146,6 +147,11 @@ TOKEN_METADATA: Dict[str, TokenMeta] = {
         code=Tokens.JAX1,
         label="JAX1",
         description="Volunteered to help Jaxkando crack games",
+    ),
+    Tokens.ASTROMINER: TokenMeta(
+        code=Tokens.ASTROMINER,
+        label="ASTROMINER",
+        description="Access to the Astro Miner prototype",
     ),
     Tokens.AUDIO_ON: TokenMeta(
         code=Tokens.AUDIO_ON,

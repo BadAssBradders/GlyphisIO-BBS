@@ -177,7 +177,7 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             "Right channel mirror time. Swap the roles: drive $C402 hot with #$FF, silence $C401, confirm both speakers responded before you advance.",
             "Now set the baseline gain. Load #$80 once, store it to $C401 and $C402, this sets both registers to sit at mid volume. I've just compressed a lovely little banned song into a single byte, this will be ready by Node 7.",
             "Initialization is stitched up. Keep this node lean, just route execution into DATA_CHECK so the loop can spin.",
-            "Busy wait comes alive here. Read $C403, compare with #$01, branch back until the flag is true. You got some docs with that lovely vanta black machine of yours, read em! (F4)",
+            "Busy wait comes alive here. Read $C403, compare with #$01, branch back until the flag is true. You got some docs with that lovely obsidian machine of yours, read em! (F4)",
             "Sample transfer finishes the cycle. Pull the byte from $C800, write it to both channels, kick back to DATA_CHECK, and let the loop breathe. This is the track I was telling you about, its so slick, so rebellious, it's everything what this group was built for. JUST MAKE SURE YOU DON'T GET CAUGHT LISTENING TO IT!",
 
         ]
@@ -591,7 +591,7 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
         if self.page_index == 0:
             intro_lines = [
                 "HEY THERE {player}! GLAD YOU MADE IT INTO THE CRACKER IDE FEED.",
-                "We spun this console up so the crew can crack locked-down games together. In the shadows away from the eyes of the Pacfica pigs that run this place.",
+                "We spun this console up so the crew can crack locked-down games together. In the shadows away from the eyes of the Pacifica pigs that run this place.",
                 "It's also a cozy driver lab when you need to nurse finicky hardware.",
                 "I've already patched the backend into your local sound card - enter the right bytes and audio will sing.",
                 "First tip for Node 01: power rail first. Write #$01 (that's 1 byte) into memory address $C400 before poking anything else. It's simple assembly language, I think you got a guide for it (F4).",
@@ -3187,6 +3187,10 @@ class CRACKER_IDE_LAPC1_Driver_Challenge:
             surface, offset = self.parrot_overlay
             return [(surface, offset)]
         return []
+    
+    def get_radio_music_state(self):
+        """Return the current RadioMusic state (True if Node7.wav is playing, False otherwise)."""
+        return self.RadioMusic
 
 
     def _draw_editor_pane(self):

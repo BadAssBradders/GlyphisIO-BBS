@@ -12,12 +12,21 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, TYPE_CHECKING
+from typing import Callable, List, Optional, Tuple, TYPE_CHECKING
 
 import pygame
 
 from tokens import Tokens
+
+# Windows API imports for window capture
+try:
+    import ctypes
+    from ctypes import wintypes
+    WINDOWS_AVAILABLE = True
+except ImportError:
+    WINDOWS_AVAILABLE = False
 
 try:
     from .SIMULACRA_CORE import SimulacraCoreGame
@@ -90,7 +99,8 @@ class SimulacraSession(BaseGameSession):
             player,
             best_tcs=best_tcs,
             on_new_best=self._on_new_best_tcs,
-            on_level_cleared=self._on_level_cleared
+            on_level_cleared=self._on_level_cleared,
+            get_radio_music_callback=self.app._get_radio_music_state
         )
 
     def handle_event(self, event: pygame.event.Event) -> Optional[str]:
@@ -128,6 +138,391 @@ class SimulacraSession(BaseGameSession):
 
 
 # ---------------------------------------------------------------------------
+# ASTRO MINER adapter (external C++ game with window capture)
+# ---------------------------------------------------------------------------
+
+
+class AstroMinerSession(BaseGameSession):
+    """Session adapter for Astro Miner using headless framebuffer rendering."""
+    
+    # Mapping from pygame key codes to raylib key codes
+    # Raylib key codes match ASCII/Unicode values for letters/numbers
+    # Special keys are defined in raylib.h
+    KEY_MAP = {
+        # Arrow keys
+        pygame.K_UP: 265,      # KEY_UP
+        pygame.K_DOWN: 264,    # KEY_DOWN
+        pygame.K_LEFT: 263,    # KEY_LEFT
+        pygame.K_RIGHT: 262,   # KEY_RIGHT
+        # Modifier keys
+        pygame.K_SPACE: 32,    # KEY_SPACE
+        pygame.K_RETURN: 257,  # KEY_ENTER
+        pygame.K_ESCAPE: 256,  # KEY_ESCAPE
+        # Letters (A-Z map to ASCII 65-90)
+        pygame.K_a: 65, pygame.K_b: 66, pygame.K_c: 67, pygame.K_d: 68,
+        pygame.K_e: 69, pygame.K_f: 70, pygame.K_g: 71, pygame.K_h: 72,
+        pygame.K_i: 73, pygame.K_j: 74, pygame.K_k: 75, pygame.K_l: 76,
+        pygame.K_m: 77, pygame.K_n: 78, pygame.K_o: 79, pygame.K_p: 80,
+        pygame.K_q: 81, pygame.K_r: 82, pygame.K_s: 83, pygame.K_t: 84,
+        pygame.K_u: 85, pygame.K_v: 86, pygame.K_w: 87, pygame.K_x: 88,
+        pygame.K_y: 89, pygame.K_z: 90,
+        # Numbers (0-9 map to ASCII 48-57)
+        pygame.K_0: 48, pygame.K_1: 49, pygame.K_2: 50, pygame.K_3: 51,
+        pygame.K_4: 52, pygame.K_5: 53, pygame.K_6: 54, pygame.K_7: 55,
+        pygame.K_8: 56, pygame.K_9: 57,
+    }
+    
+    # Mouse button mapping (raylib: 0=LEFT, 1=RIGHT, 2=MIDDLE)
+    MOUSE_BUTTON_MAP = {
+        1: 0,  # pygame MOUSEBUTTONDOWN/UP button 1 = LEFT
+        3: 1,  # pygame MOUSEBUTTONDOWN/UP button 3 = RIGHT
+        2: 2,  # pygame MOUSEBUTTONDOWN/UP button 2 = MIDDLE
+    }
+    
+    def __init__(self, app: "GlyphisIOBBS"):
+        super().__init__(app)
+        self.embed_module = None
+        self.last_frame: Optional[pygame.Surface] = None
+        self.last_mouse_pos = (0, 0)
+        # Desktop area position (where the game is rendered)
+        self.baseline_desktop_x = 176
+        self.baseline_desktop_y = 209
+    
+    def _get_desktop_pos(self) -> Tuple[int, int]:
+        """Get the desktop area position in screen coordinates."""
+        desktop_x = int(self.baseline_desktop_x * self.app.scale)
+        desktop_y = int(self.baseline_desktop_y * self.app.scale)
+        return (desktop_x, desktop_y)
+    
+    def _get_game_mouse_pos(self, screen_pos: Tuple[int, int]) -> Tuple[float, float]:
+        """Convert screen mouse position to game-relative position."""
+        desktop_x, desktop_y = self._get_desktop_pos()
+        # Get game size
+        if self.embed_module:
+            game_width, game_height = self.embed_module.get_size()
+            if game_width > 0 and game_height > 0:
+                # Calculate relative position within game area
+                rel_x = screen_pos[0] - desktop_x
+                rel_y = screen_pos[1] - desktop_y
+                # Scale to game's internal coordinates (game is 1200x800)
+                # But we need to account for the scaling that happens when drawing
+                scaled_width = int(game_width * self.app.scale)
+                scaled_height = int(game_height * self.app.scale)
+                if scaled_width > 0 and scaled_height > 0:
+                    # Map from scaled screen coordinates to game coordinates
+                    game_x = (rel_x / scaled_width) * game_width
+                    game_y = (rel_y / scaled_height) * game_height
+                    return (max(0, min(game_width, game_x)), max(0, min(game_height, game_y)))
+        # Fallback: just subtract desktop offset
+        return (float(screen_pos[0] - desktop_x), float(screen_pos[1] - desktop_y))
+            
+    def enter(self) -> None:
+        """Initialize the embedded game DLL."""
+        try:
+            from . import astrominer_embed
+            self.embed_module = astrominer_embed
+            
+            if not astrominer_embed.initialize():
+                print("Failed to initialize Astro Miner DLL")
+                self.exit_requested = True
+                return
+            
+            # Hide pygame cursor - game will handle its own cursor
+            pygame.mouse.set_visible(False)
+            print("[AstroMinerSession.enter] Cursor hidden, mouse input now controlled by game")
+            
+        except ImportError as e:
+            print(f"Failed to import astrominer_embed: {e}")
+            self.exit_requested = True
+        except Exception as e:
+            print(f"Failed to initialize Astro Miner: {e}")
+            self.exit_requested = True
+    
+    def _find_game_window(self) -> None:
+        """Find the game window by title."""
+        if not WINDOWS_AVAILABLE:
+            return
+        
+        windows_found = []
+        
+        def enum_windows_callback(hwnd, lParam):
+            if self.user32.IsWindowVisible(hwnd):
+                window_title = ctypes.create_unicode_buffer(512)
+                self.user32.GetWindowTextW(hwnd, window_title, 512)
+                title = window_title.value
+                # Look for raylib window (Astro Miner uses raylib)
+                if "Astro Miner" in title or "raylib" in title.lower() or title.strip() == "":
+                    # Empty title might be the game window too
+                    windows_found.append(hwnd)
+            return True
+        
+        EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        self.user32.EnumWindows(EnumWindowsProc(enum_windows_callback), 0)
+        
+        if windows_found:
+            # Try to find the one that matches best (prefer "Astro Miner" in title)
+            for hwnd in windows_found:
+                window_title = ctypes.create_unicode_buffer(512)
+                self.user32.GetWindowTextW(hwnd, window_title, 512)
+                if "Astro Miner" in window_title.value:
+                    self.game_window_handle = hwnd
+                    return
+            # Fallback to first found
+            if windows_found:
+                self.game_window_handle = windows_found[0]
+    
+    def _log_window_position(self) -> None:
+        """Log the current window position for debugging."""
+        if not WINDOWS_AVAILABLE or not self.game_window_handle:
+            return
+        try:
+            rect = wintypes.RECT()
+            self.user32.GetWindowRect(self.game_window_handle, ctypes.byref(rect))
+            print(f"Game window initial position: x={rect.left}, y={rect.top}, width={rect.right - rect.left}, height={rect.bottom - rect.top}")
+        except Exception as e:
+            print(f"Failed to get window position: {e}")
+    
+    def _hide_game_window(self) -> None:
+        """Remove window frame, prevent focus stealing, and position at desktop location."""
+        if not WINDOWS_AVAILABLE or not self.game_window_handle:
+            return
+        
+        try:
+            # Get pygame window handle to make game window a child
+            pygame_hwnd = None
+            try:
+                # Try to get pygame window handle from display
+                pygame_hwnd = pygame.display.get_wm_info()['window']
+            except:
+                pass
+            
+            # Try to make it a child window of pygame first (true embedding)
+            if pygame_hwnd:
+                try:
+                    # Make it a child window - this embeds it within pygame
+                    self.user32.SetParent(self.game_window_handle, pygame_hwnd)
+                    print("Made game window a child of pygame window")
+                except Exception as e:
+                    print(f"SetParent failed (may not work with raylib): {e}")
+            
+            # Remove window frame completely
+            new_style = self.WS_POPUP | self.WS_VISIBLE  # Keep visible if child window works
+            self.user32.SetWindowLongW(self.game_window_handle, self.GWL_STYLE, new_style)
+            
+            # Set extended style to prevent focus stealing and hide from taskbar
+            current_exstyle = self.user32.GetWindowLongW(self.game_window_handle, self.GWL_EXSTYLE)
+            new_exstyle = (current_exstyle | self.WS_EX_TOOLWINDOW | self.WS_EX_NOACTIVATE) & ~self.WS_EX_TRANSPARENT
+            self.user32.SetWindowLongW(self.game_window_handle, self.GWL_EXSTYLE, new_exstyle)
+            
+            # Position window at desktop location (exact same as OS_Mode.py uses)
+            baseline_desktop_x = 176
+            baseline_desktop_y = 209
+            desktop_x = int(baseline_desktop_x * self.app.scale)
+            desktop_y = int(baseline_desktop_y * self.app.scale)
+            
+            # SetWindowPos flags
+            SWP_NOSIZE = 0x0001
+            SWP_NOZORDER = 0x0004
+            SWP_NOACTIVATE = 0x0010  # Critical: don't activate
+            SWP_SHOWWINDOW = 0x0040  # Show it (if SetParent worked, it's embedded)
+            SWP_FRAMECHANGED = 0x0020
+            flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED
+            
+            # Position window so its top-left corner matches desktop environment position
+            # If SetParent worked, coordinates are relative to pygame window
+            # If not, they're screen coordinates
+            self.user32.SetWindowPos(
+                self.game_window_handle,
+                0,
+                desktop_x,
+                desktop_y,
+                0,
+                0,
+                flags
+            )
+            
+            # Try to make it a child of pygame window if we have the handle
+            if pygame_hwnd:
+                try:
+                    self.user32.SetParent(self.game_window_handle, pygame_hwnd)
+                except:
+                    pass
+            
+            # Ensure pygame window stays on top and focused
+            try:
+                if pygame_hwnd:
+                    self.user32.SetForegroundWindow(pygame_hwnd)
+                    self.user32.SetFocus(pygame_hwnd)
+            except:
+                pass
+            
+            print(f"Game window configured: position=({desktop_x}, {desktop_y}), frameless, no-focus")
+        except Exception as e:
+            print(f"Failed to configure game window: {e}")
+    
+    def handle_event(self, event: pygame.event.Event) -> Optional[str]:
+        """Forward input events to the embedded game DLL."""
+        if not self.embed_module:
+            return None
+        
+        # Handle ESC to exit
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                self.exit_requested = True
+                return "exit"
+        
+        # Forward keyboard events
+        if event.type == pygame.KEYDOWN:
+            raylib_key = self.KEY_MAP.get(event.key)
+            if raylib_key is not None:
+                print(f"[AstroMinerSession.handle_event] KEYDOWN: pygame_key={event.key}, raylib_key={raylib_key}")
+                self.embed_module.set_key_state(raylib_key, True)
+        elif event.type == pygame.KEYUP:
+            raylib_key = self.KEY_MAP.get(event.key)
+            if raylib_key is not None:
+                print(f"[AstroMinerSession.handle_event] KEYUP: pygame_key={event.key}, raylib_key={raylib_key}")
+                self.embed_module.set_key_state(raylib_key, False)
+        
+        # Forward mouse button events
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            raylib_button = self.MOUSE_BUTTON_MAP.get(event.button)
+            if raylib_button is not None:
+                self.embed_module.set_mouse_button_state(raylib_button, True)
+                # Also update mouse position (relative to game area)
+                game_pos = self._get_game_mouse_pos(event.pos)
+                self.embed_module.set_mouse_position(game_pos[0], game_pos[1])
+        elif event.type == pygame.MOUSEBUTTONUP:
+            raylib_button = self.MOUSE_BUTTON_MAP.get(event.button)
+            if raylib_button is not None:
+                self.embed_module.set_mouse_button_state(raylib_button, False)
+        
+        # Forward mouse motion - CRITICAL: Use relative movement for ship control
+        if event.type == pygame.MOUSEMOTION:
+            # Use relative movement (event.rel) for delta - this gives true mouse movement
+            # regardless of cursor position, which is what we need for ship control
+            dx, dy = 0.0, 0.0
+            if hasattr(event, 'rel') and event.rel:
+                # event.rel is the relative movement since last event
+                # This is what we want for ship rotation control
+                dx = float(event.rel[0])
+                dy = float(event.rel[1])
+            else:
+                # Fallback: calculate from position change
+                game_pos = self._get_game_mouse_pos(event.pos)
+                last_game_pos = self._get_game_mouse_pos(self.last_mouse_pos)
+                dx = game_pos[0] - last_game_pos[0]
+                dy = game_pos[1] - last_game_pos[1]
+            
+            if abs(dx) > 0.1 or abs(dy) > 0.1:
+                print(f"[AstroMinerSession.handle_event] MOUSEMOTION dx=({dx:.2f},{dy:.2f})")
+            
+            # Set delta FIRST (this is what controls ship rotation)
+            self.embed_module.set_mouse_delta(float(dx), float(dy))
+            
+            # Also update position for any position-based logic
+            game_pos = self._get_game_mouse_pos(event.pos)
+            self.embed_module.set_mouse_position(game_pos[0], game_pos[1])
+            self.last_mouse_pos = event.pos
+        
+        return None
+    
+    def update(self, dt: float) -> None:
+        """Update game frame from DLL framebuffer."""
+        if not self.embed_module:
+            print("[AstroMinerSession.update] ERROR: embed_module is None!")
+            return
+        
+        # Get relative mouse movement (works even when cursor is hidden)
+        # This is the key to getting mouse control working!
+        rel_x, rel_y = pygame.mouse.get_rel()
+        
+        static_update_count = getattr(self, '_update_count', 0)
+        self._update_count = static_update_count + 1
+        
+        # Set mouse delta from relative movement (this is what controls ship rotation)
+        if abs(rel_x) > 0.01 or abs(rel_y) > 0.01:
+            if self._update_count % 60 == 0 or (abs(rel_x) > 1.0 or abs(rel_y) > 1.0):
+                print(f"[AstroMinerSession.update] Frame {self._update_count}, mouse rel=({rel_x:.2f},{rel_y:.2f})")
+            self.embed_module.set_mouse_delta(float(rel_x), float(rel_y))
+        else:
+            # No movement, set delta to 0
+            self.embed_module.set_mouse_delta(0.0, 0.0)
+        
+        # Also update position
+        mouse_pos = pygame.mouse.get_pos()
+        game_pos = self._get_game_mouse_pos(mouse_pos)
+        self.embed_module.set_mouse_position(game_pos[0], game_pos[1])
+        
+        if self._update_count % 60 == 0:
+            print(f"[AstroMinerSession.update] Frame {self._update_count}, mouse screen=({mouse_pos[0]},{mouse_pos[1]}), game=({game_pos[0]:.2f},{game_pos[1]:.2f})")
+        
+        self.last_mouse_pos = mouse_pos
+        
+        try:
+            # Get latest frame from the embedded game
+            if self._update_count % 60 == 0:
+                print(f"[AstroMinerSession.update] Calling get_frame_surface()...")
+            self.last_frame = self.embed_module.get_frame_surface()
+            if self._update_count % 60 == 0:
+                print(f"[AstroMinerSession.update] Got frame: {self.last_frame is not None}")
+        except Exception as e:
+            # Print error every time to see what's happening
+            print(f"[AstroMinerSession.update] ERROR getting frame: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def draw(self) -> None:
+        """Prepare frame for rendering - actual drawing happens in main loop at correct layer."""
+        # Frame is captured in update(), drawing happens in main loop after OS mode
+        pass
+    
+    def get_game_frame(self) -> Optional[pygame.Surface]:
+        """Get the current game frame for rendering at desktop layer."""
+        if not self.last_frame:
+            return None
+            
+        # Get desktop position (same as OS mode uses)
+        baseline_desktop_x = 176
+        baseline_desktop_y = 209
+        desktop_x = int(baseline_desktop_x * self.app.scale)
+        desktop_y = int(baseline_desktop_y * self.app.scale)
+        
+        # Get desktop size
+        desktop_path = os.path.join("Data", "OS", "Desktop-Enviroment.png")
+        if os.path.exists(desktop_path):
+            desktop_image = pygame.image.load(desktop_path)
+            original_size = desktop_image.get_size()
+            desktop_size = (
+                int(original_size[0] * self.app.scale),
+                int(original_size[1] * self.app.scale)
+            )
+        else:
+            # Fallback size
+            desktop_size = (int(848 * self.app.scale), int(382 * self.app.scale))
+        
+        # Scale frame to match desktop size
+        scaled_frame = pygame.transform.scale(self.last_frame, desktop_size)
+        
+        return (scaled_frame, (desktop_x, desktop_y))
+    
+    def exit(self) -> None:
+        """Cleanup embedded game resources."""
+        # Show pygame cursor again
+        pygame.mouse.set_visible(True)
+        print("[AstroMinerSession.exit] Cursor restored")
+        
+        if self.embed_module:
+            try:
+                self.embed_module.cleanup()
+            except Exception as e:
+                print(f"Error cleaning up Astro Miner: {e}")
+        self.embed_module = None
+        self.last_frame = None
+        if hasattr(self, '_frame_error_logged'):
+            delattr(self, '_frame_error_logged')
+
+
+# ---------------------------------------------------------------------------
 # Data definitions
 # ---------------------------------------------------------------------------
 
@@ -155,6 +550,13 @@ GAME_DEFINITIONS: List[GameDefinition] = [
         tokens_required=[Tokens.GAMES1],
         session_factory=SimulacraSession,
     ),
+    GameDefinition(
+        id="astro_miner",
+        title="ASTRO MINER",
+        description="Deep space mining simulator. Extract resources, upgrade ship, survive.",
+        tokens_required=[Tokens.ASTROMINER],
+        session_factory=AstroMinerSession,
+    ),
 ]
 
 
@@ -170,13 +572,36 @@ def launch_external_game(defn: GameDefinition) -> int:
     definition does not refer to an external title.
     """
 
+    if defn.type == "external_compiled":
+        # ... (compilation logic preserved for future reference if needed) ...
+        pass
+
     if defn.type != "external" or not defn.external_path:
         raise RuntimeError("Game definition is not external")
 
-    cmd = [sys.executable, defn.external_path]
-    try:
-        completed = subprocess.run(cmd, check=False)
-        return completed.returncode
-    except FileNotFoundError as exc:  # pragma: no cover - depends on filesystem
-        raise RuntimeError(f"Unable to launch external game: {exc}") from exc
+    target_path = os.path.abspath(defn.external_path)
+    if not os.path.exists(target_path):
+         if os.path.exists(defn.external_path):
+             target_path = os.path.abspath(defn.external_path)
+         else:
+             # Try relative to repo root
+             pass 
+
+    working_dir = os.path.dirname(target_path)
+    
+    if target_path.lower().endswith(".exe"):
+        cmd = [target_path]
+        try:
+            completed = subprocess.run(cmd, cwd=working_dir, check=False)
+            return completed.returncode
+        except Exception as exc:
+             raise RuntimeError(f"Unable to launch external executable: {exc}") from exc
+    else:
+        # Assume Python script
+        cmd = [sys.executable, defn.external_path]
+        try:
+            completed = subprocess.run(cmd, check=False)
+            return completed.returncode
+        except FileNotFoundError as exc:  # pragma: no cover - depends on filesystem
+            raise RuntimeError(f"Unable to launch external game: {exc}") from exc
 

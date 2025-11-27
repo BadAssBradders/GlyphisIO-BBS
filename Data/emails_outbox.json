@@ -44,6 +44,15 @@
       "token_required": "yes",
       "token_name": "PSEM",
       "auto_send": false
+    },
+    {
+      "id": "player_agree_radio_relay",
+      "recipient": "uncle-am@ciphernet.net",
+      "subject": "RE: Soundcard Task // Network Radio Packet Relay Request",
+      "body_template": "Hey uncle-am,\n\nI agree to be part of the underground radio network. My BRADSONIC is ready to serve as a relay node.\n\nLet's do this.",
+      "token_required": "yes",
+      "token_name": "MODEM1ST",
+      "auto_send": false
     }
   ]
 }

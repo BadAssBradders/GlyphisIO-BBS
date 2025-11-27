@@ -1008,7 +1008,17 @@ class GLYPHIS_IOBBS:
         self.start_video_timer = 0.0
         self.start_video_duration = 0.0
         
-        # Game state - start with loading screen (status connection bar)
+        # New Game prompt state
+        self.new_game_prompt_selection = False  # False = No, True = Yes
+        
+        # OS Boot video state
+        self.os_boot_video_playing = False
+        self.os_boot_video_cap = None
+        self.os_boot_video_frame = None
+        self.os_boot_sound = None
+        self.os_boot_sound_channel = None
+        
+        # Game state - will be set after loading user state
         self.state = "loading"  # loading, bbs_scroll, intro, main_menu, module, compose, inbox, reading
         
         # BBS Scroll animation state
@@ -1112,11 +1122,40 @@ class GLYPHIS_IOBBS:
         self.apply_active_user_profile()
         self._email_check_counter = 0  # Counter for periodic email checks
         
+        # Check if we need to show new game prompt (after user state is loaded)
+        # Show prompt if user has LAPC1_NODE7 and AUDIO_ON tokens
+        # BUT: If user has MODEM1ST token, skip OS mode entirely and go to normal BBS flow
+        active_user = self.get_active_user()
+        show_new_game_prompt = False
+        has_modem1st = False
+        if active_user and active_user.get("username"):
+            tokens = [normalize_token(t) for t in active_user.get("tokens", [])]
+            token_set = set(tok for tok in tokens if tok)
+            has_modem1st = Tokens.MODEM1ST in token_set
+            has_node7 = Tokens.LAPC1_NODE7 in token_set
+            has_audio_on = Tokens.AUDIO_ON in token_set
+            # Show new game prompt if user has Node7+Audio (regardless of MODEM1ST)
+            show_new_game_prompt = has_node7 and has_audio_on
+        
+        if show_new_game_prompt:
+            self.state = "new_game_prompt"
+        elif has_modem1st:
+            # User has MODEM1ST token - skip OS mode, go to normal BBS flow (loading screen)
+            self.state = "loading"
+        
         # Compose email fields
-        self.compose_to = "glyphis@ciphernet.net"  # glyphis is the sysop
+        # Team member email addresses for TO dropdown
+        self.team_member_emails = [
+            "glyphis@ciphernet.net",
+            "rain@ciphernet.net",
+            "jaxkando@ciphernet.net",
+            "uncle-am@ciphernet.net"
+        ]
+        self.compose_to = self.team_member_emails[0]  # Default to first team member (glyphis)
         self.compose_subject = ""
         self.compose_body = ""
-        self.active_field = None  # subject, body, or send
+        self.active_field = None  # to, subject, body, or send
+        self.current_recipient_index = 0  # Index in team_member_emails for TO field selection
         
         # Selected email
         self.selected_email = None
@@ -1419,6 +1458,7 @@ class GLYPHIS_IOBBS:
     def _update_cursor(self) -> None:
         """Update cursor based on mouse position and game state"""
         # If a game session is active, let the game handle cursor
+        # (AstroMinerSession hides the cursor in its enter() method)
         if self.state == "game_session" and self.active_game_session:
             return  # Game will handle its own cursor
         
@@ -1542,6 +1582,16 @@ class GLYPHIS_IOBBS:
         self.video_frame = None  # Ensure frame is cleared for new video
         self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset to start
 
+    def _get_radio_music_state(self) -> bool:
+        """Check if RadioMusic is currently playing (Node7.wav from CRACKER IDE).
+        
+        This callback is provided to all modules so they can check RadioMusic state.
+        Returns True if Node7.wav is currently playing, False otherwise.
+        """
+        if self.active_ops_session:
+            return getattr(self.active_ops_session, "RadioMusic", False)
+        return False
+
     def _is_audio_power_led_green(self) -> bool:
         """Check the urgent ops session for the C400 power LED state."""
         session = self.active_ops_session
@@ -1662,7 +1712,7 @@ class GLYPHIS_IOBBS:
         return available
 
     def launch_game(self, definition: GameDefinition) -> None:
-        if definition.type == "external":
+        if definition.type in ("external", "external_compiled"):
             self._show_external_launch_message(definition.title)
             try:
                 launch_external_game(definition)
@@ -1760,6 +1810,46 @@ class GLYPHIS_IOBBS:
         else:
             # If no image, skip directly to intro (press any key screen)
             self.state = "intro"
+    
+    def draw_new_game_prompt(self):
+        """Draw the new game prompt modal centered on full screen with no border"""
+        # Fill screen with solid black rectangle (ensures complete coverage)
+        pygame.draw.rect(self.screen, BLACK, (0, 0, self.screen_width, self.screen_height))
+        
+        # Modal dimensions (scaled)
+        modal_w = int(600 * self.scale)
+        modal_h = int(200 * self.scale)
+        # Center on entire screen (not just BBS window)
+        modal_x = (self.screen_width - modal_w) // 2
+        modal_y = (self.screen_height - modal_h) // 2
+        
+        # Draw modal background (black, no border)
+        modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
+        pygame.draw.rect(self.screen, BLACK, modal_rect)
+        
+        # Title text
+        title_text = "New Game?"
+        title_surface = self.font_large.render(title_text, True, CYAN)
+        title_x = modal_x + (modal_w - title_surface.get_width()) // 2
+        title_y = modal_y + int(30 * self.scale)
+        self.screen.blit(title_surface, (title_x, title_y))
+        
+        # Selection text (Yes/No)
+        selection_text = "Yes" if self.new_game_prompt_selection else "No"
+        # Use green for Yes, red for No (GREEN not in config, so define inline)
+        GREEN = (0, 255, 0)
+        selection_color = GREEN if self.new_game_prompt_selection else RED
+        selection_surface = self.font_medium.render(selection_text, True, selection_color)
+        selection_x = modal_x + (modal_w - selection_surface.get_width()) // 2
+        selection_y = modal_y + int(90 * self.scale)
+        self.screen.blit(selection_surface, (selection_x, selection_y))
+        
+        # Instructions
+        instruction_text = "LEFT/RIGHT to change    ENTER to confirm"
+        instruction_surface = self.font_small.render(instruction_text, True, DARK_CYAN)
+        instruction_x = modal_x + (modal_w - instruction_surface.get_width()) // 2
+        instruction_y = modal_y + int(150 * self.scale)
+        self.screen.blit(instruction_surface, (instruction_x, instruction_y))
     
     def draw_intro_screen(self):
         """Draw the intro screen with ANSI art"""
@@ -2834,9 +2924,27 @@ class GLYPHIS_IOBBS:
             self._draw_footer_status()
             return
         
-        # To field
+        # To field with dropdown selection
+        to_color = CYAN if self.active_field == "to" else DARK_CYAN
         self.draw_text("TO:", self.font_small, ACCENT_CYAN, panel_x, cursor_y)
-        self.draw_text(self.compose_to, self.font_small, DARK_CYAN, panel_x + int(120 * self.scale), cursor_y)
+        
+        # Draw TO field with selection indicator
+        to_field_x = panel_x + int(120 * self.scale)
+        to_field_width = panel_width - int(140 * self.scale)
+        to_field_height = int(34 * self.scale)
+        to_field_rect = pygame.Rect(
+            to_field_x,
+            cursor_y + self.content_scroll_y,
+            to_field_width,
+            to_field_height
+        )
+        pygame.draw.rect(self.bbs_surface, DARK_BLUE, to_field_rect, 1)
+        
+        # Show current recipient
+        recipient_text = self.compose_to
+        if self.active_field == "to":
+            recipient_text += " [UP/DOWN to change]"
+        self.draw_text(recipient_text, self.font_small, to_color, to_field_x + int(8 * self.scale), cursor_y + int(6 * self.scale))
         cursor_y += int(40 * self.scale)
 
         # Subject field
@@ -3079,7 +3187,16 @@ class GLYPHIS_IOBBS:
     
     def _get_visible_ops_tasks(self) -> List[dict]:
         tasks: List[dict] = []
+        # Check if user has both LAPC1_NODE7 and MODEM1ST tokens - if so, hide CRACKER IDE task
+        has_node7 = self.inventory.has_token(Tokens.LAPC1_NODE7)
+        has_modem1st = self.inventory.has_token(Tokens.MODEM1ST)
+        hide_cracker_ide = has_node7 and has_modem1st
+        
         for task in self.urgent_ops_task_definitions:
+            # Skip CRACKER IDE task if both tokens are present
+            if hide_cracker_ide and task.get("id") == "ops_lapc1_driver":
+                continue
+            
             token = task.get("token_required")
             if token and not self.inventory.has_token(token):
                 continue
@@ -3103,9 +3220,68 @@ class GLYPHIS_IOBBS:
             self.current_task = 0
         return tasks
 
+    def _start_os_boot_video(self, video_path: str) -> None:
+        """Start playing OSBoot video (will be rendered in main loop with desktop video and scanlines)."""
+        if not os.path.exists(video_path):
+            log_event("OSBoot video not found, skipping")
+            return
+
+        if not _cv2_available:
+            log_event("cv2 not available, cannot play OSBoot video")
+            return
+
+        # Ensure desktop background video is set to desktop_steam_os.mp4 (or night version)
+        base_video = "desktop_steam_os.mp4"
+        time_aware_video = _get_time_aware_video_name(base_video)
+        self._set_desktop_video(time_aware_video)
+        log_event(f"Set desktop background to {time_aware_video} for OSBoot video")
+
+        try:
+            self.os_boot_video_cap = cv2.VideoCapture(video_path)
+            if not self.os_boot_video_cap or not self.os_boot_video_cap.isOpened():
+                if self.os_boot_video_cap:
+                    self.os_boot_video_cap.release()
+                    self.os_boot_video_cap = None
+                log_event("Failed to open OSBoot video")
+                return
+            
+            # Load and play OSBoot.wav audio
+            audio_path = get_data_path("OS", "OSBoot.wav")
+            if os.path.exists(audio_path):
+                try:
+                    if not pygame.mixer.get_init():
+                        pygame.mixer.init()
+                    self.os_boot_sound = pygame.mixer.Sound(audio_path)
+                    self.os_boot_sound_channel = self.os_boot_sound.play()
+                    log_event("OSBoot.wav audio started")
+                except Exception as audio_exc:
+                    log_event(f"Failed to load/play OSBoot.wav: {audio_exc}")
+                    self.os_boot_sound = None
+                    self.os_boot_sound_channel = None
+            else:
+                log_event(f"OSBoot.wav not found at {audio_path}")
+                self.os_boot_sound = None
+                self.os_boot_sound_channel = None
+            
+            self.os_boot_video_playing = True
+            self.os_boot_video_frame = None
+            log_event("OSBoot video started - will render in main loop")
+        except Exception as exc:
+            log_event(f"OSBoot video initialization failed: {exc}")
+            self.os_boot_video_playing = False
+            self.os_boot_video_cap = None
+
     def _play_ops_intro_video(self, video_path: str) -> None:
         if not os.path.exists(video_path):
             return
+
+        # If this is OSBoot video, ensure desktop background is set to desktop_steam_os.mp4
+        video_filename = os.path.basename(video_path)
+        if "OSBoot" in video_filename:
+            base_video = "desktop_steam_os.mp4"
+            time_aware_video = _get_time_aware_video_name(base_video)
+            self._set_desktop_video(time_aware_video)
+            log_event(f"Set desktop background to {time_aware_video} for OSBoot video (via _play_ops_intro_video)")
 
         cap = None
         try:
@@ -3237,6 +3413,7 @@ class GLYPHIS_IOBBS:
 
     def _initialize_os_mode_if_needed(self):
         """Initialize OS mode if it hasn't been initialized yet. Used by ghost user sequence."""
+        
         if self.os_mode is None:
             print("DEBUG GHOST USER: OS Mode not initialized, initializing now...")
             try:
@@ -3342,7 +3519,7 @@ class GLYPHIS_IOBBS:
                                       get_recording_state, set_recording_state,
                                       get_notes, save_notes, get_user_credentials,
                                       get_chess_stats, save_chess_stats, is_audio_streaming,
-                                      grant_token_callback)
+                                      grant_token_callback, self._get_radio_music_state)
                 print("DEBUG GHOST USER: OS Mode initialized successfully")
                 return True
             except Exception as e:
@@ -3687,19 +3864,35 @@ class GLYPHIS_IOBBS:
             self.state = "email_menu"
             self.current_module = 0
             return
+        elif event.key == pygame.K_UP:
+            # Navigate TO field dropdown
+            if self.active_field == "to":
+                self.current_recipient_index = (self.current_recipient_index - 1) % len(self.team_member_emails)
+                self.compose_to = self.team_member_emails[self.current_recipient_index]
+                return
+        elif event.key == pygame.K_DOWN:
+            # Navigate TO field dropdown
+            if self.active_field == "to":
+                self.current_recipient_index = (self.current_recipient_index + 1) % len(self.team_member_emails)
+                self.compose_to = self.team_member_emails[self.current_recipient_index]
+                return
         elif event.key == pygame.K_BACKSPACE:
             if self.active_field == "subject" and self.compose_subject:
                 self.compose_subject = self.compose_subject[:-1]
             elif self.active_field == "body" and self.compose_body:
                 self.compose_body = self.compose_body[:-1]
         elif event.key == pygame.K_TAB:
-            # Switch fields: subject -> body -> send -> subject
-            if self.active_field == "subject":
+            # Switch fields: to -> subject -> body -> send -> to
+            if self.active_field == "to":
+                self.active_field = "subject"
+            elif self.active_field == "subject":
                 self.active_field = "body"
             elif self.active_field == "body":
                 self.active_field = "send"
-            else:  # send or None
-                self.active_field = "subject"
+            elif self.active_field == "send":
+                self.active_field = "to"
+            else:  # None or unknown
+                self.active_field = "to"
         elif event.key == pygame.K_RETURN:
             if self.active_field == "send":
                 # Require PSEM token before outbound email is available
@@ -3777,6 +3970,19 @@ class GLYPHIS_IOBBS:
                                 # Grant JAX1 token if not already granted
                                 if not self.inventory.has_token(Tokens.JAX1):
                                     self.grant_token(Tokens.JAX1, reason="volunteered to help Jaxkando crack games")
+                        
+                        # Check for radio relay agreement (for uncle-am)
+                        if self.compose_to == "uncle-am@ciphernet.net":
+                            email_text = (email.subject + " " + email.body).lower()
+                            relay_keywords = ["i agree", "i agree to be part", "agree to be part of the underground radio network",
+                                            "agree to be part of the underground radio", "i'm in", "count me in",
+                                            "ready to be a relay", "ready to serve as a relay", "ready to be part",
+                                            "underground radio network", "radio relay", "relay node"]
+                            
+                            if any(keyword in email_text for keyword in relay_keywords):
+                                # Grant RADIO_ACCESS token if not already granted
+                                if not self.inventory.has_token(Tokens.RADIO_ACCESS):
+                                    self.grant_token(Tokens.RADIO_ACCESS, reason="agreed to be part of the underground radio network relay")
                         
                         # Generate response using enhanced trait-based system
                         player_tokens = self.inventory.get_all_tokens()
@@ -3949,8 +4155,12 @@ class GLYPHIS_IOBBS:
             elif self.state == "email_menu":
                 if self.current_module == 0:
                     self.state = "compose"
+                    # Initialize compose fields with default recipient
+                    self.compose_to = self.team_member_emails[0]  # Default to first team member
+                    self.current_recipient_index = 0
                     self.compose_subject = ""
                     self.compose_body = ""
+                    self.active_field = "to"  # Start with TO field active for dropdown selection
                     self.active_field = "subject"  # Start with subject field
                 elif self.current_module == 1:
                     self.state = "inbox"
@@ -4544,7 +4754,7 @@ class GLYPHIS_IOBBS:
                                                       get_recording_state, set_recording_state,
                                                       get_notes, save_notes, get_user_credentials,
                                                       get_chess_stats, save_chess_stats, is_audio_streaming,
-                                                      grant_token_callback)
+                                                      grant_token_callback, self._get_radio_music_state)
                             except Exception as e:
                                 print(f"Warning: Failed to initialize OS Mode: {e}")
                                 self.os_mode_active = False
@@ -4580,11 +4790,76 @@ class GLYPHIS_IOBBS:
                         self._end_ops_session()
                     continue
                 
+                # Handle new game prompt
+                if self.state == "new_game_prompt" and event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_LEFT or event.key == pygame.K_RIGHT:
+                        # Toggle between Yes and No
+                        self.new_game_prompt_selection = not self.new_game_prompt_selection
+                        continue
+                    elif event.key == pygame.K_RETURN:
+                        if self.new_game_prompt_selection:
+                            # Yes - Start fresh new game
+                            log_event("New game selected - creating fresh user profile")
+                            # Clear the current user's data and create a blank slate
+                            self.user_state = {"users": [], "active_user_index": 0}
+                            self.player_email = "unknown"
+                            self.player_pin = None
+                            self.inventory.tokens = set()
+                            self.email_db.sent_email_ids = set()
+                            self.inbox = []
+                            self.save_user_state()
+                            # Start from loading screen like a brand new game
+                            self.state = "loading"
+                            self.loading_progress = 0
+                            self.loading_complete = False
+                        else:
+                            # No - Continue with existing save
+                            log_event("Continuing with existing save")
+                            # Check if user has LAPC1_NODE7 token - if so, skip BBS and go straight to OS Boot
+                            has_node7 = self.inventory.has_token(Tokens.LAPC1_NODE7)
+                            if has_node7:
+                                # Skip loading screen, go straight to OSBoot video
+                                if _cv2_available:
+                                    video_path = get_data_path("OS", "OSBoot.mp4")
+                                    log_event("Starting OS Boot video - Node 7 detected")
+                                    self._start_os_boot_video(video_path)
+                                
+                                # Set state to allow OSBoot video to play (don't activate OS Mode yet - video will do that)
+                                # Keep a special state that allows video to render
+                                self.state = "os_boot_playing"
+                            else:
+                                # Normal path - proceed to loading screen
+                                self.state = "loading"
+                        continue
+                
                 # Handle intro screen - advance on any keypress to authentication
                 if self.state == "intro" and event.type == pygame.KEYDOWN:
                     active_user = self.get_active_user()
                     if active_user and active_user.get("username"):
-                        # User exists - go to login/auth
+                        # Check if user has MODEM1ST token - if so, skip OS mode and go to normal BBS flow
+                        has_modem1st = self.inventory.has_token(Tokens.MODEM1ST)
+                        if has_modem1st:
+                            # User has MODEM1ST - go to normal BBS flow (loading screen, then accreditation, PIN, etc.)
+                            log_event("MODEM1ST token detected - skipping OS mode, proceeding to normal BBS flow")
+                            self.state = "loading"
+                        else:
+                            # Check for special OS Boot condition: LAPC1_NODE7 + AUDIO_ON
+                            has_node7 = self.inventory.has_token(Tokens.LAPC1_NODE7)
+                            has_audio_on = self.inventory.has_token(Tokens.AUDIO_ON)
+                            
+                            if has_node7 and has_audio_on:
+                                # Play OSBoot.mp4 and go directly to OS Mode
+                                if _cv2_available:
+                                    video_path = get_data_path("OS", "OSBoot.mp4")
+                                    log_event("Playing OS Boot video - Node 7 complete, launching OS Mode")
+                                    self._play_ops_intro_video(video_path)
+                                
+                                # Initialize and activate OS Mode directly
+                                self._initialize_os_mode_if_needed()
+                                self.os_mode_active = True
+                                continue
+                        
+                        # Normal path - go to login/auth
                         self.state = "login_username"
                         self.login_input = ""
                         self.login_error = ""
@@ -4653,9 +4928,15 @@ class GLYPHIS_IOBBS:
             # Clear BBS surface
             self.bbs_surface.fill(BLACK)
             
+            # For new_game_prompt: Fill entire screen with solid black rectangle FIRST (before any other rendering)
+            if self.state == "new_game_prompt":
+                pygame.draw.rect(self.screen, BLACK, (0, 0, self.screen_width, self.screen_height))
+            
             # Draw current state (BBS content)
             if self.state == "bbs_scroll":
                 self.draw_bbs_scroll()
+            elif self.state == "new_game_prompt":
+                self.draw_new_game_prompt()
             elif self.state == "intro":
                 self.draw_intro_screen()
                 # No auto-advance - wait for keypress only
@@ -4733,7 +5014,35 @@ class GLYPHIS_IOBBS:
             self._update_audio_power_state()
 
             # Draw BBS window first (before desktop background)
-            if self.video_cap and _cv2_available:
+            if self.state == "new_game_prompt":
+                # New Game Prompt: Skip all background/video rendering - already filled with black
+                # The draw_new_game_prompt() function handles all rendering
+                pass
+            elif self.state == "os_boot_playing":
+                # OSBoot video playing - render desktop video and OSBoot video (no BBS window)
+                if self.video_cap and _cv2_available:
+                    # Read and render desktop background video
+                    ret, frame = self.video_cap.read()
+                    if ret:
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        frame_resized = cv2.resize(frame_rgb, (self.screen_width, self.screen_height))
+                        frame_swapped = np.swapaxes(frame_resized, 0, 1)
+                        self.video_frame = pygame.surfarray.make_surface(frame_swapped)
+                        self.screen.blit(self.video_frame, (0, 0))
+                    else:
+                        self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        ret, frame = self.video_cap.read()
+                        if ret:
+                            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                            frame_resized = cv2.resize(frame_rgb, (self.screen_width, self.screen_height))
+                            frame_swapped = np.swapaxes(frame_resized, 0, 1)
+                            self.video_frame = pygame.surfarray.make_surface(frame_swapped)
+                            self.screen.blit(self.video_frame, (0, 0))
+                        else:
+                            self.screen.fill(BLACK)
+                else:
+                    self.screen.fill(BLACK)
+            elif self.video_cap and _cv2_available:
                 # Video mode: render video frame, then BBS window, then scanline overlay
                 # Read next frame from video
                 ret, frame = self.video_cap.read()
@@ -4776,9 +5085,110 @@ class GLYPHIS_IOBBS:
                 # Draw BBS window on top
                 self.screen.blit(self.bbs_surface, (self.bbs_x, self.bbs_y))
             
-            # Draw OS Mode desktop environment (after BBS window)
+            # (OSBoot video rendering moved to after OS Mode)
+            
+            # Draw OS Mode desktop environment (after BBS window and OSBoot video)
             if self.os_mode_active and self.os_mode:
                 self.os_mode.draw()
+
+            # Draw black rectangle behind game session (matches scanline dimensions, renders before game)
+            if self.state == "game_session" and self.active_game_session:
+                # Calculate desktop position and size (same as scanline uses)
+                baseline_desktop_x = 176
+                baseline_desktop_y = 209
+                desktop_x = int(baseline_desktop_x * self.scale)
+                desktop_y = int(baseline_desktop_y * self.scale)
+                
+                # Get desktop size (use os_mode if available, otherwise load desktop image to get size)
+                if self.os_mode and hasattr(self.os_mode, 'desktop_size'):
+                    desktop_size = self.os_mode.desktop_size
+                else:
+                    # Load desktop image to get its size
+                    try:
+                        desktop_path = get_data_path("OS", "Desktop-Enviroment.png")
+                        desktop_image = pygame.image.load(desktop_path)
+                        original_size = desktop_image.get_size()
+                        desktop_size = (
+                            int(original_size[0] * self.scale),
+                            int(original_size[1] * self.scale)
+                        )
+                    except Exception:
+                        # Fallback size
+                        desktop_size = (int(848 * self.scale), int(382 * self.scale))
+                
+                # Draw black rectangle behind the game (same dimensions as scanline)
+                pygame.draw.rect(self.screen, BLACK, (desktop_x, desktop_y, desktop_size[0], desktop_size[1]))
+
+            # Draw game session frame if active (after OS Mode, before scanlines)
+            if self.state == "game_session" and self.active_game_session:
+                frame_data = getattr(self.active_game_session, "get_game_frame", None)
+                if frame_data and callable(frame_data):
+                    result = frame_data()
+                    if result:
+                        frame, pos = result
+                        self.screen.blit(frame, pos)
+
+            # Update and draw OSBoot video if playing (after OS Mode, before scanlines)
+            if self.os_boot_video_playing and self.os_boot_video_cap:
+                ret, frame = self.os_boot_video_cap.read()
+                if ret:
+                    # Convert BGR to RGB
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    
+                    # Calculate OS desktop position and size (same as OS_Mode uses)
+                    baseline_desktop_x = 176
+                    baseline_desktop_y = 209
+                    desktop_x = int(baseline_desktop_x * self.scale)
+                    desktop_y = int(baseline_desktop_y * self.scale)
+                    
+                    # Load desktop image to get its size (same way OS_Mode does)
+                    desktop_path = get_data_path("OS", "Desktop-Enviroment.png")
+                    try:
+                        desktop_image = pygame.image.load(desktop_path).convert_alpha()
+                        original_size = desktop_image.get_size()
+                        desktop_size = (
+                            int(original_size[0] * self.scale),
+                            int(original_size[1] * self.scale)
+                        )
+                    except Exception:
+                        # Fallback: use a reasonable default size if image can't be loaded
+                        desktop_size = (int(1200 * self.scale), int(900 * self.scale))
+                    
+                    # Resize video to match desktop size (same scale as desktop environment)
+                    frame_resized = cv2.resize(frame_rgb, desktop_size)
+                    frame_swapped = np.swapaxes(frame_resized, 0, 1)
+                    self.os_boot_video_frame = pygame.surfarray.make_surface(frame_swapped)
+                    
+                    # Draw OSBoot video at OS desktop position (on top of desktop background video)
+                    self.screen.blit(self.os_boot_video_frame, (desktop_x, desktop_y))
+                else:
+                    # Video finished - stop playing and activate OS Mode (unless MODEM1ST token present)
+                    self.os_boot_video_playing = False
+                    if self.os_boot_video_cap:
+                        self.os_boot_video_cap.release()
+                        self.os_boot_video_cap = None
+                    self.os_boot_video_frame = None
+                    
+                    # Stop OSBoot.wav audio if still playing
+                    if self.os_boot_sound_channel:
+                        try:
+                            self.os_boot_sound_channel.stop()
+                        except Exception:
+                            pass
+                        self.os_boot_sound_channel = None
+                    self.os_boot_sound = None
+                    
+                    # Initialize and activate OS Mode (MODEM1ST check removed - OSBoot video always leads to OS Mode)
+                    self._initialize_os_mode_if_needed()
+                    if self.os_mode is not None:
+                        self.os_mode_active = True
+                        # Clear the os_boot_playing state - OS Mode will render automatically when os_mode_active is True
+                        if self.state == "os_boot_playing":
+                            self.state = "main_menu"  # Use main_menu state, OS Mode renders via os_mode_active flag
+                        log_event("OSBoot video finished - OS Mode activated")
+                    else:
+                        log_event("ERROR: Failed to initialize OS Mode after OSBoot video")
+                        self.state = "loading"
 
             overlays: list[tuple[pygame.Surface, tuple[int, int]]] = []
             if self.state == "urgent_ops_session" and self.active_ops_session:
@@ -4788,8 +5198,8 @@ class GLYPHIS_IOBBS:
                         overlays = overlay_getter() or []
                     except Exception:
                         overlays = []
-            # Draw thin cyan border around BBS window (on top of everything, unless OS mode is active)
-            if not self.os_mode_active:
+            # Draw thin cyan border around BBS window (on top of everything, unless OS mode is active, OSBoot is playing, or new game prompt is showing)
+            if not self.os_mode_active and not self.os_boot_video_playing and self.state != "new_game_prompt":
                 pygame.draw.rect(self.screen, CYAN,
                                  (self.bbs_x, self.bbs_y, self.bbs_width, self.bbs_height), 1)
 
@@ -4811,28 +5221,57 @@ class GLYPHIS_IOBBS:
                     pygame.mouse.set_visible(True)
             
             # Draw scanline overlay (BBS scanline when not in OS mode, desktop scanline when in OS mode)
-            if self.os_mode_active and self.os_mode:
+            # Skip scanlines for new_game_prompt state
+            if self.state == "new_game_prompt":
+                pass  # No scanlines on new game prompt
+            elif self.os_mode_active and self.os_mode:
                 # Draw desktop scanline in OS mode (over cursor)
                 self.os_mode.draw_scanline()
                 # Draw OS mode overlay rectangle (after scanline)
                 self.os_mode.draw_overlay()
             elif self.scanline_image:
                 # Draw BBS scanline when not in OS mode
-                scanline_scaled = pygame.transform.scale(self.scanline_image, (self.bbs_width, self.bbs_height))
-                self.screen.blit(scanline_scaled, (self.bbs_x, self.bbs_y))
+                # Position it exactly where the desktop scanline goes (same as OS_Mode.py)
+                baseline_desktop_x = 176
+                baseline_desktop_y = 209
+                desktop_x = int(baseline_desktop_x * self.scale)
+                desktop_y = int(baseline_desktop_y * self.scale)
+                
+                # Get desktop size (use os_mode if available, otherwise load desktop image to get size)
+                if self.os_mode and hasattr(self.os_mode, 'desktop_size'):
+                    desktop_size = self.os_mode.desktop_size
+                else:
+                    # Load desktop image to get its size
+                    try:
+                        desktop_path = get_data_path("OS", "Desktop-Enviroment.png")
+                        desktop_image = pygame.image.load(desktop_path)
+                        original_size = desktop_image.get_size()
+                        desktop_size = (
+                            int(original_size[0] * self.scale),
+                            int(original_size[1] * self.scale)
+                        )
+                    except Exception:
+                        # Fallback to BBS size if desktop image can't be loaded
+                        desktop_size = (self.bbs_width, self.bbs_height)
+                
+                # Scale scanline to match desktop size (not BBS size)
+                scanline_scaled = pygame.transform.scale(self.scanline_image, desktop_size)
+                # Position at desktop coordinates (not BBS coordinates)
+                self.screen.blit(scanline_scaled, (desktop_x, desktop_y))
 
-            # Draw mouse coordinates
-            mouse_x, mouse_y = pygame.mouse.get_pos()
-            mouse_text = f"Mouse: {mouse_x}, {mouse_y}"
-            mouse_surface = self.font_tiny.render(mouse_text, True, CYAN)
-            self.screen.blit(mouse_surface, (10, 10))
+            # Draw mouse coordinates (skip during new_game_prompt)
+            if self.state != "new_game_prompt":
+                mouse_x, mouse_y = pygame.mouse.get_pos()
+                mouse_text = f"Mouse: {mouse_x}, {mouse_y}"
+                mouse_surface = self.font_tiny.render(mouse_text, True, CYAN)
+                self.screen.blit(mouse_surface, (10, 10))
 
-            bbs_local_x = (mouse_x - self.bbs_x) / self.scale
-            bbs_local_y = (mouse_y - self.bbs_y) / self.scale
-            bbs_text = f"BBS Window: {int(bbs_local_x)}, {int(bbs_local_y)}"
-            bbs_surface = self.font_tiny.render(bbs_text, True, CYAN)
-            bbs_text_y = 10 + mouse_surface.get_height() + int(4 * self.scale)
-            self.screen.blit(bbs_surface, (10, bbs_text_y))
+                bbs_local_x = (mouse_x - self.bbs_x) / self.scale
+                bbs_local_y = (mouse_y - self.bbs_y) / self.scale
+                bbs_text = f"BBS Window: {int(bbs_local_x)}, {int(bbs_local_y)}"
+                bbs_surface = self.font_tiny.render(bbs_text, True, CYAN)
+                bbs_text_y = 10 + mouse_surface.get_height() + int(4 * self.scale)
+                self.screen.blit(bbs_surface, (10, bbs_text_y))
             
             # Draw FPS display below Mouse and BBS Window text
             try:
@@ -4936,6 +5375,12 @@ class GLYPHIS_IOBBS:
         if not subject.lower().startswith("re:"):
             subject = f"RE: {subject}" if subject else "RE:"
         self.compose_to = recipient
+        # Update recipient index to match the selected recipient
+        if recipient in self.team_member_emails:
+            self.current_recipient_index = self.team_member_emails.index(recipient)
+        else:
+            # If recipient is not in team list, keep current index
+            pass
         self.compose_subject = subject
         self.compose_body = ""
         self.state = "compose"

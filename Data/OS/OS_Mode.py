@@ -158,7 +158,7 @@ class OSMode:
     Renders a desktop environment with draggable icons.
     """
     
-    def __init__(self, screen: pygame.Surface, scale: float, reset_bbs_callback=None, bbs_x=None, bbs_y=None, bbs_width=None, has_token_callback=None, get_recording_state_callback=None, set_recording_state_callback=None, get_notes_callback=None, save_notes_callback=None, get_user_credentials_callback=None, get_chess_stats_callback=None, save_chess_stats_callback=None, is_audio_streaming_callback=None, grant_token_callback=None):
+    def __init__(self, screen: pygame.Surface, scale: float, reset_bbs_callback=None, bbs_x=None, bbs_y=None, bbs_width=None, has_token_callback=None, get_recording_state_callback=None, set_recording_state_callback=None, get_notes_callback=None, save_notes_callback=None, get_user_credentials_callback=None, get_chess_stats_callback=None, save_chess_stats_callback=None, is_audio_streaming_callback=None, grant_token_callback=None, get_radio_music_callback=None):
         """
         Initialize OS Mode.
         
@@ -176,6 +176,7 @@ class OSMode:
             save_notes_callback: Optional callback to save notes list
             grant_token_callback: Optional callback function to grant a token to the player
             is_audio_streaming_callback: Optional callback to check if audio is streaming (returns True if audio other than window-loop.wav is playing)
+            get_radio_music_callback: Optional callback to check if RadioMusic is playing (returns True if Node7.wav is playing)
         """
         self.screen = screen
         self.scale = scale
@@ -193,6 +194,7 @@ class OSMode:
         self.save_chess_stats = save_chess_stats_callback or (lambda stats: None)
         self.grant_token = grant_token_callback or (lambda token, reason=None: False)
         self.is_audio_streaming = is_audio_streaming_callback or (lambda: False)
+        self.get_radio_music = get_radio_music_callback or (lambda: False)
         
         # LAPC-1 Audio Output Stream visualizer state
         self.audio_stream_pixels: List[Dict[str, Any]] = []  # List of pixel rain drops
@@ -430,6 +432,8 @@ class OSMode:
         
         # Modem modal state
         self.modem_modal_dialed_sequence = ""  # Track dialed numbers
+        self.modem_modal_cursor_position = 0  # Cursor position in dialed sequence (0 = before first char, len = after last char)
+        self.modem_modal_cursor_blink_timer = 0.0  # Timer for cursor blinking
         self.modem_modal_target_sequence = "0345728891"  # Target sequence to dial
         self.modem_modal_connection_messages = []  # List of connection messages
         self.modem_modal_message_index = 0  # Current message index
@@ -497,7 +501,10 @@ class OSMode:
                     self.desktop_size,
                     health_monitor_y,
                     self.bbs_x or 0,
-                    self.bbs_width or 0
+                    self.bbs_width or 0,
+                    self.get_chess_stats,
+                    self.save_chess_stats,
+                    self.get_radio_music
                 )
             except Exception as e:
                 print(f"Warning: Failed to initialize ChessGame: {e}")
@@ -521,7 +528,8 @@ class OSMode:
                     self.desktop_size,
                     health_monitor_y,
                     self.bbs_x or 0,
-                    self.bbs_width or 0
+                    self.bbs_width or 0,
+                    self.get_radio_music
                 )
             except Exception as e:
                 print(f"Warning: Failed to initialize SolitaireGame: {e}")
@@ -668,6 +676,8 @@ class OSMode:
                                 modal_name = "modem"
                                 # Initialize dial pad state
                                 self.modem_modal_dialed_sequence = ""
+                                self.modem_modal_cursor_position = 0
+                                self.modem_modal_cursor_blink_timer = 0.0
                                 self.modem_modal_connection_messages = []
                                 self.modem_modal_message_index = 0
                                 self.modem_modal_message_timer = 0.0
@@ -757,6 +767,9 @@ class OSMode:
             if "notes" in self.active_modals and self.notes_modal_edit_mode:
                 if self._notes_handle_textinput(event.text):
                     return True
+            elif "modem" in self.active_modals and not self.modem_modal_connection_started:
+                if self._modem_handle_textinput(event.text):
+                    return True
         
         return False
     
@@ -769,9 +782,9 @@ class OSMode:
             modal_w = int(500 * self.scale)
             modal_h = int(400 * self.scale) + self.modal_title_bar_height
         elif modal_name == "modem":
-            # Simple modem dimensions
+            # Modem dimensions (increased height for larger terminal)
             modal_w = int(340 * self.scale)
-            modal_h = int(480 * self.scale) + self.modal_title_bar_height
+            modal_h = int(600 * self.scale) + self.modal_title_bar_height
         elif modal_name == "notes":
             # Notes modal dimensions
             modal_w = int(700 * self.scale)
@@ -939,7 +952,7 @@ class OSMode:
             return False
             
         gap = int(20 * self.scale)
-        terminal_h = int(120 * self.scale)
+        terminal_h = int(200 * self.scale)  # Updated to match drawing code (was 120)
         terminal_y = modal_y + self.modal_title_bar_height + gap
         
         dial_start_y = terminal_y + terminal_h + gap
@@ -995,17 +1008,98 @@ class OSMode:
                     "Loading data...",
                     "Connection established!"
                 ]
+                # Per-message delays (in seconds)
+                self.modem_modal_message_delays = [
+                    2.1,  # "Initializing modem connection..."
+                    2.1,  # "Dialing 0345728891..."
+                    4.0,  # "Establishing connection..."
+                    4.0,  # "Handshaking..."
+                    3.0,  # "Packets found!"
+                    4.0,  # "Loading data..."
+                    3.0   # "Connection established!"
+                ]
                 self.modem_modal_message_index = 0
                 self.modem_modal_message_timer = 0.0
                 
                 # Grant MODEM1ST token
-                if self.grant_token_callback:
-                    self.grant_token_callback("MODEM1ST", "Modem connection established")
+                if self.grant_token:
+                    self.grant_token("MODEM1ST", "Modem connection established")
             else:
                 # Show error message or just clear
                 self.modem_modal_dialed_sequence = ""
             return True
-            
+                
+        return False
+    
+    def _modem_handle_keydown(self, event: pygame.event.Event) -> bool:
+        """Handle keyboard input for modem modal (arrow keys, backspace)."""
+        if self.modem_modal_connection_started:
+            return False
+        
+        if event.key == pygame.K_BACKSPACE:
+            # Delete character before cursor
+            cursor_pos = self.modem_modal_cursor_position
+            if cursor_pos > 0:
+                self.modem_modal_dialed_sequence = (
+                    self.modem_modal_dialed_sequence[:cursor_pos - 1] + 
+                    self.modem_modal_dialed_sequence[cursor_pos:]
+                )
+                self.modem_modal_cursor_position -= 1
+                self.modem_modal_cursor_blink_timer = 0.0  # Reset cursor blink
+            return True
+        elif event.key == pygame.K_LEFT:
+            # Move cursor left
+            if self.modem_modal_cursor_position > 0:
+                self.modem_modal_cursor_position -= 1
+                self.modem_modal_cursor_blink_timer = 0.0  # Reset cursor blink
+            return True
+        elif event.key == pygame.K_RIGHT:
+            # Move cursor right
+            if self.modem_modal_cursor_position < len(self.modem_modal_dialed_sequence):
+                self.modem_modal_cursor_position += 1
+                self.modem_modal_cursor_blink_timer = 0.0  # Reset cursor blink
+            return True
+        elif event.key == pygame.K_HOME:
+            # Move cursor to start
+            self.modem_modal_cursor_position = 0
+            self.modem_modal_cursor_blink_timer = 0.0
+            return True
+        elif event.key == pygame.K_END:
+            # Move cursor to end
+            self.modem_modal_cursor_position = len(self.modem_modal_dialed_sequence)
+            self.modem_modal_cursor_blink_timer = 0.0
+            return True
+        elif event.key == pygame.K_DELETE:
+            # Delete character at cursor
+            cursor_pos = self.modem_modal_cursor_position
+            if cursor_pos < len(self.modem_modal_dialed_sequence):
+                self.modem_modal_dialed_sequence = (
+                    self.modem_modal_dialed_sequence[:cursor_pos] + 
+                    self.modem_modal_dialed_sequence[cursor_pos + 1:]
+                )
+                self.modem_modal_cursor_blink_timer = 0.0  # Reset cursor blink
+            return True
+        
+        return False
+    
+    def _modem_handle_textinput(self, text: str) -> bool:
+        """Handle text input for modem modal (numbers only)."""
+        if self.modem_modal_connection_started:
+            return False
+        
+        # Only accept digits, *, and #
+        if text and text in "0123456789*#":
+            if len(self.modem_modal_dialed_sequence) < 20:  # Limit length
+                cursor_pos = self.modem_modal_cursor_position
+                self.modem_modal_dialed_sequence = (
+                    self.modem_modal_dialed_sequence[:cursor_pos] + 
+                    text + 
+                    self.modem_modal_dialed_sequence[cursor_pos:]
+                )
+                self.modem_modal_cursor_position += 1
+                self.modem_modal_cursor_blink_timer = 0.0  # Reset cursor blink
+            return True
+        
         return False
     
     def _handle_games_modal_click(self, mouse_x: int, mouse_y: int) -> bool:
@@ -1088,7 +1182,8 @@ class OSMode:
                             self.bbs_x or 0,
                             self.bbs_width or 0,
                             self.get_chess_stats,
-                            self.save_chess_stats
+                            self.save_chess_stats,
+                            self.get_radio_music
                         )
                         self.chess_game.start()
                     except Exception as e:
@@ -1116,7 +1211,8 @@ class OSMode:
                             self.desktop_size,
                             health_monitor_y,
                             self.bbs_x or 0,
-                            self.bbs_width or 0
+                            self.bbs_width or 0,
+                            self.get_radio_music
                         )
                         self.solitaire_game.start()
                     except Exception as e:
@@ -1609,13 +1705,22 @@ class OSMode:
                 self.tape_modal_terminal_lines.append("YOU MAY CLOSE THE WINDOW")
                 self.tape_modal_terminal_text = "\n".join(self.tape_modal_terminal_lines)
         
+        # Update modem modal cursor blink timer
+        if "modem" in self.active_modals and not self.modem_modal_connection_started:
+            self.modem_modal_cursor_blink_timer += dt
+        
         # Update modem modal connection messages and FX
         if "modem" in self.active_modals and self.modem_modal_connection_started and self.modem_modal_connection_messages:
             self.modem_modal_message_timer += dt
-            message_delay = 1.4  # Show each message for ~1.4 seconds
             
             # Progress through messages
             if self.modem_modal_message_index < len(self.modem_modal_connection_messages):
+                # Get delay for current message (default to 2.1 if delays list not available)
+                if hasattr(self, 'modem_modal_message_delays') and self.modem_modal_message_index < len(self.modem_modal_message_delays):
+                    message_delay = self.modem_modal_message_delays[self.modem_modal_message_index]
+                else:
+                    message_delay = 2.1  # Default delay
+                
                 if self.modem_modal_message_timer >= message_delay:
                     self.modem_modal_message_index += 1
                     self.modem_modal_message_timer = 0.0
@@ -2137,11 +2242,11 @@ class OSMode:
         if self.bbs_x is None or self.bbs_y is None or self.bbs_width is None:
             return
         
-        # Check if audio is streaming (not window-loop.wav)
-        is_streaming = self.is_audio_streaming()
+        # Check if RadioMusic is playing (Node7.wav from CRACKER IDE)
+        is_radio_music_playing = self.get_radio_music()
         
-        if not is_streaming:
-            # Clear pixels and helices when not streaming
+        if not is_radio_music_playing:
+            # Clear pixels and helices when RadioMusic stops
             self.audio_stream_pixels = []
             self.audio_stream_helices = []
             return
@@ -2457,12 +2562,12 @@ class OSMode:
         except Exception:
             pass
         
-        # Draw terminal window (below title bar)
+        # Draw terminal window (below title bar) - increased size to accommodate text
         gap = int(20 * self.scale)
         terminal_x = modal_x + gap
         terminal_y = modal_y + self.modal_title_bar_height + gap
         terminal_w = modal_w - 2 * gap
-        terminal_h = int(120 * self.scale)
+        terminal_h = int(200 * self.scale)  # Increased from 120 to 200 for more text space
         terminal_rect = pygame.Rect(terminal_x, terminal_y, terminal_w, terminal_h)
         pygame.draw.rect(self.screen, (5, 10, 25), terminal_rect)
         pygame.draw.rect(self.screen, COLOR_CYAN, terminal_rect, 1)  # Cyan border
@@ -2480,10 +2585,11 @@ class OSMode:
             if self.modem_modal_connection_started and self.modem_modal_connection_messages:
                 visible = min(self.modem_modal_message_index + 1, len(self.modem_modal_connection_messages))
                 lines_to_render = self.modem_modal_connection_messages[:visible]
-            elif self.modem_modal_dialed_sequence:
+            elif not self.modem_modal_connection_started:
+                # Show dialed sequence with cursor (even if empty)
                 lines_to_render = [
                     "READY FOR INPUT...",
-                    f"Dialed: {self.modem_modal_dialed_sequence}",
+                    "Dialed: ",  # Will be drawn with cursor in special handling
                     "Press CALL to connect."
                 ]
             else:
@@ -2497,8 +2603,49 @@ class OSMode:
                 if not line:
                     continue
                 color = self.modem_terminal_palette[i % len(self.modem_terminal_palette)]
-                text_surface = terminal_font.render(line, True, color)
-                self.screen.blit(text_surface, (text_x, text_y))
+                
+                # Special handling for dialed sequence line to show cursor
+                if i == 1 and (line == "Dialed: " or line.startswith("Dialed:")) and not self.modem_modal_connection_started:
+                    # Draw "Dialed: " prefix
+                    prefix = "Dialed: "
+                    prefix_surface = terminal_font.render(prefix, True, color)
+                    self.screen.blit(prefix_surface, (text_x, text_y))
+                    prefix_width = prefix_surface.get_width()
+                    
+                    # Draw dialed sequence with cursor
+                    sequence = self.modem_modal_dialed_sequence
+                    cursor_pos = self.modem_modal_cursor_position
+                    
+                    # Ensure cursor position is valid
+                    cursor_pos = max(0, min(cursor_pos, len(sequence)))
+                    
+                    # Draw text before cursor
+                    if cursor_pos > 0:
+                        before_text = sequence[:cursor_pos]
+                        before_surface = terminal_font.render(before_text, True, color)
+                        self.screen.blit(before_surface, (text_x + prefix_width, text_y))
+                        cursor_x = text_x + prefix_width + before_surface.get_width()
+                    else:
+                        cursor_x = text_x + prefix_width
+                    
+                    # Draw blinking cursor (blinks every 1.0 second, visible for 0.5 seconds)
+                    cursor_visible = (self.modem_modal_cursor_blink_timer % 1.0) < 0.5
+                    if cursor_visible:
+                        # Use font height to match the text size
+                        cursor_height = terminal_font.get_height()
+                        cursor_rect = pygame.Rect(cursor_x, text_y, int(2 * self.scale), cursor_height)
+                        pygame.draw.rect(self.screen, COLOR_CYAN, cursor_rect)
+                    
+                    # Draw text after cursor
+                    if cursor_pos < len(sequence):
+                        after_text = sequence[cursor_pos:]
+                        after_surface = terminal_font.render(after_text, True, color)
+                        self.screen.blit(after_surface, (cursor_x + int(2 * self.scale) if cursor_visible else cursor_x, text_y))
+                else:
+                    # Normal line rendering
+                    text_surface = terminal_font.render(line, True, color)
+                    self.screen.blit(text_surface, (text_x, text_y))
+                
                 text_y += line_height
         except Exception:
             pass
@@ -2507,7 +2654,9 @@ class OSMode:
             self._draw_modem_packet_effect(terminal_rect)
             status_font = pygame.font.Font(None, max(int(14 * self.scale), 11))
             status_text = status_font.render("Link Negotiation...", True, COLOR_NEON_GREEN)
-            self.screen.blit(status_text, (terminal_x, terminal_y + terminal_h - status_font.get_height() - int(6 * self.scale)))
+            # Move one character space to the right (use font width of a space character)
+            char_width = status_font.size(" ")[0]
+            self.screen.blit(status_text, (terminal_x + char_width, terminal_y + terminal_h - status_font.get_height() - int(6 * self.scale)))
         else:
             status_font = pygame.font.Font(None, max(int(14 * self.scale), 11))
             status_text = status_font.render("  Awaiting CALL command.", True, COLOR_TEAL)
@@ -4260,6 +4409,8 @@ class OSMode:
         
         # Reset modem modal state
         self.modem_modal_dialed_sequence = ""
+        self.modem_modal_cursor_position = 0
+        self.modem_modal_cursor_blink_timer = 0.0
         self.modem_modal_connection_messages = []
         self.modem_modal_message_index = 0
         self.modem_modal_message_timer = 0.0
@@ -4591,7 +4742,7 @@ class OSMode:
             elif modal_name == "modem":
                 # Check modem modal buttons
                 gap = int(20 * self.scale)
-                terminal_h = int(120 * self.scale)
+                terminal_h = int(200 * self.scale)  # Match drawing/click handling terminal height
                 button_size = int(42 * self.scale)
                 button_spacing = int(10 * self.scale)
                 

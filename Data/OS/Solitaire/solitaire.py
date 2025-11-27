@@ -101,6 +101,7 @@ class SolitaireGame:
         health_monitor_y: int,
         bbs_x: int = 0,
         bbs_width: int = 0,
+        get_radio_music_callback = None,
     ):
         self.screen = screen
         self.scale = scale
@@ -110,6 +111,7 @@ class SolitaireGame:
         # health_monitor_y is no longer used - everything is positioned relative to desktop
         self.bbs_x = bbs_x
         self.bbs_width = bbs_width
+        self.get_radio_music = get_radio_music_callback or (lambda: False)
 
         # Game state
         self.active: bool = False

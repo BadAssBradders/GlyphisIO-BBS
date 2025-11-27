@@ -69,7 +69,7 @@ class SimulacraCoreGame:
     its own input, logic, and drawing within that surface.
     """
 
-    def __init__(self, surface, fonts, scale, player_username, best_tcs=None, on_new_best=None, on_level_cleared=None):
+    def __init__(self, surface, fonts, scale, player_username, best_tcs=None, on_new_best=None, on_level_cleared=None, get_radio_music_callback=None):
         self.surface = surface
         self.fonts = fonts  # Expects a dict: {"small": font, "medium": font, ...}
         self.scale = scale
@@ -77,6 +77,7 @@ class SimulacraCoreGame:
         self.best_recorded_tcs = best_tcs if best_tcs is not None else None
         self.on_new_best = on_new_best
         self.on_level_cleared = on_level_cleared
+        self.get_radio_music = get_radio_music_callback or (lambda: False)
 
         # Get dimensions from the passed surface
         self.width = self.surface.get_width()

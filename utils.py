@@ -81,6 +81,12 @@ def format_ingame_timestamp(dt=None):
     """Format datetime as in-game timestamp (1989 format)."""
     if dt is None:
         dt = get_realtime_datetime()
+    # Force year to 1989
+    try:
+        dt = dt.replace(year=1989)
+    except ValueError:
+        # Handle leap years if necessary, though 1989 isn't one
+        pass
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
