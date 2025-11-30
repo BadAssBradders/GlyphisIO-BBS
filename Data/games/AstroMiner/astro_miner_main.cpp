@@ -4,6 +4,8 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <vector>
+#include <cmath>
 
 // Export functions for Python embedding
 #ifdef __cplusplus
@@ -16,6 +18,12 @@ bool g_framebuffer_initialized = false;
 unsigned char* g_frame_buffer_data = NULL;
 int g_frame_buffer_size = 0;
 bool g_game_initialized = false;
+
+// Optimization: Render at half resolution
+#define RENDER_WIDTH 600
+#define RENDER_HEIGHT 400
+#define VIRTUAL_WIDTH 1200
+#define VIRTUAL_HEIGHT 800
 
 // Input state tracking (for headless mode)
 struct InputState {
@@ -36,6 +44,8 @@ __declspec(dllexport) __cdecl unsigned char* GetFrameBuffer() {
     }
     
     // Read pixels from the render texture
+    // NOTE: This is slow because it reads from GPU to CPU every frame
+    // Reducing resolution to 600x400 (4x fewer pixels) speeds this up significantly
     Image img = LoadImageFromTexture(g_framebuffer.texture);
     
     // Allocate persistent buffer if needed
@@ -75,6 +85,9 @@ __declspec(dllexport) __cdecl void SetMouseButtonState(int button, bool down);
 __declspec(dllexport) __cdecl void SetInputMousePosition(float x, float y);
 __declspec(dllexport) __cdecl void SetMouseDelta(float dx, float dy);
 __declspec(dllexport) __cdecl void ClearInputFrame();  // Call at end of frame to clear pressed/released flags
+
+Mesh CreateStationMesh(); // Added forward decl
+
 
 #ifdef __cplusplus
 }
@@ -126,17 +139,12 @@ Model g_ship = {0};
 Model g_rockModel = {0};
 Texture2D scanlineTx = {0};
 Texture2D guiHudTx = {0};
-float g_starfieldOffset = 0.0f;
-float g_torusRotation = 0.0f;
-Model g_torusModel = {0};
-bool g_torusModelCreated = false;
-
 
 void DrawScanlines() {
     if (scanlineTx.id > 0) {
         DrawTexturePro(scanlineTx, 
             (Rectangle){0, 0, (float)scanlineTx.width, (float)scanlineTx.height}, 
-            (Rectangle){0, 0, 1200, 800}, 
+            (Rectangle){0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT}, 
             (Vector2){0, 0}, 0.0f, (Color){255, 255, 255, 255});
     }
 }
@@ -162,7 +170,7 @@ Vector2 g_chunkCenters[TOTAL_CHUNKS] = {0};
 
 // --- SHIP ENGINE STATS (UPGRADEABLE) ---
 float SHIP_GRAVITY = -12.0f;
-float SHIP_THRUST_POWER = 25.0f; 
+float SHIP_THRUST_POWER = 37.5f; 
 float SHIP_DRAG_FACTOR = 0.985f;
 float SHIP_FUEL_BURN_RATE = 1.0f / 10.0f; 
 
@@ -284,6 +292,76 @@ Mesh CreateSolidShip() {
         }
     }
     UploadMesh(&mesh,false); return mesh;
+}
+
+Mesh CreateStationMesh() {
+    // Legacy function, might not be needed if using StationViewport
+    return (Mesh){0};
+}
+
+Mesh CreateBaseRockMesh() {
+    float phi = 1.61803398875f; float inv = 1.0f/phi;
+    Vector3 vLocal[20] = {{1,1,1},{1,1,-1},{1,-1,1},{1,-1,-1},{-1,1,1},{-1,1,-1},{-1,-1,1},{-1,-1,-1},{0,inv,phi},{0,inv,-phi},{0,-inv,phi},{0,-inv,-phi},{inv,phi,0},{inv,-phi,0},{-inv,phi,0},{-inv,-phi,0},{phi,0,inv},{phi,0,-inv},{-phi,0,inv},{-phi,0,-inv}};
+    int faces[12][5] = {{0,16,2,10,8},{0,8,4,14,12},{16,17,1,12,0},{1,9,11,3,17},{1,12,14,5,9},{2,13,15,6,10},{13,3,11,7,15},{4,8,10,6,18},{14,4,18,19,5},{5,19,7,11,9},{15,7,19,18,6},{2,16,17,3,13}};
+    Color rockPalette[12] = {{80,80,80,255},{100,100,105,255},{90,85,80,255},{70,70,70,255},{60,60,65,255},{110,110,110,255},{55,55,55,255},{75,70,65,255},{65,65,65,255},{85,85,90,255},{45,45,50,255},{95,95,95,255}};
+    
+    Mesh mesh = {0}; mesh.triangleCount=36; mesh.vertexCount=mesh.triangleCount*3;
+    mesh.vertices=(float*)MemAlloc(mesh.vertexCount*3*sizeof(float));
+    mesh.normals=(float*)MemAlloc(mesh.vertexCount*3*sizeof(float));
+    mesh.colors=(unsigned char*)MemAlloc(mesh.vertexCount*4);
+    
+    int idx=0;
+    for(int f=0;f<12;f++){
+        Color faceCol=rockPalette[f];
+        Vector3 pLocal[5]; for(int i=0;i<5;i++) pLocal[i]=vLocal[faces[f][i]];
+        Vector3 n=Vector3Normalize(Vector3CrossProduct(Vector3Subtract(pLocal[1],pLocal[0]), Vector3Subtract(pLocal[2],pLocal[0])));
+        int tris[3][3]={{0,1,2},{0,2,3},{0,3,4}};
+        for(int t=0;t<3;t++){
+            for(int k=0;k<3;k++){
+                int ptIndex=tris[t][k];
+                mesh.vertices[idx*3+0]=pLocal[ptIndex].x; mesh.vertices[idx*3+1]=pLocal[ptIndex].y; mesh.vertices[idx*3+2]=pLocal[ptIndex].z;
+                mesh.normals[idx*3+0]=n.x; mesh.normals[idx*3+1]=n.y; mesh.normals[idx*3+2]=n.z;
+                mesh.colors[idx*4+0]=faceCol.r; mesh.colors[idx*4+1]=faceCol.g; mesh.colors[idx*4+2]=faceCol.b; mesh.colors[idx*4+3]=255; idx++;
+            }
+        }
+    }
+    UploadMesh(&mesh,false); return mesh;
+}
+
+void GenerateRocksAndCollision() {
+    float phi = 1.61803398875f; float inv = 1.0f/phi;
+    Vector3 vLocal[20] = {{1,1,1},{1,1,-1},{1,-1,1},{1,-1,-1},{-1,1,1},{-1,1,-1},{-1,-1,1},{-1,-1,-1},{0,inv,phi},{0,inv,-phi},{0,-inv,phi},{0,-inv,-phi},{inv,phi,0},{inv,-phi,0},{-inv,phi,0},{-inv,-phi,0},{phi,0,inv},{phi,0,-inv},{-phi,0,inv},{-phi,0,-inv}};
+    int faces[12][5] = {{0,16,2,10,8},{0,8,4,14,12},{16,17,1,12,0},{1,9,11,3,17},{1,12,14,5,9},{2,13,15,6,10},{13,3,11,7,15},{4,8,10,6,18},{14,4,18,19,5},{5,19,7,11,9},{15,7,19,18,6},{2,16,17,3,13}};
+    int globalTriIdx = 0;
+    int limit = (int)PROSPECT_PERIMETER;
+    Vector3 clusterCenter = {0};
+
+    for (int r = 0; r < NUM_ROCKS; r++) {
+        float scale = (float)GetRandomValue(50, 300) / 100.0f;
+        float rx, rz;
+        if (r % 2 == 0) { rx = (float)GetRandomValue(-limit, limit); rz = (float)GetRandomValue(-limit, limit); clusterCenter = (Vector3){rx, 0, rz}; } 
+        else { float angle = (float)GetRandomValue(0, 360) * DEG2RAD; float dist = (float)GetRandomValue(20, 60) / 10.0f; rx = clusterCenter.x + cosf(angle) * dist; rz = clusterCenter.z + sinf(angle) * dist; if(rx > limit) rx = limit; if(rx < -limit) rx = -limit; if(rz > limit) rz = limit; if(rz < -limit) rz = -limit; }
+        
+        G_Rocks[r].position = (Vector3){rx, GetTerrainHeight(rx, rz) + (0.2f * scale), rz};
+        G_Rocks[r].scale = scale;
+        G_Rocks[r].axis = Vector3Normalize((Vector3){(float)GetRandomValue(-1,1),(float)GetRandomValue(-1,1),(float)GetRandomValue(-1,1)});
+        G_Rocks[r].angle = (float)GetRandomValue(0, 360);
+        int tintVal = GetRandomValue(200, 255);
+        G_Rocks[r].color = (Color){(unsigned char)tintVal, (unsigned char)tintVal, (unsigned char)tintVal, 255};
+
+        Matrix matScale = MatrixScale(scale, scale, scale);
+        Matrix matRot = MatrixRotate(G_Rocks[r].axis, G_Rocks[r].angle * DEG2RAD);
+        Matrix matTrans = MatrixTranslate(G_Rocks[r].position.x, G_Rocks[r].position.y, G_Rocks[r].position.z);
+        Matrix matWorld = MatrixMultiply(MatrixMultiply(matScale, matRot), matTrans);
+
+        for(int f=0;f<12;f++){
+            Vector3 pWorld[5]; for(int i=0;i<5;i++) pWorld[i] = Vector3Transform(vLocal[faces[f][i]], matWorld);
+            int tris[3][3]={{0,1,2},{0,2,3},{0,3,4}};
+            for(int t=0;t<3;t++){
+                G_RockTris[globalTriIdx].a = pWorld[tris[t][0]]; G_RockTris[globalTriIdx].b = pWorld[tris[t][1]]; G_RockTris[globalTriIdx].c = pWorld[tris[t][2]]; globalTriIdx++;
+            }
+        }
+    }
 }
 
 Mesh CreateTerrainChunk(float startX, float startZ, float size) {
@@ -476,7 +554,7 @@ void SpawnThrustParticles(Vector3 nozzlePos, Vector3 shipUpVector) {
                 particles[i].pos = nozzlePos; particles[i].onGround = false;
                 Vector3 noise = { (GetRandomValue(-50,50))/100.0f, (GetRandomValue(-50,50))/100.0f, (GetRandomValue(-50,50))/100.0f };
                 Vector3 spreadDir = Vector3Add(ejectDir, Vector3Scale(noise, 0.6f));
-                particles[i].vel = Vector3Scale(spreadDir, (float)GetRandomValue(50, 100) / 10.0f);
+                particles[i].vel = Vector3Scale(spreadDir, (float)GetRandomValue(75, 150) / 10.0f);
                 particles[i].color = thrusterPalette[GetRandomValue(0,9)];
                 particles[i].life = 1.5f; break;
             }
@@ -571,6 +649,54 @@ static Vector2 CustomGetMousePosition() {
 }
 
 // ------------------------------------------------------------
+// INPUT SETTING FUNCTIONS (called from Python)
+// ------------------------------------------------------------
+// NOTE: These are defined outside extern "C" because they implement forward declarations
+// that were inside extern "C". The linker should match them.
+// If not, we can wrap them in extern "C" too.
+
+__declspec(dllexport) __cdecl void SetKeyState(int key, bool down) {
+    static int key_event_count = 0;
+    if (key >= 0 && key < 512) {
+        bool wasDown = g_inputState.keys[key];
+        g_inputState.keys[key] = down;
+        // Set pressed flag if just pressed (wasn't down, now is)
+        if (!wasDown && down) {
+            g_inputState.keysPressed[key] = true;
+            key_event_count++;
+        }
+    }
+}
+
+__declspec(dllexport) __cdecl void SetMouseButtonState(int button, bool down) {
+    if (button >= 0 && button < 8) {
+        bool wasDown = g_inputState.mouseButtons[button];
+        g_inputState.mouseButtons[button] = down;
+        // Set pressed/released flags
+        if (!wasDown && down) {
+            g_inputState.mouseButtonsPressed[button] = true;
+        } else if (wasDown && !down) {
+            g_inputState.mouseButtonsReleased[button] = true;
+        }
+    }
+}
+
+__declspec(dllexport) __cdecl void SetInputMousePosition(float x, float y) {
+    g_inputState.mousePosition = (Vector2){x, y};
+}
+
+__declspec(dllexport) __cdecl void SetMouseDelta(float dx, float dy) {
+    g_inputState.mouseDelta = (Vector2){dx, dy};
+}
+
+__declspec(dllexport) __cdecl void ClearInputFrame() {
+    // Clear one-time press/release flags at end of frame
+    memset(g_inputState.keysPressed, 0, sizeof(g_inputState.keysPressed));
+    memset(g_inputState.mouseButtonsPressed, 0, sizeof(g_inputState.mouseButtonsPressed));
+    memset(g_inputState.mouseButtonsReleased, 0, sizeof(g_inputState.mouseButtonsReleased));
+}
+
+// ------------------------------------------------------------
 // DRAWING HELPERS (Shared UI)
 // ------------------------------------------------------------
 void DrawRetroWindow(const char* title, int x, int y, int w, int h) {
@@ -597,77 +723,393 @@ bool DrawButton(const char* text, int x, int y, int w, int h, bool selected) {
 }
 
 // ------------------------------------------------------------
-// STARFIELD & TORUS FUNCTIONS
+// STATION VIEWPORT MODULE
 // ------------------------------------------------------------
-void DrawStarfield(float offset) {
-    // Draw moving starfield background
-    int numStars = 200;
-    int width = 1200;
-    int height = 800;
+
+enum StationType {
+    STATION_ALPHA,  // Torus
+    STATION_BETA,   // Icosahedron
+    STATION_GAMMA,  // Torus (Variant)
+    STATION_DELTA   // Icosahedron (Variant)
+};
+
+struct Star {
+    float x;
+    float y;
+    float z;        // Depth (0 = far, 1 = close)
+    float speed;
+    Color color;
+};
+
+// MESH GENERATION FUNCTIONS (ADAPTED FROM SHAPES_IN_SPACE)
+
+Mesh GenFlatShadedTorus(float radius, float size, int radSeg, int sides)
+{
+    Mesh mesh = { 0 };
     
-    for (int i = 0; i < numStars; i++) {
-        // Use a simple hash to create pseudo-random but consistent star positions
-        float seed = (float)(i * 137.508f); // Golden angle approximation
-        float x = fmod(seed * 7.3f + offset, (float)width);
-        float y = fmod(seed * 11.7f, (float)height);
-        
-        // Vary star sizes and brightness
-        float size = 1.0f + fmod(seed * 3.7f, 2.0f);
-        int brightness = 150 + (int)(fmod(seed * 5.3f, 105.0f));
-        
-        Color starColor = (Color){(unsigned char)brightness, (unsigned char)brightness, (unsigned char)brightness, 255};
-        DrawCircle((int)x, (int)y, size, starColor);
+    int numFaces = radSeg * sides;
+    int numVertices = numFaces * 4; // 4 vertices per face (quads)
+    int numIndices = numFaces * 6;  // 6 indices per face (2 triangles)
+    
+    mesh.vertexCount = numVertices;
+    mesh.triangleCount = numFaces * 2;
+    
+    mesh.vertices = (float *)MemAlloc(mesh.vertexCount * 3 * sizeof(float));
+    mesh.normals = (float *)MemAlloc(mesh.vertexCount * 3 * sizeof(float));
+    mesh.texcoords = (float *)MemAlloc(mesh.vertexCount * 2 * sizeof(float));
+    mesh.colors = (unsigned char *)MemAlloc(mesh.vertexCount * 4 * sizeof(unsigned char));
+    mesh.indices = (unsigned short *)MemAlloc(numIndices * sizeof(unsigned short));
+    
+    int vIndex = 0;
+    int iIndex = 0;
+    
+    for (int i = 0; i < radSeg; i++)
+    {
+        for (int j = 0; j < sides; j++)
+        {
+            float v = (float)j / sides * PI * 2.0f;
+            float sinV = sinf(v); 
+            
+            Color faceColor;
+            if (sinV > 0.2f)       faceColor = LIGHTGRAY; 
+            else if (sinV < -0.2f) faceColor = DARKGRAY;  
+            else                   faceColor = GRAY;      
+            
+            int iNext = (i + 1) % radSeg;
+            int jNext = (j + 1) % sides;
+            
+            auto GetPos = [&](int seg, int side) -> Vector3 {
+                float u = (float)seg / radSeg * PI * 2.0f;
+                float v = (float)side / sides * PI * 2.0f;
+                
+                float x = (radius + size * cosf(v)) * cosf(u);
+                float y = size * sinf(v); 
+                float z = (radius + size * cosf(v)) * sinf(u);
+                return (Vector3){x, y, z};
+            };
+            
+            Vector3 p0 = GetPos(i, j);
+            Vector3 p1 = GetPos(iNext, j);
+            Vector3 p2 = GetPos(iNext, jNext);
+            Vector3 p3 = GetPos(i, jNext);
+            
+            Vector3 normal = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(p1, p0), Vector3Subtract(p2, p0))); 
+            
+            auto AddVertex = [&](Vector3 p) {
+                mesh.vertices[vIndex*3] = p.x;
+                mesh.vertices[vIndex*3+1] = p.y;
+                mesh.vertices[vIndex*3+2] = p.z;
+                
+                mesh.normals[vIndex*3] = normal.x;
+                mesh.normals[vIndex*3+1] = normal.y;
+                mesh.normals[vIndex*3+2] = normal.z;
+                
+                mesh.colors[vIndex*4] = faceColor.r;
+                mesh.colors[vIndex*4+1] = faceColor.g;
+                mesh.colors[vIndex*4+2] = faceColor.b;
+                mesh.colors[vIndex*4+3] = faceColor.a;
+                
+                mesh.texcoords[vIndex*2] = 0.0f;
+                mesh.texcoords[vIndex*2+1] = 0.0f;
+                
+                vIndex++;
+            };
+            
+            int baseIndex = vIndex;
+            AddVertex(p0); AddVertex(p1); AddVertex(p2); AddVertex(p3);
+            
+            mesh.indices[iIndex++] = baseIndex;
+            mesh.indices[iIndex++] = baseIndex + 1;
+            mesh.indices[iIndex++] = baseIndex + 2;
+            
+            mesh.indices[iIndex++] = baseIndex;
+            mesh.indices[iIndex++] = baseIndex + 2;
+            mesh.indices[iIndex++] = baseIndex + 3;
+        }
     }
+    
+    UploadMesh(&mesh, false);
+    return mesh;
 }
 
-void DrawTorusStation(float rotation) {
-    // Create torus mesh if not already created
-    if (!g_torusModelCreated) {
-        float majorRadius = 3.0f;
-        float minorRadius = 0.8f;
-        int rings = 32;
-        int sides = 16;
-        Mesh torusMesh = GenMeshTorus(majorRadius, minorRadius, rings, sides);
-        g_torusModel = LoadModelFromMesh(torusMesh);
-        g_torusModelCreated = true;
-    }
+Mesh GenFlatShadedIcosahedron(float scale)
+{
+    Mesh mesh = { 0 };
+    float phi = (1.0f + sqrtf(5.0f)) / 2.0f;
+    Vector3 verts[12] = {
+        {-1,  phi, 0}, { 1,  phi, 0}, {-1, -phi, 0}, { 1, -phi, 0},
+        { 0, -1,  phi}, { 0,  1,  phi}, { 0, -1, -phi}, { 0,  1, -phi},
+        { phi, 0, -1}, { phi, 0,  1}, {-phi, 0, -1}, {-phi, 0,  1}
+    };
+    int indices[20][3] = {
+        {0, 11, 5}, {0, 5, 1}, {0, 1, 7}, {0, 7, 10}, {0, 10, 11},
+        {1, 5, 9}, {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8},
+        {3, 9, 4}, {3, 4, 2}, {3, 2, 6}, {3, 6, 8}, {3, 8, 9},
+        {4, 9, 5}, {2, 4, 11}, {6, 2, 10}, {8, 6, 7}, {9, 8, 1}
+    };
     
-    // Set up a camera for the 3D torus view
-    Camera3D torusCamera = {0};
-    torusCamera.position = (Vector3){0, 0, 15.0f};
-    torusCamera.target = (Vector3){0, 0, 0};
-    torusCamera.up = (Vector3){0, 1, 0};
-    torusCamera.fovy = 60.0f;
-    torusCamera.projection = CAMERA_PERSPECTIVE;
+    int numFaces = 20;
+    mesh.vertexCount = numFaces * 3;
+    mesh.triangleCount = numFaces;
     
-    BeginMode3D(torusCamera);
+    mesh.vertices = (float *)MemAlloc(mesh.vertexCount * 3 * sizeof(float));
+    mesh.normals = (float *)MemAlloc(mesh.vertexCount * 3 * sizeof(float));
+    mesh.texcoords = (float *)MemAlloc(mesh.vertexCount * 2 * sizeof(float));
+    mesh.colors = (unsigned char *)MemAlloc(mesh.vertexCount * 4 * sizeof(unsigned char));
+    mesh.indices = (unsigned short *)MemAlloc(mesh.vertexCount * sizeof(unsigned short));
     
-    // Draw main torus with rotation in blue shades
-    Matrix rotMatrix = MatrixRotateY(DEG2RAD * rotation);
-    g_torusModel.transform = rotMatrix;
+    int vIndex = 0;
+    int iIndex = 0;
     
-    // Use a nice blue color similar to the spaceship
-    Color torusColor = (Color){80, 130, 220, 255};  // Medium blue
-    DrawModel(g_torusModel, (Vector3){0, 0, 0}, 1.0f, torusColor);
-    
-    // Add some glowing panels (rectangles on the torus surface) in lighter blue
-    for (int j = 0; j < 12; j++) {
-        float panelAngle = (j * 30.0f * DEG2RAD) + (rotation * DEG2RAD);
-        float panelX = cosf(panelAngle) * 3.0f;
-        float panelZ = sinf(panelAngle) * 3.0f;
-        Vector3 panelPos = {panelX, 0, panelZ};
+    for (int i = 0; i < numFaces; i++)
+    {
+        Vector3 p0 = verts[indices[i][0]];
+        Vector3 p1 = verts[indices[i][1]];
+        Vector3 p2 = verts[indices[i][2]];
         
-        // Draw glowing panels in various blue shades
-        Color panelColors[] = {
-            (Color){100, 180, 255, 220},  // Light blue
-            (Color){60, 150, 240, 200},   // Medium-light blue
-            (Color){50, 120, 200, 180}    // Medium blue
+        p0 = Vector3Scale(p0, scale);
+        p1 = Vector3Scale(p1, scale);
+        p2 = Vector3Scale(p2, scale);
+        
+        Vector3 edge1 = Vector3Subtract(p1, p0);
+        Vector3 edge2 = Vector3Subtract(p2, p0);
+        Vector3 normal = Vector3Normalize(Vector3CrossProduct(edge1, edge2));
+        
+        Vector3 center = Vector3Scale(Vector3Add(Vector3Add(p0, p1), p2), 1.0f/3.0f);
+        float normalizedY = center.y / (scale * phi); 
+        
+        Color faceColor;
+        if (normalizedY > 0.25f)       faceColor = LIGHTGRAY; 
+        else if (normalizedY < -0.25f) faceColor = DARKGRAY;  
+        else                           faceColor = GRAY;      
+        
+        auto AddVertex = [&](Vector3 p) {
+            mesh.vertices[vIndex*3] = p.x;
+            mesh.vertices[vIndex*3+1] = p.y;
+            mesh.vertices[vIndex*3+2] = p.z;
+            
+            mesh.normals[vIndex*3] = normal.x;
+            mesh.normals[vIndex*3+1] = normal.y;
+            mesh.normals[vIndex*3+2] = normal.z;
+            
+            mesh.colors[vIndex*4] = faceColor.r;
+            mesh.colors[vIndex*4+1] = faceColor.g;
+            mesh.colors[vIndex*4+2] = faceColor.b;
+            mesh.colors[vIndex*4+3] = faceColor.a;
+            
+            mesh.texcoords[vIndex*2] = 0.0f;
+            mesh.texcoords[vIndex*2+1] = 0.0f;
+            
+            mesh.indices[iIndex++] = vIndex;
+            vIndex++;
         };
-        DrawCube(panelPos, 0.4f, 0.4f, 0.15f, panelColors[j % 3]);
+        
+        AddVertex(p0); AddVertex(p1); AddVertex(p2);
     }
     
-    EndMode3D();
+    UploadMesh(&mesh, false);
+    return mesh;
 }
+
+class StationViewport {
+private:
+    RenderTexture2D viewTarget;
+    Camera3D camera;
+    Shader shader;
+    
+    Mesh meshTorus;
+    Model modelTorus;
+    Mesh meshIco;
+    Model modelIco;
+    
+    std::vector<Star> stars;
+    float rotation;
+    
+    // Shader Uniform Locations
+    int locViewPos;
+    int locAmbient;
+    int locLightPos[5];
+    int locLightColor[5];
+    int locLightDir5;
+    int locLightCut5;
+
+public:
+    StationViewport() : rotation(0.0f), locViewPos(-1) {
+        camera = { 0 };
+        shader = { 0 };
+        viewTarget = { 0 };
+    }
+
+    void Init(int width, int height) {
+        // 1. Create Framebuffer (use low res for speed)
+        viewTarget = LoadRenderTexture(width, height);
+        
+        // 2. Load dedicated shaders (renamed to lighting.vs/fs per user request)
+        // Use path relative to the DLL/Executable
+        shader = LoadShader("lighting.vs", "lighting.fs");
+        if (shader.id == 0) {
+            // Fallback path
+            shader = LoadShader("Data/games/AstroMiner/lighting.vs", "Data/games/AstroMiner/lighting.fs");
+        }
+        
+        // Get Locations
+        locViewPos = GetShaderLocation(shader, "viewPos");
+        locAmbient = GetShaderLocation(shader, "ambientColor");
+        
+        locLightPos[0] = GetShaderLocation(shader, "lightPos");
+        locLightColor[0] = GetShaderLocation(shader, "lightColor");
+        locLightPos[1] = GetShaderLocation(shader, "lightPos2");
+        locLightColor[1] = GetShaderLocation(shader, "lightColor2");
+        locLightPos[2] = GetShaderLocation(shader, "lightPos3");
+        locLightColor[2] = GetShaderLocation(shader, "lightColor3");
+        locLightPos[3] = GetShaderLocation(shader, "lightPos4");
+        locLightColor[3] = GetShaderLocation(shader, "lightColor4");
+        
+        locLightPos[4] = GetShaderLocation(shader, "lightPos5");
+        locLightColor[4] = GetShaderLocation(shader, "lightColor5");
+        locLightDir5 = GetShaderLocation(shader, "lightDir5");
+        locLightCut5 = GetShaderLocation(shader, "lightCutoff5");
+        
+        // Set Default Light Values
+        float ambient[] = { 0.1f, 0.1f, 0.1f };
+        SetShaderValue(shader, locAmbient, ambient, SHADER_UNIFORM_VEC3);
+        
+        // Lights setup similar to source
+        float lColor1[] = { 0.8f, 0.8f, 0.8f }; Vector3 lPos1 = { 0.0f, 50.0f, 0.0f };
+        SetShaderValue(shader, locLightColor[0], lColor1, SHADER_UNIFORM_VEC3);
+        SetShaderValue(shader, locLightPos[0], &lPos1, SHADER_UNIFORM_VEC3);
+
+        float lColor2[] = { 0.4f, 0.4f, 0.4f }; Vector3 lPos2 = { -50.0f, 0.0f, 0.0f };
+        SetShaderValue(shader, locLightColor[1], lColor2, SHADER_UNIFORM_VEC3);
+        SetShaderValue(shader, locLightPos[1], &lPos2, SHADER_UNIFORM_VEC3);
+        
+        float lColor3[] = { 1.0f, 1.0f, 1.0f }; Vector3 lPos3 = { -40.0f, 40.0f, 20.0f };
+        SetShaderValue(shader, locLightColor[2], lColor3, SHADER_UNIFORM_VEC3);
+        SetShaderValue(shader, locLightPos[2], &lPos3, SHADER_UNIFORM_VEC3);
+        
+        float lColor4[] = { 0.8f, 0.9f, 1.0f }; Vector3 lPos4 = { 0.0f, 100.0f, 0.0f };
+        SetShaderValue(shader, locLightColor[3], lColor4, SHADER_UNIFORM_VEC3);
+        SetShaderValue(shader, locLightPos[3], &lPos4, SHADER_UNIFORM_VEC3);
+        
+        // Light 5 is dynamic (camera spot)
+        float lColor5[] = { 0.53f, 0.81f, 0.92f };
+        SetShaderValue(shader, locLightColor[4], lColor5, SHADER_UNIFORM_VEC3);
+        float cutoff = cosf(30.0f * DEG2RAD);
+        SetShaderValue(shader, locLightCut5, &cutoff, SHADER_UNIFORM_FLOAT);
+
+        // 3. Generate Geometry
+        meshTorus = GenFlatShadedTorus(12.0f, 3.0f, 24, 16); // Using params from source
+        modelTorus = LoadModelFromMesh(meshTorus);
+        modelTorus.materials[0].shader = shader;
+        modelTorus.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = WHITE;
+        
+        meshIco = GenFlatShadedIcosahedron(6.0f);
+        modelIco = LoadModelFromMesh(meshIco);
+        modelIco.materials[0].shader = shader;
+        modelIco.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = WHITE;
+        
+        // 4. Setup Fixed Camera
+        camera.position = (Vector3){ 25.0f, 15.0f, 25.0f };
+        camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
+        camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
+        camera.fovy = 45.0f;
+        camera.projection = CAMERA_PERSPECTIVE;
+        
+        // 5. Init Stars
+        stars.resize(200);
+        for(auto& star : stars) {
+            star.x = (float)(GetRandomValue(-width/2, width/2));
+            star.y = (float)(GetRandomValue(-height/2, height/2));
+            star.z = (float)GetRandomValue(1, 1000) / 1000.0f;
+            star.speed = 0.005f + (1.0f - star.z) * 0.0025f;
+            star.color = WHITE;
+            if (GetRandomValue(0, 100) < 20) {
+                 int c = GetRandomValue(0, 3);
+                 if(c==0) star.color = SKYBLUE;
+                 else if(c==1) star.color = YELLOW;
+                 else star.color = LIGHTGRAY;
+            }
+        }
+    }
+    
+    void Update(float dt) {
+        rotation += 15.0f * dt;
+        if(rotation > 360.0f) rotation -= 360.0f;
+        
+        // Update stars
+        for(auto& star : stars) {
+            star.z -= star.speed * dt * 60.0f; // Scale speed for 60fps
+            if(star.z <= 0.0f) {
+                star.x = (float)(GetRandomValue(-viewTarget.texture.width/2, viewTarget.texture.width/2));
+                star.y = (float)(GetRandomValue(-viewTarget.texture.height/2, viewTarget.texture.height/2));
+                star.z = 1.0f;
+            }
+        }
+        
+        // Update Shader Uniforms (Dynamic Light 5)
+        float camPos[3] = { camera.position.x, camera.position.y, camera.position.z };
+        SetShaderValue(shader, locViewPos, camPos, SHADER_UNIFORM_VEC3);
+        SetShaderValue(shader, locLightPos[4], camPos, SHADER_UNIFORM_VEC3);
+        
+        Vector3 camDir = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
+        float camDirArr[3] = { camDir.x, camDir.y, camDir.z };
+        SetShaderValue(shader, locLightDir5, camDirArr, SHADER_UNIFORM_VEC3);
+    }
+    
+    void Render(StationType activeStation) {
+        BeginTextureMode(viewTarget);
+            ClearBackground(BLACK);
+            
+            // 1. Draw Starfield
+            int w = viewTarget.texture.width;
+            int h = viewTarget.texture.height;
+            for(const auto& star : stars) {
+                float perspective = 1.0f / star.z;
+                float x = star.x * perspective + w / 2.0f;
+                float y = star.y * perspective + h / 2.0f;
+                
+                if (x >= 0 && x < w && y >= 0 && y < h) {
+                    float size = (1.0f - star.z) * 3.0f;
+                    if (size < 1.0f) size = 1.0f;
+                    float brightness = 1.0f - star.z;
+                    Color c = star.color;
+                    c.r = (unsigned char)(c.r * brightness);
+                    c.g = (unsigned char)(c.g * brightness);
+                    c.b = (unsigned char)(c.b * brightness);
+                    DrawCircle((int)x, (int)y, size, c);
+                }
+            }
+            
+            // 2. Draw 3D Artifact
+            BeginMode3D(camera);
+                rlDisableBackfaceCulling();
+                
+                Model* targetModel = nullptr;
+                Color tint = WHITE;
+                
+                switch (activeStation) {
+                    case STATION_ALPHA: targetModel = &modelTorus; break;
+                    case STATION_BETA:  targetModel = &modelIco; break;
+                    case STATION_GAMMA: targetModel = &modelTorus; tint = RED; break;
+                    case STATION_DELTA: targetModel = &modelIco; tint = GOLD; break;
+                }
+                
+                if (targetModel) {
+                    DrawModelEx(*targetModel, {0,0,0}, {0,1,0}, rotation, {1,1,1}, tint);
+                }
+                
+                rlEnableBackfaceCulling();
+            EndMode3D();
+            
+        EndTextureMode();
+    }
+    
+    Texture2D GetTexture() {
+        return viewTarget.texture;
+    }
+};
+
+StationViewport stationViewport;
 
 // ------------------------------------------------------------
 // PAGE: PROSPECT MAP
@@ -676,31 +1118,27 @@ void DrawPageProspectMap(GameState* state, int* menuSelection, Vector3* shipPos,
     // 1. Clear Background
     ClearBackground(BLACK);
     
-    // 2. Draw Starfield (behind everything)
-    DrawStarfield(g_starfieldOffset);
+    // 2. Draw Station Viewport Texture (Rendered previously in UpdateFrame)
+    Texture2D viewTex = stationViewport.GetTexture();
+    Rectangle srcRect = { 0, 0, (float)viewTex.width, (float)-viewTex.height }; // Flip Y
+    Rectangle destRect = { 0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT }; // Full virtual screen
+    DrawTexturePro(viewTex, srcRect, destRect, {0,0}, 0.0f, WHITE);
     
-    // 3. Draw Torus Station (3D Scene)
-    DrawTorusStation(g_torusRotation);
-    
-    // 4. Draw GUI Texture (Overlay with Transparency)
+    // 3. Draw GUI Texture (Overlay with Transparency)
     if (guiHudTx.id > 0) {
-        // Draw texture scaled to screen size (1200x800) to ensure fit
-        // WHITE tint ensures original colors and alpha channel are preserved
         DrawTexturePro(guiHudTx, 
             (Rectangle){0, 0, (float)guiHudTx.width, (float)guiHudTx.height},
-            (Rectangle){0, 0, 1200, 800},
+            (Rectangle){0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT},
             (Vector2){0, 0}, 0.0f, WHITE);
     }
     
-    // Keep navigation logic for entering lander (invisible but active)
+    // Keep navigation logic for entering lander
     if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
-                // Reset Lander
                 *shipPos = (Vector3){0, 60, -PROSPECT_PERIMETER}; 
                 *shipVel = (Vector3){0, 0, 10};
                 ResetState(state, menuSelection, STATE_LANDER);
     }
     
-    // Draw simple instructions text at the bottom
     DrawText("PRESS ENTER TO LAUNCH MISSION", 400, 760, 20, LIGHTGRAY);
 }
 
@@ -869,155 +1307,6 @@ void DrawPageLodgings(GameState* state, int* menuSelection) {
 }
 
 // ------------------------------------------------------------
-// MESH HELPERS (COPIED FOR COMPLETENESS)
-// ------------------------------------------------------------
-Mesh CreateBaseRockMesh() {
-    float phi = 1.61803398875f; float inv = 1.0f/phi;
-    Vector3 vLocal[20] = {{1,1,1},{1,1,-1},{1,-1,1},{1,-1,-1},{-1,1,1},{-1,1,-1},{-1,-1,1},{-1,-1,-1},{0,inv,phi},{0,inv,-phi},{0,-inv,phi},{0,-inv,-phi},{inv,phi,0},{inv,-phi,0},{-inv,phi,0},{-inv,-phi,0},{phi,0,inv},{phi,0,-inv},{-phi,0,inv},{-phi,0,-inv}};
-    int faces[12][5] = {{0,16,2,10,8},{0,8,4,14,12},{16,17,1,12,0},{1,9,11,3,17},{1,12,14,5,9},{2,13,15,6,10},{13,3,11,7,15},{4,8,10,6,18},{14,4,18,19,5},{5,19,7,11,9},{15,7,19,18,6},{2,16,17,3,13}};
-    Color rockPalette[12] = {{80,80,80,255},{100,100,105,255},{90,85,80,255},{70,70,70,255},{60,60,65,255},{110,110,110,255},{55,55,55,255},{75,70,65,255},{65,65,65,255},{85,85,90,255},{45,45,50,255},{95,95,95,255}};
-    
-    Mesh mesh = {0}; mesh.triangleCount=36; mesh.vertexCount=mesh.triangleCount*3;
-    mesh.vertices=(float*)MemAlloc(mesh.vertexCount*3*sizeof(float));
-    mesh.normals=(float*)MemAlloc(mesh.vertexCount*3*sizeof(float));
-    mesh.colors=(unsigned char*)MemAlloc(mesh.vertexCount*4);
-    
-    int idx=0;
-    for(int f=0;f<12;f++){
-        Color faceCol=rockPalette[f];
-        Vector3 pLocal[5]; for(int i=0;i<5;i++) pLocal[i]=vLocal[faces[f][i]];
-        Vector3 n=Vector3Normalize(Vector3CrossProduct(Vector3Subtract(pLocal[1],pLocal[0]), Vector3Subtract(pLocal[2],pLocal[0])));
-        int tris[3][3]={{0,1,2},{0,2,3},{0,3,4}};
-        for(int t=0;t<3;t++){
-            for(int k=0;k<3;k++){
-                int ptIndex=tris[t][k];
-                mesh.vertices[idx*3+0]=pLocal[ptIndex].x; mesh.vertices[idx*3+1]=pLocal[ptIndex].y; mesh.vertices[idx*3+2]=pLocal[ptIndex].z;
-                mesh.normals[idx*3+0]=n.x; mesh.normals[idx*3+1]=n.y; mesh.normals[idx*3+2]=n.z;
-                mesh.colors[idx*4+0]=faceCol.r; mesh.colors[idx*4+1]=faceCol.g; mesh.colors[idx*4+2]=faceCol.b; mesh.colors[idx*4+3]=255; idx++;
-            }
-        }
-    }
-    UploadMesh(&mesh,false); return mesh;
-}
-
-void GenerateRocksAndCollision() {
-    float phi = 1.61803398875f; float inv = 1.0f/phi;
-    Vector3 vLocal[20] = {{1,1,1},{1,1,-1},{1,-1,1},{1,-1,-1},{-1,1,1},{-1,1,-1},{-1,-1,1},{-1,-1,-1},{0,inv,phi},{0,inv,-phi},{0,-inv,phi},{0,-inv,-phi},{inv,phi,0},{inv,-phi,0},{-inv,phi,0},{-inv,-phi,0},{phi,0,inv},{phi,0,-inv},{-phi,0,inv},{-phi,0,-inv}};
-    int faces[12][5] = {{0,16,2,10,8},{0,8,4,14,12},{16,17,1,12,0},{1,9,11,3,17},{1,12,14,5,9},{2,13,15,6,10},{13,3,11,7,15},{4,8,10,6,18},{14,4,18,19,5},{5,19,7,11,9},{15,7,19,18,6},{2,16,17,3,13}};
-    int globalTriIdx = 0;
-    int limit = (int)PROSPECT_PERIMETER;
-    Vector3 clusterCenter = {0};
-
-    for (int r = 0; r < NUM_ROCKS; r++) {
-        float scale = (float)GetRandomValue(50, 300) / 100.0f;
-        float rx, rz;
-        if (r % 2 == 0) { rx = (float)GetRandomValue(-limit, limit); rz = (float)GetRandomValue(-limit, limit); clusterCenter = (Vector3){rx, 0, rz}; } 
-        else { float angle = (float)GetRandomValue(0, 360) * DEG2RAD; float dist = (float)GetRandomValue(20, 60) / 10.0f; rx = clusterCenter.x + cosf(angle) * dist; rz = clusterCenter.z + sinf(angle) * dist; if(rx > limit) rx = limit; if(rx < -limit) rx = -limit; if(rz > limit) rz = limit; if(rz < -limit) rz = -limit; }
-        
-        G_Rocks[r].position = (Vector3){rx, GetTerrainHeight(rx, rz) + (0.2f * scale), rz};
-        G_Rocks[r].scale = scale;
-        G_Rocks[r].axis = Vector3Normalize((Vector3){(float)GetRandomValue(-1,1),(float)GetRandomValue(-1,1),(float)GetRandomValue(-1,1)});
-        G_Rocks[r].angle = (float)GetRandomValue(0, 360);
-        int tintVal = GetRandomValue(200, 255);
-        G_Rocks[r].color = (Color){(unsigned char)tintVal, (unsigned char)tintVal, (unsigned char)tintVal, 255};
-
-        Matrix matScale = MatrixScale(scale, scale, scale);
-        Matrix matRot = MatrixRotate(G_Rocks[r].axis, G_Rocks[r].angle * DEG2RAD);
-        Matrix matTrans = MatrixTranslate(G_Rocks[r].position.x, G_Rocks[r].position.y, G_Rocks[r].position.z);
-        Matrix matWorld = MatrixMultiply(MatrixMultiply(matScale, matRot), matTrans);
-
-        for(int f=0;f<12;f++){
-            Vector3 pWorld[5]; for(int i=0;i<5;i++) pWorld[i] = Vector3Transform(vLocal[faces[f][i]], matWorld);
-            int tris[3][3]={{0,1,2},{0,2,3},{0,3,4}};
-            for(int t=0;t<3;t++){
-                G_RockTris[globalTriIdx].a = pWorld[tris[t][0]]; G_RockTris[globalTriIdx].b = pWorld[tris[t][1]]; G_RockTris[globalTriIdx].c = pWorld[tris[t][2]]; globalTriIdx++;
-            }
-        }
-    }
-}
-
-// ------------------------------------------------------------
-// INPUT SETTING FUNCTIONS (called from Python)
-// ------------------------------------------------------------
-__declspec(dllexport) __cdecl void SetKeyState(int key, bool down) {
-    static int key_event_count = 0;
-    if (key >= 0 && key < 512) {
-        bool wasDown = g_inputState.keys[key];
-        g_inputState.keys[key] = down;
-        // Set pressed flag if just pressed (wasn't down, now is)
-        if (!wasDown && down) {
-            g_inputState.keysPressed[key] = true;
-            key_event_count++;
-            if (key_event_count % 10 == 0 || key == KEY_W || key == KEY_SPACE) {
-                printf("[SetKeyState] Key %d %s (W=%d, Space=%d)\n", 
-                       key, down ? "DOWN" : "UP", 
-                       g_inputState.keys[KEY_W], g_inputState.keys[KEY_SPACE]);
-            }
-        }
-    }
-}
-
-__declspec(dllexport) __cdecl void SetMouseButtonState(int button, bool down) {
-    if (button >= 0 && button < 8) {
-        bool wasDown = g_inputState.mouseButtons[button];
-        g_inputState.mouseButtons[button] = down;
-        // Set pressed/released flags
-        if (!wasDown && down) {
-            g_inputState.mouseButtonsPressed[button] = true;
-            printf("[SetMouseButtonState] Button %d PRESSED\n", button);
-        } else if (wasDown && !down) {
-            g_inputState.mouseButtonsReleased[button] = true;
-            printf("[SetMouseButtonState] Button %d RELEASED\n", button);
-        }
-    }
-}
-
-__declspec(dllexport) __cdecl void SetInputMousePosition(float x, float y) {
-    static Vector2 lastMousePos = {0, 0};
-    static int mouse_pos_count = 0;
-    static bool first_call = true;
-    
-    g_inputState.mousePosition = (Vector2){x, y};
-    
-    // Only calculate delta if SetMouseDelta hasn't been called this frame
-    // (SetMouseDelta takes precedence, so we only calculate delta here if delta is still 0)
-    // Actually, let's not overwrite delta here - SetMouseDelta should be the source of truth
-    // Just update position, delta should be set separately via SetMouseDelta
-    
-    if (first_call) {
-        first_call = false;
-        lastMousePos = g_inputState.mousePosition;
-    } else {
-        lastMousePos = g_inputState.mousePosition;
-    }
-    
-    mouse_pos_count++;
-    if (mouse_pos_count % 60 == 0) {
-        printf("[SetInputMousePosition] pos=(%.2f,%.2f), current_delta=(%.2f,%.2f)\n",
-               x, y, g_inputState.mouseDelta.x, g_inputState.mouseDelta.y);
-    }
-}
-
-__declspec(dllexport) __cdecl void SetMouseDelta(float dx, float dy) {
-    // Set delta directly (this takes precedence over SetInputMousePosition's delta calculation)
-    g_inputState.mouseDelta = (Vector2){dx, dy};
-    static int delta_count = 0;
-    delta_count++;
-    if (delta_count % 60 == 0 || (fabs(dx) > 0.1f || fabs(dy) > 0.1f)) {
-        printf("[SetMouseDelta] delta=(%.2f,%.2f) - SETTING DELTA\n", dx, dy);
-    }
-}
-
-__declspec(dllexport) __cdecl void ClearInputFrame() {
-    // Clear one-time press/release flags at end of frame
-    memset(g_inputState.keysPressed, 0, sizeof(g_inputState.keysPressed));
-    memset(g_inputState.mouseButtonsPressed, 0, sizeof(g_inputState.mouseButtonsPressed));
-    memset(g_inputState.mouseButtonsReleased, 0, sizeof(g_inputState.mouseButtonsReleased));
-    // NOTE: Do NOT clear mouseDelta here - it should persist until the next frame sets a new delta
-    // The delta will be set by SetMouseDelta() or SetInputMousePosition() each frame
-}
-
-// ------------------------------------------------------------
 // GAME LOOP FUNCTION (called from Python each frame)
 // ------------------------------------------------------------
 #ifdef __cplusplus
@@ -1036,24 +1325,8 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
         return;
     }
     
-    // Start rendering to framebuffer
-    BeginTextureMode(g_framebuffer);
-    ClearBackground((Color){5, 5, 10, 255});
-    
     // Run one frame of game logic and rendering
     float dt = GetFrameTime();
-    
-    // Update starfield animation (slowly moving)
-    g_starfieldOffset += dt * 20.0f; // Move stars slowly
-    if (g_starfieldOffset > 1200.0f) {
-        g_starfieldOffset = 0.0f; // Wrap around
-    }
-    
-    // Update torus rotation (slowly spinning)
-    g_torusRotation += dt * 15.0f; // Rotate slowly (degrees per second)
-    if (g_torusRotation > 360.0f) {
-        g_torusRotation -= 360.0f; // Wrap around
-    }
     
     // Clamp dt to prevent huge jumps or zero values
     if (dt <= 0.0f || dt > 0.1f) {
@@ -1062,12 +1335,23 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             printf("[UpdateFrame] WARNING: Invalid dt, clamped to %.4f\n", dt);
         }
     }
+
+    // Update Station Viewport (Animation)
+    stationViewport.Update(dt);
     
-    if (frame_count % 60 == 0) {
-        printf("[UpdateFrame] Frame %d, dt=%.4f, state=%d, shipPos=(%.2f,%.2f,%.2f), shipVel=(%.2f,%.2f,%.2f)\n", 
-               frame_count, dt, g_currentState, g_shipPos.x, g_shipPos.y, g_shipPos.z,
-               g_shipVel.x, g_shipVel.y, g_shipVel.z);
-    }
+    // Render Station Viewport (Offscreen) to low-res target
+    stationViewport.Render(STATION_ALPHA);
+    
+    // Start rendering to framebuffer (low resolution)
+    BeginTextureMode(g_framebuffer);
+    ClearBackground((Color){5, 5, 10, 255});
+    
+    // Scale Logic: Virtual (1200x800) -> Render (600x400)
+    Camera2D screenCam = {0};
+    screenCam.zoom = (float)RENDER_WIDTH / (float)VIRTUAL_WIDTH; // 0.5f
+    
+    // Use Camera2D to scale all 2D drawing calls
+    BeginMode2D(screenCam);
     
     switch(g_currentState) {
         case STATE_PROSPECT_MAP:
@@ -1117,20 +1401,15 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
 
         case STATE_LANDER:
         {
+            // End 2D Mode for 3D rendering to use full framebuffer natively
+            EndMode2D();
+            
             static int lander_frame = 0;
             lander_frame++;
             
             // LANDER LOGIC (Existing 3D Game)
             // --- Input ---
             Vector2 mouseDelta = CustomGetMouseDelta();
-            if (lander_frame % 60 == 0) {
-                printf("[LANDER] Frame %d, mouseDelta=(%.2f,%.2f), shipPos=(%.2f,%.2f,%.2f), camera=(%.2f,%.2f,%.2f)\n",
-                       lander_frame, mouseDelta.x, mouseDelta.y, g_shipPos.x, g_shipPos.y, g_shipPos.z,
-                       g_camera.position.x, g_camera.position.y, g_camera.position.z);
-                printf("[LANDER] Input: W=%d, Space=%d, MouseLeft=%d, MouseRight=%d\n",
-                       CustomIsKeyDown(KEY_W), CustomIsKeyDown(KEY_SPACE),
-                       CustomIsMouseButtonDown(MOUSE_LEFT_BUTTON), CustomIsMouseButtonDown(MOUSE_BUTTON_RIGHT));
-            }
             
             g_shipPitch -= mouseDelta.y * 0.15f; 
             g_shipRoll -= mouseDelta.x * 0.15f; 
@@ -1225,11 +1504,14 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                 DrawParticles();
             EndMode3D();
             
+            // Re-enable 2D Mode for HUD overlay
+            BeginMode2D(screenCam);
+            
             // --- UI Overlay ---
             DrawFPS(10, 10);
             DrawText("LAND TO DRILL - FLY UP TO ORBIT", 10, 40, 20, LIGHTGRAY);
             int bars = (int)G_Player.fuel;
-            int screenH = g_framebuffer.texture.height;
+            int screenH = VIRTUAL_HEIGHT; // We use virtual height because of scaling
             DrawText("FUEL", 10, screenH - 40, 20, WHITE);
             for(int i=0; i<10; i++) {
                 Color barCol = (i < bars) ? GREEN : DARKGRAY;
@@ -1239,6 +1521,13 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             DrawScanlines();
             break;
         }
+    }
+    
+    // End 2D Mode if still active (from menus or HUD)
+    if (g_currentState != STATE_LANDER) {
+        EndMode2D();
+    } else {
+        EndMode2D(); // Close the HUD mode
     }
     
     // Clear one-time input flags at end of frame
@@ -1260,15 +1549,18 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
     SetConfigFlags(FLAG_WINDOW_UNDECORATED | FLAG_WINDOW_HIDDEN);
     
     if (!IsWindowReady()) {
-        InitWindow(1200, 800, "AstroMiner_Embedded");
+        InitWindow(VIRTUAL_WIDTH, VIRTUAL_HEIGHT, "AstroMiner_Embedded");
     }
     
     SetTargetFPS(60);
     DisableCursor();
     
-    // Create offscreen render texture
-    g_framebuffer = LoadRenderTexture(1200, 800);
+    // Create offscreen render texture (Low Res)
+    g_framebuffer = LoadRenderTexture(RENDER_WIDTH, RENDER_HEIGHT);
     g_framebuffer_initialized = true;
+    
+    // Initialize Station Viewport (Low Res)
+    stationViewport.Init(RENDER_WIDTH, RENDER_HEIGHT);
     
     // Initialize camera (position it near the ship's starting position)
     g_camera.up = (Vector3){0,1,0};
@@ -1306,11 +1598,6 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
     } else {
         printf("[InitializeGame] FAILED TO LOAD GUI TEXTURE from any path\n");
     }
-    
-    // Initialize animation variables
-    g_starfieldOffset = 0.0f;
-    g_torusRotation = 0.0f;
-    g_torusModelCreated = false;
     
     // Bake terrain chunks
     int chunkIdx = 0;
@@ -1354,219 +1641,19 @@ int main()
         return 1;
     }
     
-    Camera3D camera = {0};
-    camera.up = (Vector3){0,1,0};
-    camera.fovy = 60;
-    camera.projection = CAMERA_PERSPECTIVE;
-    camera.position = (Vector3){0, 10, -10};
-
-    Mesh shipMesh = CreateSolidShip();
-    Model ship = LoadModelFromMesh(shipMesh);
-
-    Mesh rockBaseMesh = CreateBaseRockMesh();
-    Model rockModel = LoadModelFromMesh(rockBaseMesh);
-    
-    GenerateRocksAndCollision();
-    InitCollisionGrid();
-
-    scanlineTx = LoadTexture("../../images/scanline.png");
-
-    // Bake chunks (as before)
-    Model chunkModels[TOTAL_CHUNKS];
-    Vector2 chunkCenters[TOTAL_CHUNKS];
-    int chunkIdx = 0;
-    float startP = -PROSPECT_PERIMETER;
-    for (int z = 0; z < CHUNKS_AXIS; z++) {
-        for (int x = 0; x < CHUNKS_AXIS; x++) {
-            float cx = startP + (x * CHUNK_SIZE);
-            float cz = startP + (z * CHUNK_SIZE);
-            Mesh cMesh = CreateTerrainChunk(cx, cz, (float)CHUNK_SIZE);
-            chunkModels[chunkIdx] = LoadModelFromMesh(cMesh);
-            chunkCenters[chunkIdx] = (Vector2){ cx + CHUNK_SIZE/2.0f, cz + CHUNK_SIZE/2.0f };
-            chunkIdx++;
-        }
-    }
-
-    // Lander Physics State
-    Vector3 shipPos = {0, 60, -PROSPECT_PERIMETER}; 
-    Vector3 shipVel = {0, 0, 10}; 
-    float shipPitch = 0.0f; float shipRoll = 0.0f; float shipYaw = 0.0f;
-    int yawDirection = 1;
-    const float CAM_FOLLOW_DIST = 9.0f; 
-    const float CAM_HEIGHT_OFFSET = 4.0f;
-
-    // Initial State
-    GameState currentState = STATE_PROSPECT_MAP;
-    int menuSelection = 0; // Tracks current selected button index
-
     while (!WindowShouldClose())
     {
-        switch(currentState) {
-            case STATE_PROSPECT_MAP:
-                BeginDrawing();
-                DrawPageProspectMap(&currentState, &menuSelection, &shipPos, &shipVel);
-                DrawScanlines();
-                EndDrawing();
-                break;
-
-            case STATE_DRILLING:
-                BeginDrawing();
-                DrawPageDrilling(&currentState, &menuSelection);
-                DrawScanlines();
-                EndDrawing();
-                break;
-
-            case STATE_DEBRIS:
-                BeginDrawing();
-                DrawPageDebris(&currentState, &menuSelection);
-                DrawScanlines();
-                EndDrawing();
-                break;
-
-            case STATE_DEPOT_SELECT:
-                BeginDrawing();
-                DrawPageDepotSelect(&currentState, &menuSelection);
-                DrawScanlines();
-                EndDrawing();
-                break;
-
-            case STATE_DEPOT_HOME:
-                BeginDrawing();
-                DrawPageDepotHome(&currentState, &menuSelection);
-                DrawScanlines();
-                EndDrawing();
-                break;
-
-            case STATE_BAR: BeginDrawing(); DrawPageBar(&currentState, &menuSelection); DrawScanlines(); EndDrawing(); break;
-            case STATE_SHIPYARD: BeginDrawing(); DrawPageShipyard(&currentState, &menuSelection); DrawScanlines(); EndDrawing(); break;
-            case STATE_MARKET: BeginDrawing(); DrawPageMarket(&currentState, &menuSelection); DrawScanlines(); EndDrawing(); break;
-            case STATE_LODGINGS: BeginDrawing(); DrawPageLodgings(&currentState, &menuSelection); DrawScanlines(); EndDrawing(); break;
-
-            case STATE_LANDER:
-            {
-                // LANDER LOGIC (Existing 3D Game)
-                float dt = GetFrameTime();
-                
-                // --- Input ---
-                // Keeping mouse movement for Ship Control only (as per typical space sims)
-                // If pure keyboard for ship is needed, we'd map Arrow Keys to Pitch/Roll
-                Vector2 mouseDelta = CustomGetMouseDelta();
-                shipPitch -= mouseDelta.y * 0.15f; 
-                shipRoll -= mouseDelta.x * 0.15f; 
-                if (fabs(mouseDelta.x) < 0.1f) shipRoll = Lerp(shipRoll, 0.0f, 1.0f * dt);
-                shipPitch = Clamp(shipPitch, -85.0f, 85.0f);
-                if (IsMouseButtonReleased(MOUSE_BUTTON_RIGHT)) yawDirection *= -1;
-                if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) shipYaw -= 120.0f * dt * (float)yawDirection;
-
-                Matrix matRoll = MatrixRotateZ(DEG2RAD * -shipRoll);
-                Matrix matPitch = MatrixRotateX(DEG2RAD * shipPitch);
-                Matrix matYaw = MatrixRotateY(DEG2RAD * shipYaw);
-                Matrix rot = MatrixMultiply(MatrixMultiply(matPitch, matRoll), matYaw);
-                Vector3 shipForward = { rot.m8, rot.m9, rot.m10 }; 
-                Vector3 shipUp = { rot.m4, rot.m5, rot.m6 };        
-
-                // --- Physics ---
-                shipVel.y += SHIP_GRAVITY * dt;
-                bool isThrusting = IsMouseButtonDown(MOUSE_LEFT_BUTTON) || IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_W);
-                if (isThrusting && G_Player.fuel > 0.0f) {
-                    shipVel = Vector3Add(shipVel, Vector3Scale(shipUp, SHIP_THRUST_POWER * dt));
-                    Vector3 engineNozzle = Vector3Add(shipPos, Vector3Scale(shipUp, -0.4f));
-                    SpawnThrustParticles(engineNozzle, shipUp);
-                    G_Player.fuel -= SHIP_FUEL_BURN_RATE * dt;
-                    if (G_Player.fuel < 0) G_Player.fuel = 0;
-                }
-                shipVel = Vector3Scale(shipVel, SHIP_DRAG_FACTOR);
-                Vector3 nextPos = Vector3Add(shipPos, Vector3Scale(shipVel, dt));
-
-                // --- Collision ---
-                float worldH = GetWorldHeight(nextPos.x, nextPos.z);
-                float softCeiling = worldH + 12.0f;
-                if (nextPos.y > softCeiling) {
-                     shipVel.y -= (nextPos.y - softCeiling) * 2.0f * dt;
-                     nextPos = Vector3Add(shipPos, Vector3Scale(shipVel, dt));
-                }
-                if (nextPos.y < worldH + 0.5f) {
-                    nextPos.y = worldH + 0.5f;
-                    
-                    // LANDING DETECTION
-                    // If velocity is low, we landed safely -> Drilling
-                    if (Vector3Length(shipVel) < 1.0f) {
-                        ResetState(&currentState, &menuSelection, STATE_DRILLING);
-                    } else {
-                        // Crash - bounce
-                        if (shipVel.y < 0) shipVel.y = 0;
-                        shipVel = Vector3Scale(shipVel, 0.5f); 
-                    }
-                }
-                
-                // --- Boundary & Orbit Detection ---
-                if (shipPos.y > 80.0f) {
-                    // Flew too high -> Go to Orbit (Depot Select)
-                    ResetState(&currentState, &menuSelection, STATE_DEPOT_SELECT);
-                }
-
-                if (nextPos.x > PROSPECT_PERIMETER) { nextPos.x = PROSPECT_PERIMETER; shipVel.x = 0; }
-                if (nextPos.x < -PROSPECT_PERIMETER) { nextPos.x = -PROSPECT_PERIMETER; shipVel.x = 0; }
-                if (nextPos.z > PROSPECT_PERIMETER) { nextPos.z = PROSPECT_PERIMETER; shipVel.z = 0; }
-                if (nextPos.z < -PROSPECT_PERIMETER) { nextPos.z = -PROSPECT_PERIMETER; shipVel.z = 0; }
-                shipPos = nextPos;
-
-                // --- Camera ---
-                Vector3 camOffset = Vector3Scale(shipForward, -CAM_FOLLOW_DIST); 
-                camOffset.y += CAM_HEIGHT_OFFSET;
-                camera.position = Vector3Lerp(camera.position, Vector3Add(shipPos, camOffset), 5.0f * dt);
-                if (camera.position.y < 0.5f) camera.position.y = 0.5f;
-                camera.target = shipPos;
-
-                UpdateParticles(dt);
-
-                // --- Draw 3D Scene ---
-                BeginDrawing();
-                    ClearBackground((Color){5, 5, 10, 255});
-                    BeginMode3D(camera);
-                        // Chunks
-                        float cullDist = RENDER_DISTANCE + (CHUNK_SIZE * 0.8f); 
-                        for(int i=0; i<TOTAL_CHUNKS; i++) {
-                            if (fabs(shipPos.x - chunkCenters[i].x) < cullDist && fabs(shipPos.z - chunkCenters[i].y) < cullDist) {
-                                DrawModel(chunkModels[i], (Vector3){0,0,0}, 1.0f, WHITE);
-                            }
-                        }
-                        DrawPerimeterBorder(shipPos);
-                        DrawProjectedShadow(shipPos);
-                        ship.transform = rot;
-                        DrawModel(ship, shipPos, 1.0f, WHITE);
-                        // Rocks
-                        rlDisableBackfaceCulling(); 
-                        for(int i = 0; i < NUM_ROCKS; i++) {
-                            if (fabs(G_Rocks[i].position.x - shipPos.x) < (float)RENDER_DISTANCE && fabs(G_Rocks[i].position.z - shipPos.z) < (float)RENDER_DISTANCE) {
-                                DrawModelEx(rockModel, G_Rocks[i].position, G_Rocks[i].axis, G_Rocks[i].angle, (Vector3){G_Rocks[i].scale, G_Rocks[i].scale, G_Rocks[i].scale}, G_Rocks[i].color);
-                            }
-                        }
-                        rlEnableBackfaceCulling();
-                        DrawParticles();
-                    EndMode3D();
-                    
-                    // --- UI Overlay ---
-                    DrawFPS(10, 10);
-                    DrawText("LAND TO DRILL - FLY UP TO ORBIT", 10, 40, 20, LIGHTGRAY);
-                    int bars = (int)G_Player.fuel;
-                    DrawText("FUEL", 10, GetScreenHeight() - 40, 20, WHITE);
-                    for(int i=0; i<10; i++) {
-                        Color barCol = (i < bars) ? GREEN : DARKGRAY;
-                        if (i < 3 && i < bars) barCol = RED;
-                        DrawRectangle(70 + (i * 25), GetScreenHeight() - 40, 20, 20, barCol);
-                    }
-                    DrawScanlines();
-                EndDrawing();
-            }
-            break;
-        }
+        UpdateFrame();
+        
+        // Draw framebuffer to screen for testing
+        BeginDrawing();
+        DrawTexturePro(g_framebuffer.texture, 
+            (Rectangle){0, 0, (float)g_framebuffer.texture.width, (float)-g_framebuffer.texture.height},
+            (Rectangle){0, 0, (float)GetScreenWidth(), (float)GetScreenHeight()},
+            (Vector2){0,0}, 0.0f, WHITE);
+        EndDrawing();
     }
-
-    UnloadTexture(scanlineTx);
-    UnloadModel(ship);
-    UnloadModel(rockModel);
-    for(int i=0; i<TOTAL_CHUNKS; i++) UnloadModel(chunkModels[i]);
+    
     CloseWindow();
     return 0;
 }

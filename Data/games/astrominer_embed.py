@@ -3,6 +3,7 @@
 import ctypes
 import os
 import pygame
+import sys
 from typing import Optional, Tuple
 
 # Try to load the DLL
@@ -36,8 +37,40 @@ def initialize() -> bool:
         print("ERROR: astrominer.dll not found")
         return False
     
+    dll_dir = os.path.dirname(_dll_path)
+    
+    # Python 3.8+ DLL loading security
+    if hasattr(os, 'add_dll_directory'):
+        try:
+            os.add_dll_directory(dll_dir)
+        except Exception as e:
+            print(f"Warning: Failed to add DLL directory {dll_dir}: {e}")
+            
+    # Also add to PATH for good measure (and legacy systems)
+    os.environ['PATH'] = dll_dir + os.pathsep + os.environ['PATH']
+    
+    cwd = os.getcwd()
     try:
-        # Load DLL - use CDLL for __cdecl calling convention
+        # Change CWD to DLL dir PERMANENTLY for this session context
+        # This is critical for:
+        # 1. Loading dependencies (libwinpthread-1.dll, raylib.dll)
+        # 2. Game resource loading (shaders, textures) which use relative paths
+        os.chdir(dll_dir)
+        print(f"[initialize] Changed CWD to {dll_dir}")
+        
+        # Load dependencies explicitly
+        dependencies = ["libwinpthread-1.dll", "raylib.dll"]
+        for dep in dependencies:
+            if os.path.exists(dep):
+                try:
+                    ctypes.CDLL(dep)
+                    print(f"Pre-loaded dependency: {dep}")
+                except Exception as dep_err:
+                    print(f"Warning: Failed to pre-load {dep}: {dep_err}")
+            else:
+                print(f"Warning: Dependency not found: {dep}")
+        
+        # Load Main DLL
         _dll = ctypes.CDLL(_dll_path)
         
         # Set up function signatures
@@ -69,11 +102,14 @@ def initialize() -> bool:
         _dll.SetMouseDelta.argtypes = [ctypes.c_float, ctypes.c_float]
         
         # Initialize the game
+        # NOTE: CWD is still dll_dir here, so shaders should load fine
         if not _dll.InitializeGame():
             print("ERROR: Failed to initialize game")
             return False
-        
+            
+        print("Astro Miner initialized successfully")
         return True
+        
     except AttributeError as e:
         print(f"ERROR: Function not found in DLL: {e}")
         print(f"DLL path: {_dll_path}")
@@ -83,6 +119,15 @@ def initialize() -> bool:
         import traceback
         traceback.print_exc()
         return False
+    finally:
+        # Restore CWD? 
+        # Actually, for the game to continue loading resources in UpdateFrame (if any), 
+        # it might need CWD. But usually InitializeGame loads everything.
+        # Raylib might reload textures if context is lost? No, we don't lose context.
+        # It's safer to restore CWD for the BBS, but if the game relies on relative paths
+        # in UpdateFrame (unlikely for now), it might break.
+        # Given the architecture, let's restore it.
+        os.chdir(cwd)
 
 def get_frame_surface() -> Optional[pygame.Surface]:
     """Get the current frame as a pygame Surface."""
@@ -95,9 +140,6 @@ def get_frame_surface() -> Optional[pygame.Surface]:
             return None
     
     try:
-        # Update the game frame (runs one frame of game logic and rendering)
-        if static_call_count % 60 == 0:
-            print(f"[get_frame_surface] Calling UpdateFrame() (call #{static_call_count})...")
         _dll.UpdateFrame()
         
         # Get framebuffer info
@@ -120,11 +162,7 @@ def get_frame_surface() -> Optional[pygame.Surface]:
         size = width * height * 4  # RGBA
         buf = ctypes.string_at(ptr, size)
         
-        if static_call_count % 60 == 0:
-            print(f"[get_frame_surface] Got framebuffer: {width}x{height}, size={size}, buffer_len={len(buf)}")
-        
         # Create pygame surface from buffer
-        # Note: framebuffer is flipped vertically, so we need to flip it
         surf = pygame.image.frombuffer(buf, (width, height), "RGBA")
         surf = pygame.transform.flip(surf, False, True)  # Flip vertically
         return surf.convert_alpha()
@@ -183,4 +221,3 @@ def cleanup():
     """Cleanup resources."""
     global _dll
     _dll = None
-

@@ -1,0 +1,1 @@
+cmd /c "cd /d "$(CURRENT_DIRECTORY)/.." && run_with_console.bat"

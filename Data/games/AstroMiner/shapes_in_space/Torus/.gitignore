@@ -1,0 +1,24 @@
+# Visual Studio
+.vs/
+bin/
+obj/
+*.user
+*.suo
+*.sln.docstates
+
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.exp
+
+# IntelliSense
+.vs/
+*.VC.db
+*.VC.VC.opendb
+

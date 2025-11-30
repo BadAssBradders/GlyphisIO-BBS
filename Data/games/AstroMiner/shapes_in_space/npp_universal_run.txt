@@ -1,0 +1,14 @@
+// NppExec script to run 'run_with_console.bat' from the current file's directory
+
+// 1. Switch to the directory of the currently open file
+// $(CURRENT_DIRECTORY) is a Notepad++ variable
+cd "$(CURRENT_DIRECTORY)"
+
+// 2. Go up one level to the project root (assuming src/main.cpp is open)
+cd ..
+
+// 3. Execute the generic run script
+// using cmd /c allows it to run in a separate persistent console if needed, 
+// but run_with_console.bat handles the pause itself.
+cmd /c "run_with_console.bat"
+

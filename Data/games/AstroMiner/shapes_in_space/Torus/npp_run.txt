@@ -1,0 +1,39 @@
+// NppExec script for building and running Torus project
+// Save this as a script in NppExec (F6 -> Save)
+
+// Change to project directory
+cd "$(CURRENT_DIRECTORY)"
+
+// If we're in src folder, go up one level
+IF "$(CURRENT_DIRECTORY)" == "$(CURRENT_DIRECTORY:\src=)" THEN
+    cd "$(CURRENT_DIRECTORY)\.."
+ENDIF
+
+// Check for g++ (MinGW)
+cmd /c "where g++ >nul 2>&1"
+IF $(EXITCODE) != 0 THEN
+    // Try w64devkit if in raylib folder
+    IF EXIST "C:\raylib\w64devkit\bin\g++.exe" THEN
+        SET PATH=C:\raylib\w64devkit\bin;$(PATH)
+    ENDIF
+ENDIF
+
+// Build first
+IF EXIST "Makefile" THEN
+    cmd /c "mingw32-make clean 2>nul"
+    cmd /c "mingw32-make"
+ELSE
+    cmd /c "g++ -std=c++17 -O2 -I C:/raylib/include src/main.cpp -L C:/raylib/lib -lraylib -lwinmm -lgdi32 -o bin/Torus.exe"
+    cmd /c "copy C:\raylib\lib\raylib.dll bin\ 2>nul"
+ENDIF
+
+// Run if build succeeded (keeps terminal open)
+IF $(EXITCODE) == 0 THEN
+    IF EXIST "bin\Torus.exe" THEN
+        cmd /c "bin\Torus.exe"
+        echo.
+        echo Game closed. Press any key to continue...
+        pause
+    ENDIF
+ENDIF
+
