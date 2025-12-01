@@ -159,6 +159,7 @@ def _get_time_aware_video_name(base_filename: str) -> str:
     """
     Returns the appropriate video filename based on local system time.
     Uses Tokyo sunrise/sunset times as reference for day/night transitions.
+    Note: Uses the user's local computer time, not actual Tokyo timezone.
     """
     if _is_tokyo_nighttime():
         if '/' in base_filename or '\\' in base_filename:

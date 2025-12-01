@@ -85,6 +85,7 @@ __declspec(dllexport) __cdecl void SetMouseButtonState(int button, bool down);
 __declspec(dllexport) __cdecl void SetInputMousePosition(float x, float y);
 __declspec(dllexport) __cdecl void SetMouseDelta(float dx, float dy);
 __declspec(dllexport) __cdecl void ClearInputFrame();  // Call at end of frame to clear pressed/released flags
+__declspec(dllexport) __cdecl bool ShouldExit();  // Check if game wants to exit
 
 Mesh CreateStationMesh(); // Added forward decl
 
@@ -97,12 +98,12 @@ Mesh CreateStationMesh(); // Added forward decl
 // GAME STATES & SHARED DATA
 // ------------------------------------------------------------
 typedef enum {
-    STATE_PROSPECT_MAP,
+    STATE_SPLASH,
+    STATE_DEPOT_HOME,
     STATE_LANDER,
     STATE_DRILLING,
     STATE_DEBRIS,
     STATE_DEPOT_SELECT,
-    STATE_DEPOT_HOME,
     STATE_BAR,
     STATE_SHIPYARD,
     STATE_MARKET,
@@ -126,7 +127,7 @@ typedef struct {
 PlayerData G_Player = { 10.0f, 10.0f, 100.0f, 100.0f, 500, 20, 0, 0, 0 };
 
 // Global game state variables (declared after types/constants)
-GameState g_currentState = STATE_PROSPECT_MAP;
+GameState g_currentState = STATE_SPLASH;  // Start with splash screens
 int g_menuSelection = 0;
 Vector3 g_shipPos = {0, 60, 0};  // Will be initialized properly in InitializeGame()
 Vector3 g_shipVel = {0, 0, 10};
@@ -139,6 +140,19 @@ Model g_ship = {0};
 Model g_rockModel = {0};
 Texture2D scanlineTx = {0};
 Texture2D guiHudTx = {0};
+Texture2D splash0Tx = {0};
+Texture2D splash1Tx = {0};
+Texture2D splash2Tx = {0};
+Texture2D splashNewGameTx = {0};
+Texture2D splashLoadGameTx = {0};
+Texture2D splashQuitGameTx = {0};
+
+// Splash screen state
+int g_splashIndex = 0;  // 0=splash0, 1=splash1, 2=splash2, 3=menu
+float g_splashTimer = 0.0f;
+float g_splashBeatDuration = 1.0f;  // 1 second per beat
+int g_menuOption = 0;  // 0=new game, 1=load game, 2=quit
+bool g_exit_requested = false;  // Flag to signal exit to BBS
 
 void DrawScanlines() {
     if (scanlineTx.id > 0) {
@@ -696,6 +710,10 @@ __declspec(dllexport) __cdecl void ClearInputFrame() {
     memset(g_inputState.mouseButtonsReleased, 0, sizeof(g_inputState.mouseButtonsReleased));
 }
 
+__declspec(dllexport) __cdecl bool ShouldExit() {
+    return g_exit_requested;
+}
+
 // ------------------------------------------------------------
 // DRAWING HELPERS (Shared UI)
 // ------------------------------------------------------------
@@ -1112,9 +1130,119 @@ public:
 StationViewport stationViewport;
 
 // ------------------------------------------------------------
-// PAGE: PROSPECT MAP
+// PAGE: SPLASH SCREENS & MENU
 // ------------------------------------------------------------
-void DrawPageProspectMap(GameState* state, int* menuSelection, Vector3* shipPos, Vector3* shipVel) {
+void DrawPageSplash(GameState* state, int* menuSelection, Vector3* shipPos, Vector3* shipVel, float dt) {
+    static int draw_call_count = 0;
+    draw_call_count++;
+    if (draw_call_count == 1 || draw_call_count % 60 == 0) {
+        printf("[DrawPageSplash] Called! splashIndex=%d, splashTimer=%.2f, menuOption=%d\n", 
+               g_splashIndex, g_splashTimer, g_menuOption);
+    }
+    
+    ClearBackground(BLACK);
+    
+    // Update splash timer
+    g_splashTimer += dt;
+    
+    // Handle splash screen sequence
+    if (g_splashIndex < 3) {
+        // Show splash screens in sequence (splash0, splash1, splash2)
+        Texture2D* currentSplash = NULL;
+        if (g_splashIndex == 0) currentSplash = &splash0Tx;
+        else if (g_splashIndex == 1) currentSplash = &splash1Tx;
+        else if (g_splashIndex == 2) currentSplash = &splash2Tx;
+        
+        if (currentSplash && currentSplash->id > 0) {
+            DrawTexturePro(*currentSplash,
+                (Rectangle){0, 0, (float)currentSplash->width, (float)currentSplash->height},
+                (Rectangle){0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT},
+                (Vector2){0, 0}, 0.0f, WHITE);
+        } else {
+            // Debug: Show which splash we're trying to display
+            static int debug_logged[3] = {0, 0, 0};
+            if (!debug_logged[g_splashIndex]) {
+                printf("[DrawPageSplash] WARNING: Splash texture %d not loaded (id=%d)\n", g_splashIndex, currentSplash ? currentSplash->id : 0);
+                debug_logged[g_splashIndex] = 1;
+            }
+            // Draw a placeholder text so we know the splash screen is active
+            char splashText[32];
+            sprintf(splashText, "SPLASH %d", g_splashIndex);
+            DrawText(splashText, VIRTUAL_WIDTH/2 - 100, VIRTUAL_HEIGHT/2, 40, WHITE);
+        }
+        
+        // Advance to next splash after beat duration
+        if (g_splashTimer >= g_splashBeatDuration) {
+            g_splashIndex++;
+            g_splashTimer = 0.0f;
+            printf("[DrawPageSplash] Advanced to splash index %d\n", g_splashIndex);
+        }
+    } else {
+        // Menu phase - handle navigation
+        if (CustomIsKeyPressed(KEY_DOWN)) {
+            g_menuOption = (g_menuOption + 1) % 3;
+        }
+        if (CustomIsKeyPressed(KEY_UP)) {
+            g_menuOption = (g_menuOption - 1 + 3) % 3;
+        }
+        
+        // Draw appropriate menu splash based on selection
+        Texture2D* menuSplash = NULL;
+        if (g_menuOption == 0) menuSplash = &splashNewGameTx;
+        else if (g_menuOption == 1) menuSplash = &splashLoadGameTx;
+        else if (g_menuOption == 2) menuSplash = &splashQuitGameTx;
+        
+        if (menuSplash && menuSplash->id > 0) {
+            DrawTexturePro(*menuSplash,
+                (Rectangle){0, 0, (float)menuSplash->width, (float)menuSplash->height},
+                (Rectangle){0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT},
+                (Vector2){0, 0}, 0.0f, WHITE);
+        } else {
+            // Debug: Show menu option if texture not loaded
+            static int menu_debug_logged[3] = {0, 0, 0};
+            if (!menu_debug_logged[g_menuOption]) {
+                printf("[DrawPageSplash] WARNING: Menu splash texture %d not loaded (id=%d)\n", g_menuOption, menuSplash ? menuSplash->id : 0);
+                menu_debug_logged[g_menuOption] = 1;
+            }
+            // Draw placeholder text
+            const char* menuText[] = {"NEW GAME", "LOAD GAME", "QUIT GAME"};
+            DrawText(menuText[g_menuOption], VIRTUAL_WIDTH/2 - 150, VIRTUAL_HEIGHT/2, 40, WHITE);
+            DrawText("Use UP/DOWN arrows, ENTER to select", VIRTUAL_WIDTH/2 - 200, VIRTUAL_HEIGHT/2 + 60, 20, GRAY);
+        }
+        
+        // Handle selection
+        if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
+            if (g_menuOption == 0) {
+                // New Game - reset to Depot_Home
+                *shipPos = (Vector3){0, 60, -PROSPECT_PERIMETER};
+                *shipVel = (Vector3){0, 0, 10};
+                G_Player.fuel = G_Player.maxFuel;
+                G_Player.hull = G_Player.maxHull;
+                G_Player.credits = 500;
+                G_Player.cargoFilled = 0;
+                G_Player.iron = 0;
+                G_Player.gold = 0;
+                g_exit_requested = false;  // Reset exit flag
+                *state = STATE_DEPOT_HOME;
+                *menuSelection = 0;
+            } else if (g_menuOption == 1) {
+                // Load Game - load save file (simple implementation)
+                // TODO: Implement actual save/load system
+                // For now, just go to Depot_Home
+                *state = STATE_DEPOT_HOME;
+                *menuSelection = 0;
+            } else if (g_menuOption == 2) {
+                // Quit - signal exit to BBS
+                g_exit_requested = true;
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// PAGE: DEPOT HOME
+// ------------------------------------------------------------
+void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, Vector3* shipVel) {
     // 1. Clear Background
     ClearBackground(BLACK);
     
@@ -1218,37 +1346,6 @@ void DrawPageDepotSelect(GameState* state, int* menuSelection) {
     }
 }
 
-// ------------------------------------------------------------
-// PAGE: DEPOT HOME
-// ------------------------------------------------------------
-void DrawPageDepotHome(GameState* state, int* menuSelection) {
-    ClearBackground((Color){20, 20, 25, 255});
-    DrawRetroWindow("ALPHA STATION HUB", 50, 50, 1100, 700);
-    
-    int numOptions = 5;
-    if (CustomIsKeyPressed(KEY_DOWN)) *menuSelection = (*menuSelection + 1) % numOptions;
-    if (CustomIsKeyPressed(KEY_UP)) *menuSelection = (*menuSelection - 1 + numOptions) % numOptions;
-
-    int btnX = 100;
-    int btnY = 150;
-    int spacing = 60;
-    
-    if (DrawButton("SPACE STATION BAR", btnX, btnY, 300, 40, *menuSelection == 0)) ResetState(state, menuSelection, STATE_BAR);
-    btnY += spacing;
-    if (DrawButton("SHIPYARD & UPGRADES", btnX, btnY, 300, 40, *menuSelection == 1)) ResetState(state, menuSelection, STATE_SHIPYARD);
-    btnY += spacing;
-    if (DrawButton("COMMODITIES MARKET", btnX, btnY, 300, 40, *menuSelection == 2)) ResetState(state, menuSelection, STATE_MARKET);
-    btnY += spacing;
-    if (DrawButton("LODGINGS", btnX, btnY, 300, 40, *menuSelection == 3)) ResetState(state, menuSelection, STATE_LODGINGS);
-    btnY += spacing * 2;
-    
-    // Auto Refuel visual
-    G_Player.fuel = G_Player.maxFuel;
-    DrawText("SHIP REFUELLEDBY STATION SERVICES", btnX, btnY, 20, GREEN);
-    btnY += 40;
-
-    if (DrawButton("UNDOCK (TO MAP)", btnX, btnY, 300, 40, *menuSelection == 4)) ResetState(state, menuSelection, STATE_PROSPECT_MAP);
-}
 
 // ------------------------------------------------------------
 // PAGE: SUB-MENUS
@@ -1313,6 +1410,57 @@ void DrawPageLodgings(GameState* state, int* menuSelection) {
 extern "C" {
 #endif
 
+// Flag to detect standalone mode (when main() creates the window)
+static bool g_standalone_mode = false;
+
+void UpdateInputFromRaylib() {
+    // Update input state from raylib (for standalone mode)
+    // This allows keyboard/mouse to work without Python forwarding events
+    
+    // Update key states
+    for (int key = 0; key < 512; key++) {
+        bool wasDown = g_inputState.keys[key];
+        bool isDown = IsKeyDown(key);
+        g_inputState.keys[key] = isDown;
+        
+        // Detect press/release
+        if (isDown && !wasDown) {
+            g_inputState.keysPressed[key] = true;
+        } else {
+            g_inputState.keysPressed[key] = false;
+        }
+    }
+    
+    // Update mouse button states
+    for (int button = 0; button < 8; button++) {
+        bool wasDown = g_inputState.mouseButtons[button];
+        bool isDown = IsMouseButtonDown(button);
+        g_inputState.mouseButtons[button] = isDown;
+        
+        // Detect press/release
+        if (isDown && !wasDown) {
+            g_inputState.mouseButtonsPressed[button] = true;
+        } else {
+            g_inputState.mouseButtonsPressed[button] = false;
+        }
+        
+        // Detect release
+        if (!isDown && wasDown) {
+            g_inputState.mouseButtonsReleased[button] = true;
+        } else {
+            g_inputState.mouseButtonsReleased[button] = false;
+        }
+    }
+    
+    // Update mouse delta (for ship control in lander mode)
+    Vector2 mouseDelta = GetMouseDelta();
+    g_inputState.mouseDelta = mouseDelta;
+    
+    // Update mouse position
+    Vector2 mousePos = GetMousePosition();
+    g_inputState.mousePosition = mousePos;
+}
+
 __declspec(dllexport) __cdecl void UpdateFrame() {
     static int frame_count = 0;
     frame_count++;
@@ -1323,6 +1471,11 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                    g_framebuffer_initialized, g_game_initialized);
         }
         return;
+    }
+    
+    // In standalone mode, poll input from raylib directly
+    if (g_standalone_mode) {
+        UpdateInputFromRaylib();
     }
     
     // Run one frame of game logic and rendering
@@ -1353,53 +1506,77 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
     // Use Camera2D to scale all 2D drawing calls
     BeginMode2D(screenCam);
     
+    // Debug: Log current state occasionally
+    static int state_log_counter = 0;
+    state_log_counter++;
+    if (state_log_counter == 1 || state_log_counter % 180 == 0) {
+        printf("[UpdateFrame] Current state: %d (STATE_SPLASH=%d, STATE_DEPOT_HOME=%d)\n", 
+               g_currentState, STATE_SPLASH, STATE_DEPOT_HOME);
+    }
+    
     switch(g_currentState) {
-        case STATE_PROSPECT_MAP:
-            DrawPageProspectMap(&g_currentState, &g_menuSelection, &g_shipPos, &g_shipVel);
+        case STATE_SPLASH: {
+            static int splash_state_count = 0;
+            splash_state_count++;
+            if (splash_state_count == 1 || splash_state_count % 60 == 0) {
+                printf("[UpdateFrame] STATE_SPLASH active! Frame %d, splashIndex=%d\n", splash_state_count, g_splashIndex);
+            }
+            EnableCursor();
+            DrawPageSplash(&g_currentState, &g_menuSelection, &g_shipPos, &g_shipVel, dt);
+            DrawScanlines();
+            break;
+        }
+            
+        case STATE_DEPOT_HOME:
+            EnableCursor();
+            DrawPageDepotHome(&g_currentState, &g_menuSelection, &g_shipPos, &g_shipVel);
             DrawScanlines();
             break;
 
         case STATE_DRILLING:
+            EnableCursor();
             DrawPageDrilling(&g_currentState, &g_menuSelection);
             DrawScanlines();
             break;
 
         case STATE_DEBRIS:
+            EnableCursor();
             DrawPageDebris(&g_currentState, &g_menuSelection);
             DrawScanlines();
             break;
 
         case STATE_DEPOT_SELECT:
+            EnableCursor();
             DrawPageDepotSelect(&g_currentState, &g_menuSelection);
             DrawScanlines();
             break;
 
-        case STATE_DEPOT_HOME:
-            DrawPageDepotHome(&g_currentState, &g_menuSelection);
-            DrawScanlines();
-            break;
-
         case STATE_BAR:
+            EnableCursor();
             DrawPageBar(&g_currentState, &g_menuSelection);
             DrawScanlines();
             break;
             
         case STATE_SHIPYARD:
+            EnableCursor();
             DrawPageShipyard(&g_currentState, &g_menuSelection);
             DrawScanlines();
             break;
             
         case STATE_MARKET:
+            EnableCursor();
             DrawPageMarket(&g_currentState, &g_menuSelection);
             DrawScanlines();
             break;
             
         case STATE_LODGINGS:
+            EnableCursor();
             DrawPageLodgings(&g_currentState, &g_menuSelection);
             DrawScanlines();
             break;
 
         case STATE_LANDER:
+            DisableCursor();
         {
             // End 2D Mode for 3D rendering to use full framebuffer natively
             EndMode2D();
@@ -1546,14 +1723,17 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
     }
     
     SetTraceLogLevel(LOG_NONE);
-    SetConfigFlags(FLAG_WINDOW_UNDECORATED | FLAG_WINDOW_HIDDEN);
     
+    // Only set hidden window flags if window doesn't exist (embedded mode)
+    // If window already exists (standalone mode), keep it visible
     if (!IsWindowReady()) {
+        SetConfigFlags(FLAG_WINDOW_UNDECORATED | FLAG_WINDOW_HIDDEN);
         InitWindow(VIRTUAL_WIDTH, VIRTUAL_HEIGHT, "AstroMiner_Embedded");
+        DisableCursor();
     }
+    // else: window was created by main() for standalone mode, keep it visible
     
     SetTargetFPS(60);
-    DisableCursor();
     
     // Create offscreen render texture (Low Res)
     g_framebuffer = LoadRenderTexture(RENDER_WIDTH, RENDER_HEIGHT);
@@ -1599,6 +1779,41 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
         printf("[InitializeGame] FAILED TO LOAD GUI TEXTURE from any path\n");
     }
     
+    // Load splash screen textures with multiple fallbacks
+    // NOTE: CWD is currently set to dll_dir, so "splash0.png" should work
+    const char* splashPaths[][3] = {
+        {"splash0.png", "Data/games/AstroMiner/splash0.png", "../../games/AstroMiner/splash0.png"},
+        {"splash1.png", "Data/games/AstroMiner/splash1.png", "../../games/AstroMiner/splash1.png"},
+        {"splash2.png", "Data/games/AstroMiner/splash2.png", "../../games/AstroMiner/splash2.png"},
+        {"splash_new_game.png", "Data/games/AstroMiner/splash_new_game.png", "../../games/AstroMiner/splash_new_game.png"},
+        {"splash_load_game.png", "Data/games/AstroMiner/splash_load_game.png", "../../games/AstroMiner/splash_load_game.png"},
+        {"splash_quit_game.png", "Data/games/AstroMiner/splash_quit_game.png", "../../games/AstroMiner/splash_quit_game.png"}
+    };
+    
+    const char* splashNames[] = {"splash0", "splash1", "splash2", "splash_new_game", "splash_load_game", "splash_quit_game"};
+    Texture2D* splashTextures[] = {&splash0Tx, &splash1Tx, &splash2Tx, &splashNewGameTx, &splashLoadGameTx, &splashQuitGameTx};
+    
+    printf("[InitializeGame] Loading splash textures...\n");
+    for (int i = 0; i < 6; i++) {
+        bool loaded = false;
+        for (int j = 0; j < 3; j++) {
+            printf("[InitializeGame] Trying to load %s from: %s\n", splashNames[i], splashPaths[i][j]);
+            *splashTextures[i] = LoadTexture(splashPaths[i][j]);
+            if (splashTextures[i]->id > 0) {
+                printf("[InitializeGame] SUCCESS: Loaded splash texture %d (%s) from: %s (size: %dx%d)\n", 
+                       i, splashNames[i], splashPaths[i][j], 
+                       splashTextures[i]->width, splashTextures[i]->height);
+                loaded = true;
+                break;
+            } else {
+                printf("[InitializeGame] Failed to load from: %s\n", splashPaths[i][j]);
+            }
+        }
+        if (!loaded) {
+            printf("[InitializeGame] ERROR: Failed to load splash texture %d (%s) from all paths!\n", i, splashNames[i]);
+        }
+    }
+    
     // Bake terrain chunks
     int chunkIdx = 0;
     float startP = -PROSPECT_PERIMETER;
@@ -1620,8 +1835,16 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
     g_shipRoll = 0.0f;
     g_shipYaw = 0.0f;
     g_yawDirection = 1;
-    g_currentState = STATE_PROSPECT_MAP;
+    g_currentState = STATE_SPLASH;
     g_menuSelection = 0;
+    
+    // Initialize splash screen state
+    g_splashIndex = 0;
+    g_splashTimer = 0.0f;
+    g_menuOption = 0;
+    g_exit_requested = false;
+    
+    printf("[InitializeGame] Starting in STATE_SPLASH, splashIndex=%d\n", g_splashIndex);
     
     g_game_initialized = true;
     
@@ -1637,16 +1860,30 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
 // ------------------------------------------------------------
 int main()
 {
+    // Set standalone mode flag BEFORE InitializeGame
+    g_standalone_mode = true;
+    
+    // For standalone mode, create a visible window
+    // Override the hidden window settings from InitializeGame
+    SetConfigFlags(0);  // No special flags - normal visible window
+    InitWindow(VIRTUAL_WIDTH, VIRTUAL_HEIGHT, "Astro Miner - Standalone Debug");
+    SetTargetFPS(60);
+    
     if (!InitializeGame()) {
+        CloseWindow();
         return 1;
     }
+    
+    printf("[main] Standalone mode - window created, starting game loop\n");
+    printf("[main] Keyboard and mouse input will be polled from raylib\n");
     
     while (!WindowShouldClose())
     {
         UpdateFrame();
         
-        // Draw framebuffer to screen for testing
+        // Draw framebuffer to screen
         BeginDrawing();
+        ClearBackground(BLACK);
         DrawTexturePro(g_framebuffer.texture, 
             (Rectangle){0, 0, (float)g_framebuffer.texture.width, (float)-g_framebuffer.texture.height},
             (Rectangle){0, 0, (float)GetScreenWidth(), (float)GetScreenHeight()},

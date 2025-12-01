@@ -33,7 +33,7 @@ if os.path.exists(_data_path) and _data_path not in sys.path:
 
 # Import game systems
 from games import GAME_DEFINITIONS, GameDefinition, BaseGameSession
-from games.registry import launch_external_game
+from games.registry import launch_external_game, AstroMinerSession
 from tokens import Tokens, normalize_token, describe_token, sort_tokens
 
 # Import supporting systems
@@ -1645,8 +1645,18 @@ class GLYPHIS_IOBBS:
         # Strip time prefixes to get the base filename for detection
         base_filename_for_detection = current_filename.replace("night-", "").replace("day-", "")
         
+        # Check if Astro Miner is active - use Audio-Desktop-os video
+        astro_miner_active = (self.state == "game_session" and 
+                             self.active_game_session and 
+                             isinstance(self.active_game_session, AstroMinerSession))
+        
+        # PRIORITY 1: If OSBoot video is playing, force Audio-Desktop-No-Sound-os video (highest priority)
+        # Night cycle will be applied automatically via _get_time_aware_video_name() below
+        if self.os_boot_video_playing:
+            desired_state = "osboot-playing"
+            base_video = "Audio-Desktop-No-Sound-os.mp4"  # Will become "night-Audio-Desktop-No-Sound-os.mp4" if nighttime
         # Treat RadioMusic same as cracker_audio_playing for video selection
-        if cracker_audio_playing or radio_music_active:
+        elif cracker_audio_playing or radio_music_active:
             desired_state = "audio-playing"
             # Check if current video is a No-Sound variant (strip -os suffix too for detection)
             base_for_no_sound_check = base_filename_for_detection.replace("-os.mp4", ".mp4")
@@ -1664,6 +1674,10 @@ class GLYPHIS_IOBBS:
                     base_video = "Audio-Desktop-No-Sound.mp4"
                 else:
                     base_video = "Audio-Desktop.mp4"
+        elif astro_miner_active:
+            # Astro Miner is playing - use Audio-Desktop-os video
+            desired_state = "astro-miner"
+            base_video = "Audio-Desktop-os.mp4"
         elif has_audio_on and not (cracker_audio_playing or radio_music_active):
             # AUDIO_ON is present but music has ended - use No-Sound fallback videos
             desired_state = "audio-on-no-music"
@@ -1679,7 +1693,8 @@ class GLYPHIS_IOBBS:
             desired_state = "default"
             base_video = "desktop_steam.mp4"
         
-        # Get time-aware video name (adds 'night-' prefix if nighttime in Tokyo)
+        # Get time-aware video name (adds 'night-' prefix based on local time vs Tokyo sunrise/sunset)
+        # Uses user's local computer time, not actual Tokyo timezone
         # This will correctly produce "night-Audio-Desktop-os.mp4", "night-desktop_steam_os.mp4", etc.
         time_aware_video = _get_time_aware_video_name(base_video)
         
@@ -3230,8 +3245,8 @@ class GLYPHIS_IOBBS:
             log_event("cv2 not available, cannot play OSBoot video")
             return
 
-        # Ensure desktop background video is set to desktop_steam_os.mp4 (or night version)
-        base_video = "desktop_steam_os.mp4"
+        # Ensure desktop background video is set to Audio-Desktop-No-Sound-os.mp4 (or night version)
+        base_video = "Audio-Desktop-No-Sound-os.mp4"
         time_aware_video = _get_time_aware_video_name(base_video)
         self._set_desktop_video(time_aware_video)
         log_event(f"Set desktop background to {time_aware_video} for OSBoot video")
@@ -3275,10 +3290,10 @@ class GLYPHIS_IOBBS:
         if not os.path.exists(video_path):
             return
 
-        # If this is OSBoot video, ensure desktop background is set to desktop_steam_os.mp4
+        # If this is OSBoot video, ensure desktop background is set to Audio-Desktop-No-Sound-os.mp4
         video_filename = os.path.basename(video_path)
         if "OSBoot" in video_filename:
-            base_video = "desktop_steam_os.mp4"
+            base_video = "Audio-Desktop-No-Sound-os.mp4"
             time_aware_video = _get_time_aware_video_name(base_video)
             self._set_desktop_video(time_aware_video)
             log_event(f"Set desktop background to {time_aware_video} for OSBoot video (via _play_ops_intro_video)")
@@ -5198,11 +5213,6 @@ class GLYPHIS_IOBBS:
                         overlays = overlay_getter() or []
                     except Exception:
                         overlays = []
-            # Draw thin cyan border around BBS window (on top of everything, unless OS mode is active, OSBoot is playing, or new game prompt is showing)
-            if not self.os_mode_active and not self.os_boot_video_playing and self.state != "new_game_prompt":
-                pygame.draw.rect(self.screen, CYAN,
-                                 (self.bbs_x, self.bbs_y, self.bbs_width, self.bbs_height), 1)
-
             for overlay_surface, (offset_x, offset_y) in overlays:
                 if overlay_surface:
                     screen_pos = (self.bbs_x + offset_x, self.bbs_y + offset_y)

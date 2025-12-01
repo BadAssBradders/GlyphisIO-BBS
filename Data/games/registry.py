@@ -458,6 +458,15 @@ class AstroMinerSession(BaseGameSession):
         
         self.last_mouse_pos = mouse_pos
         
+        # Check if game wants to exit (from menu quit option)
+        if self.embed_module:
+            try:
+                if hasattr(self.embed_module, 'should_exit') and callable(self.embed_module.should_exit):
+                    if self.embed_module.should_exit():
+                        self.exit_requested = True
+            except Exception as e:
+                pass  # Ignore errors checking exit flag
+        
         try:
             # Get latest frame from the embedded game
             if self._update_count % 60 == 0:

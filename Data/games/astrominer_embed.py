@@ -58,8 +58,13 @@ def initialize() -> bool:
         os.chdir(dll_dir)
         print(f"[initialize] Changed CWD to {dll_dir}")
         
-        # Load dependencies explicitly
-        dependencies = ["libwinpthread-1.dll", "raylib.dll"]
+        # Load dependencies explicitly (including MinGW runtime DLLs)
+        dependencies = [
+            "libgcc_s_seh-1.dll",  # MinGW runtime
+            "libstdc++-6.dll",     # MinGW C++ runtime
+            "libwinpthread-1.dll", # MinGW threading
+            "raylib.dll"           # Raylib
+        ]
         for dep in dependencies:
             if os.path.exists(dep):
                 try:
@@ -101,19 +106,54 @@ def initialize() -> bool:
         _dll.SetMouseDelta.restype = None
         _dll.SetMouseDelta.argtypes = [ctypes.c_float, ctypes.c_float]
         
-        # Initialize the game
+        # Initialize the game first (before optional functions)
         # NOTE: CWD is still dll_dir here, so shaders should load fine
         if not _dll.InitializeGame():
             print("ERROR: Failed to initialize game")
             return False
+        
+        # Try to set up ShouldExit function (may not exist in older DLLs)
+        # This is optional and won't cause initialization to fail
+        _dll._has_should_exit = False
+        try:
+            # Use getattr with a default to safely check if function exists
+            should_exit_func = getattr(_dll, 'ShouldExit', None)
+            if should_exit_func is not None:
+                _dll.ShouldExit.restype = ctypes.c_bool
+                _dll.ShouldExit.argtypes = []
+                _dll._has_should_exit = True
+            else:
+                print("Note: ShouldExit function not available in DLL (will be available after recompiling)")
+        except (AttributeError, OSError, TypeError) as e:
+            _dll._has_should_exit = False
+            print(f"Note: Could not set up ShouldExit function: {e}")
             
         print("Astro Miner initialized successfully")
         return True
         
     except AttributeError as e:
-        print(f"ERROR: Function not found in DLL: {e}")
-        print(f"DLL path: {_dll_path}")
-        return False
+        # Check if it's ShouldExit (optional) - if so, continue
+        error_str = str(e)
+        if "ShouldExit" in error_str:
+            # ShouldExit is optional, so continue initialization
+            print(f"Note: Optional function not found in DLL: {e}")
+            if _dll:
+                _dll._has_should_exit = False
+                # Check if InitializeGame was already called successfully
+                try:
+                    # If we got here, InitializeGame might not have been called
+                    # Try to call it now
+                    if hasattr(_dll, 'InitializeGame'):
+                        if _dll.InitializeGame():
+                            print("Continuing without ShouldExit function...")
+                            return True
+                except:
+                    pass
+            return False
+        else:
+            print(f"ERROR: Required function not found in DLL: {e}")
+            print(f"DLL path: {_dll_path}")
+            return False
     except Exception as e:
         print(f"ERROR: Failed to load astrominer.dll: {e}")
         import traceback
@@ -216,6 +256,15 @@ def set_mouse_delta(dx: float, dy: float):
             _dll.SetMouseDelta(dx, dy)
         except Exception as e:
             print(f"ERROR: Failed to set mouse delta: {e}")
+
+def should_exit():
+    """Check if the game wants to exit."""
+    if _dll and hasattr(_dll, '_has_should_exit') and _dll._has_should_exit:
+        try:
+            return _dll.ShouldExit()
+        except Exception:
+            return False
+    return False
 
 def cleanup():
     """Cleanup resources."""
