@@ -95,6 +95,10 @@ class Shader(ctypes.Structure):
 class Texture2D(ctypes.Structure):
     _fields_ = [("id", ctypes.c_uint), ("width", ctypes.c_int), ("height", ctypes.c_int), ("mipmaps", ctypes.c_int), ("format", ctypes.c_int)]
 
+class Rectangle(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_float), ("y", ctypes.c_float), ("width", ctypes.c_float), ("height", ctypes.c_float)]
+    def __init__(self, x=0.0, y=0.0, width=0.0, height=0.0): super().__init__(x, y, width, height)
+
 class MaterialMap(ctypes.Structure):
     _fields_ = [("texture", Texture2D), ("color", Color), ("value", ctypes.c_float)]
 
@@ -159,6 +163,10 @@ rl.rlBegin.argtypes = [ctypes.c_int]
 rl.rlEnd.argtypes = []
 rl.rlColor4ub.argtypes = [ctypes.c_ubyte, ctypes.c_ubyte, ctypes.c_ubyte, ctypes.c_ubyte]
 rl.rlVertex3f.argtypes = [ctypes.c_float, ctypes.c_float, ctypes.c_float]
+rl.LoadTexture.argtypes = [ctypes.c_char_p]; rl.LoadTexture.restype = Texture2D
+rl.UnloadTexture.argtypes = [Texture2D]
+rl.DrawTexture.argtypes = [Texture2D, ctypes.c_int, ctypes.c_int, Color]
+rl.DrawTexturePro.argtypes = [Texture2D, Rectangle, Rectangle, Vector2, ctypes.c_float, Color]
 
 # Constants
 CAMERA_PERSPECTIVE = 0
@@ -443,8 +451,12 @@ def draw_button(text, x, y, w, h, sel):
     return sel and (rl.IsKeyPressed(KEY_ENTER) or rl.IsKeyPressed(KEY_SPACE))
 
 def reset_state(state_ref, selection_ref, new_state):
+    global depot_home_page
     state_ref[0] = new_state
     selection_ref[0] = 0
+    # Reset depot_home page to 1 when entering DEPOT_HOME state
+    if new_state == GameState.DEPOT_HOME:
+        depot_home_page = 1
 
 def draw_page_prospect_map(state_ref, selection_ref, ship_pos, ship_vel):
     rl.ClearBackground(Color(5, 5, 10, 255))
@@ -509,26 +521,78 @@ def draw_page_depot_select(state_ref, selection_ref):
     rl.DrawText(b"OUTPOST BETA", 750, 450, 20, c2)
     draw_button("LOCKED", 750, 480, 100, 30, sel == 1)
 
+# Global variable to track depot_home page number (1-4)
+depot_home_page = 1
+depot_home_textures = {}  # Cache for loaded textures
+
+def get_png_path(filename):
+    """Get the full path to a PNG file in the AstroMiner directory."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    png_path = os.path.join(script_dir, filename)
+    if os.path.exists(png_path):
+        return png_path
+    # Fallback: try Data/games/AstroMiner/ relative to project root
+    if getattr(sys, 'frozen', False):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(script_dir))))
+    fallback_path = os.path.join(base_path, "Data", "games", "AstroMiner", filename)
+    if os.path.exists(fallback_path):
+        return fallback_path
+    return png_path  # Return original path even if not found
+
+def load_depot_texture(filename):
+    """Load a texture for depot_home screen, with caching."""
+    if filename in depot_home_textures:
+        return depot_home_textures[filename]
+    png_path = get_png_path(filename)
+    try:
+        # Convert to bytes for ctypes
+        path_bytes = png_path.encode('utf-8') if isinstance(png_path, str) else png_path
+        texture = rl.LoadTexture(path_bytes)
+        depot_home_textures[filename] = texture
+        return texture
+    except Exception as e:
+        print(f"Warning: Failed to load texture {filename}: {e}")
+        return None
+
 def draw_page_depot_home(state_ref, selection_ref):
+    global depot_home_page
+    
     rl.ClearBackground(Color(20, 20, 25, 255))
-    draw_retro_window("ALPHA STATION HUB", 50, 50, 1100, 700)
-    sel = selection_ref[0]; num = 5
-    if rl.IsKeyPressed(KEY_DOWN): sel = (sel + 1) % num
-    if rl.IsKeyPressed(KEY_UP): sel = (sel - 1 + num) % num
-    selection_ref[0] = sel
-    bx, by, sp = 100, 150, 60
-    if draw_button("SPACE STATION BAR", bx, by, 300, 40, sel == 0): reset_state(state_ref, selection_ref, GameState.BAR)
-    by += sp
-    if draw_button("SHIPYARD & UPGRADES", bx, by, 300, 40, sel == 1): reset_state(state_ref, selection_ref, GameState.SHIPYARD)
-    by += sp
-    if draw_button("COMMODITIES MARKET", bx, by, 300, 40, sel == 2): reset_state(state_ref, selection_ref, GameState.MARKET)
-    by += sp
-    if draw_button("LODGINGS", bx, by, 300, 40, sel == 3): reset_state(state_ref, selection_ref, GameState.LODGINGS)
-    by += sp * 2
+    
+    # Handle page navigation with up/down arrows (pages 1-4)
+    if rl.IsKeyPressed(KEY_DOWN):
+        if depot_home_page < 4:
+            depot_home_page += 1
+    if rl.IsKeyPressed(KEY_UP):
+        if depot_home_page > 1:
+            depot_home_page -= 1
+    
+    # Map page number to PNG filename
+    page_pngs = {
+        1: "prospect_gui.png",
+        2: "shipyard_gui.png",
+        3: "commodities_gui.png",
+        4: "bar_gui.png"
+    }
+    
+    # Load and draw the appropriate PNG
+    png_filename = page_pngs.get(depot_home_page, "prospect_gui.png")
+    texture = load_depot_texture(png_filename)
+    
+    if texture:
+        # Draw the texture to fill the screen (or a specific area)
+        # Using DrawTexturePro for better control
+        screen_width = 1200  # Window width
+        screen_height = 800  # Window height
+        src_rect = Rectangle(0, 0, texture.width, texture.height)
+        dest_rect = Rectangle(0, 0, screen_width, screen_height)
+        origin = Vector2(0, 0)
+        rl.DrawTexturePro(texture, src_rect, dest_rect, origin, 0.0, WHITE)
+    
+    # Refuel player when in depot
     G_Player.fuel = G_Player.max_fuel
-    rl.DrawText(b"SHIP REFUELLEDBY STATION SERVICES", bx, by, 20, GREEN)
-    by += 40
-    if draw_button("UNDOCK (TO MAP)", bx, by, 300, 40, sel == 4): reset_state(state_ref, selection_ref, GameState.PROSPECT_MAP)
 
 def draw_page_bar(state_ref, selection_ref):
     rl.ClearBackground(BLACK)

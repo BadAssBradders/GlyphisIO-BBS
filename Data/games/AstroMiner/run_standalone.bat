@@ -10,15 +10,13 @@ echo.
 REM Change to script directory
 cd /d "%~dp0"
 
-REM Check if executable exists, if not build it
-if not exist "astrominer.exe" (
-    echo astrominer.exe not found. Building...
-    call build_standalone.bat
-    if %ERRORLEVEL% NEQ 0 (
-        echo Build failed!
-        pause
-        exit /b 1
-    )
+REM Always rebuild to pick up changes
+echo Rebuilding astrominer.exe...
+call build_standalone.bat
+if %ERRORLEVEL% NEQ 0 (
+    echo Build failed!
+    pause
+    exit /b 1
 )
 
 REM Check for required DLLs
@@ -41,4 +39,3 @@ if %ERRORLEVEL% NEQ 0 (
     echo Game exited with error code: %ERRORLEVEL%
     pause
 )
-

@@ -1,0 +1,74 @@
+[33mcommit 49badd50dadd5236ded6b208a3589cfe74075d0d[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m
+Author: BadAssBradders <93257995+BadAssBradders@users.noreply.github.com>
+Date:   Sun Nov 30 21:23:08 2025 +0000
+
+    Integrate 3D Station Viewport into AstroMiner: Add Torus scene, shaders, enhance DLL loading, optimize performance, and tune lander physics
+
+M	Data/games/AstroMiner/astro_miner_main.cpp
+M	Data/games/AstroMiner/astrominer.dll
+A	Data/games/AstroMiner/libwinpthread-1.dll
+A	Data/games/AstroMiner/lighting.fs
+A	Data/games/AstroMiner/lighting.vs
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/.gitignore
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/FIX_RAYLIB_LIB.md
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/FIX_RAYLIB_SETUP.md
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/INSTALL_RAYLIB.md
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/Icosahedron.sln
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/Icosahedron.vcxproj
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/Makefile
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/QUICK_START.md
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/README.md
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/SETUP_MINGW.md
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/SETUP_NOTEPADPP.md
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/build.bat
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/build_mingw.bat
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/build_release.bat
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/build_simple.bat
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/check_setup.bat
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/integration.md
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/main.cpp
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/npp_build.txt
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/npp_run.txt
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/run.bat
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/run_mingw.bat
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/run_simple.bat
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/run_with_console.bat
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/setup_raylib_path.ps1
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/src/lighting.fs
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/src/lighting.vs
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/src/main.cpp
+A	Data/games/AstroMiner/shapes_in_space/Icosahedron/src/main.h
+A	Data/games/AstroMiner/shapes_in_space/Torus/.gitignore
+A	Data/games/AstroMiner/shapes_in_space/Torus/FIX_RAYLIB_LIB.md
+A	Data/games/AstroMiner/shapes_in_space/Torus/FIX_RAYLIB_SETUP.md
+A	Data/games/AstroMiner/shapes_in_space/Torus/INSTALL_RAYLIB.md
+A	Data/games/AstroMiner/shapes_in_space/Torus/Makefile
+A	Data/games/AstroMiner/shapes_in_space/Torus/QUICK_START.md
+A	Data/games/AstroMiner/shapes_in_space/Torus/README.md
+A	Data/games/AstroMiner/shapes_in_space/Torus/SETUP_MINGW.md
+A	Data/games/AstroMiner/shapes_in_space/Torus/SETUP_NOTEPADPP.md
+A	Data/games/AstroMiner/shapes_in_space/Torus/Torus.sln
+A	Data/games/AstroMiner/shapes_in_space/Torus/Torus.vcxproj
+A	Data/games/AstroMiner/shapes_in_space/Torus/build.bat
+A	Data/games/AstroMiner/shapes_in_space/Torus/build_mingw.bat
+A	Data/games/AstroMiner/shapes_in_space/Torus/build_release.bat
+A	Data/games/AstroMiner/shapes_in_space/Torus/build_simple.bat
+A	Data/games/AstroMiner/shapes_in_space/Torus/check_setup.bat
+A	Data/games/AstroMiner/shapes_in_space/Torus/main.cpp
+A	Data/games/AstroMiner/shapes_in_space/Torus/npp_build.txt
+A	Data/games/AstroMiner/shapes_in_space/Torus/npp_run.txt
+A	Data/games/AstroMiner/shapes_in_space/Torus/run.bat
+A	Data/games/AstroMiner/shapes_in_space/Torus/run_mingw.bat
+A	Data/games/AstroMiner/shapes_in_space/Torus/run_simple.bat
+A	Data/games/AstroMiner/shapes_in_space/Torus/run_with_console.bat
+A	Data/games/AstroMiner/shapes_in_space/Torus/setup_raylib_path.ps1
+A	Data/games/AstroMiner/shapes_in_space/Torus/src/lighting.fs
+A	Data/games/AstroMiner/shapes_in_space/Torus/src/lighting.vs
+A	Data/games/AstroMiner/shapes_in_space/Torus/src/main.cpp
+A	Data/games/AstroMiner/shapes_in_space/Torus/src/main.h
+A	Data/games/AstroMiner/shapes_in_space/npp_universal_run.txt
+A	Data/games/AstroMiner/shapes_in_space/npp_universal_run_oneline.txt
+A	Data/games/AstroMiner/station_artifact.fs
+A	Data/games/AstroMiner/station_artifact.vs
+M	Data/games/astrominer_embed.py
+M	requirements.txt
