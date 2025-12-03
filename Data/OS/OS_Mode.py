@@ -981,7 +981,15 @@ class OSMode:
                 if btn_rect.collidepoint(mouse_x, mouse_y):
                     # Add to dialed sequence
                     if len(self.modem_modal_dialed_sequence) < 20:  # Limit length
-                        self.modem_modal_dialed_sequence += button_label
+                        # Insert at cursor position
+                        cursor_pos = self.modem_modal_cursor_position
+                        self.modem_modal_dialed_sequence = (
+                            self.modem_modal_dialed_sequence[:cursor_pos] + 
+                            button_label + 
+                            self.modem_modal_dialed_sequence[cursor_pos:]
+                        )
+                        self.modem_modal_cursor_position += 1
+                        self.modem_modal_cursor_blink_timer = 0.0  # Reset cursor blink
                     return True
         
         # CALL button

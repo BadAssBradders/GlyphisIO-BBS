@@ -107,6 +107,9 @@ typedef enum {
     STATE_SHIPYARD,
     STATE_MARKET,
     STATE_LODGINGS,
+    STATE_NAV_SCREEN,
+    STATE_STATION_HOME,
+    STATE_HALO_HOME,
     STATE_GAME_OVER
 } GameState;
 
@@ -194,10 +197,15 @@ int g_modalSelection = 0;  // 0=Launch, 1=Exit
 int g_selectedAsteroidIndex = 0;  // Which asteroid (0-5 = A-F)
 int g_selectedAsteroidFuelCost = 0;  // Random fuel cost (20-50)
 int g_selectedAsteroidGravity = 0;  // Gravity percentage of selected asteroid
+int g_selectedAsteroidProspect = 0;  // Prosperity percentage of selected asteroid
 bool g_fuelCheckFailed = false;  // Flag for fuel check failure
 bool g_missionInProgress = false;  // Track if player is on a mission (for return fuel deduction)
 float g_asteroidRotation = 0.0f;  // Rotation angle for spinning asteroids
+bool g_showGetReady = false;  // Show "GET READY" splash screen before lander
+float g_getReadyTimer = 0.0f;  // Timer for GET READY screen (2 seconds)
 RenderTexture2D g_asteroidViewport = {0};  // Render texture for asteroid view (like StationViewport)
+RenderTexture2D g_navViewport = {0};  // Render texture for navigation screen
+bool g_navViewportInitialized = false;
 bool g_asteroidViewportInitialized = false;
 
 // Shipyard shop system
@@ -227,6 +235,11 @@ Texture2D shipyardPageFTx = {0}; // shipyard_page_F.png
 
 // Bar system
 Texture2D barPageTx = {0}; // bar_page.png
+// Station and Halo overlays
+Texture2D hirohitoOverlayTx = {0}; // Hirohito_overlay.png
+Texture2D nagakoOverlayTx = {0};  // Nagako_overlay.png
+// Track current location for customization
+int g_currentLocation = 0; // 0=Depot, 1=Station, 2=Halo
 bool g_showBarView = false;
 float g_barModalTimer = 0.0f; // Delay timer for modal appearance
 int g_barDrinksPurchased = 0;
@@ -285,7 +298,7 @@ Vector2 g_chunkCenters[TOTAL_CHUNKS] = {0};
 
 // --- SHIP ENGINE STATS (UPGRADEABLE) ---
 float SHIP_GRAVITY = -12.0f;
-float SHIP_THRUST_POWER = 20.0f;  // Initial power matches player power (20/100) 
+float SHIP_THRUST_POWER = 24.0f;  // 20% stronger than before (20.0f * 1.2 = 24.0f) 
 float SHIP_DRAG_FACTOR = 0.985f;
 float SHIP_FUEL_BURN_RATE = 1.0f / 10.0f; 
 
@@ -1681,16 +1694,32 @@ public:
                 
                 Model* targetModel = nullptr;
                 Color tint = WHITE;
+                Vector3 rotationAxis = {0, 1, 0}; // Default Y-axis rotation
+                float angleOffset = 0.0f; // Default no angle offset
                 
                 switch (activeStation) {
-                    case STATION_ALPHA: targetModel = &modelTorus; break;
-                    case STATION_BETA:  targetModel = &modelIco; break;
-                    case STATION_GAMMA: targetModel = &modelTorus; tint = RED; break;
-                    case STATION_DELTA: targetModel = &modelIco; tint = GOLD; break;
+                    case STATION_ALPHA: 
+                        targetModel = &modelTorus; 
+                        break;
+                    case STATION_BETA:  
+                        targetModel = &modelIco; 
+                        break;
+                    case STATION_GAMMA: 
+                        targetModel = &modelTorus; 
+                        tint = RED; 
+                        // Slightly angled differently for Halo
+                        rotationAxis = Vector3Normalize((Vector3){0.2f, 1.0f, 0.1f}); // Slight tilt
+                        angleOffset = 15.0f; // Start at 15 degrees offset
+                        break;
+                    case STATION_DELTA: 
+                        targetModel = &modelIco; 
+                        tint = GOLD; 
+                        break;
                 }
                 
                 if (targetModel) {
-                    DrawModelEx(*targetModel, {0,0,0}, {0,1,0}, rotation, {1,1,1}, tint);
+                    float finalRotation = rotation + angleOffset;
+                    DrawModelEx(*targetModel, {0,0,0}, rotationAxis, finalRotation, {1,1,1}, tint);
                 }
                 
                 rlEnableBackfaceCulling();
@@ -1804,6 +1833,14 @@ void DrawPageSplash(GameState* state, int* menuSelection, Vector3* shipPos, Vect
                 // New Game - reset to Depot_Home
                 *shipPos = (Vector3){0, 60, -PROSPECT_PERIMETER};
                 *shipVel = (Vector3){0, 0, 10};
+                
+                // Stabilize ship at launch start (reset pitch, roll, yaw, and horizontal velocity)
+                g_shipPitch = 0.0f;
+                g_shipRoll = 0.0f;
+                g_shipYaw = 0.0f;
+                shipVel->x = 0.0f;  // Zero horizontal X velocity
+                shipVel->z = 10.0f; // Keep forward Z velocity for initial movement
+                
                 // Reset to new game defaults
                 G_Player.fuel = G_Player.maxFuel;
                 G_Player.hull = G_Player.maxHull;
@@ -1817,7 +1854,7 @@ void DrawPageSplash(GameState* state, int* menuSelection, Vector3* shipPos, Vect
                 G_Player.hasCollector = false;
                 G_Player.thrusterBoost = 1.0f;
                 G_Player.hullResistance = 1.0f;
-                SHIP_THRUST_POWER = 20.0f;  // Reset thrust power
+                SHIP_THRUST_POWER = 24.0f;  // Reset thrust power (20% stronger)
                 g_exit_requested = false;  // Reset exit flag
                 *state = STATE_DEPOT_HOME;
                 *menuSelection = 0;
@@ -2137,8 +2174,9 @@ void DrawAsteroidModal(GameState* state, int* menuSelection, Vector3* shipPos, V
             // Launch - check fuel first
             int requiredFuel = g_selectedAsteroidFuelCost / 2;  // Half fuel on launch
             if (G_Player.fuel >= requiredFuel) {
-                // Store asteroid gravity for lander
+                // Store asteroid gravity and prosperity for lander
                 g_selectedAsteroidGravity = g_gravityScores[g_selectedAsteroidIndex];
+                g_selectedAsteroidProspect = g_prospectScores[g_selectedAsteroidIndex];
                 
                 // Deduct half the fuel cost
                 G_Player.fuel -= requiredFuel;
@@ -2150,13 +2188,23 @@ void DrawAsteroidModal(GameState* state, int* menuSelection, Vector3* shipPos, V
                 // Update thrust power to match player power
                 SHIP_THRUST_POWER = G_Player.power;
                 
-                // Launch - go to lander mode
+                // Launch - show GET READY screen first, then go to lander mode
                 *shipPos = (Vector3){0, 60, -PROSPECT_PERIMETER};
                 *shipVel = (Vector3){0, 0, 10};
-                *state = STATE_LANDER;
-                *menuSelection = 0;
+                
+                // Stabilize ship at launch start (reset pitch, roll, yaw, and horizontal velocity)
+                g_shipPitch = 0.0f;
+                g_shipRoll = 0.0f;
+                g_shipYaw = 0.0f;
+                shipVel->x = 0.0f;  // Zero horizontal X velocity
+                shipVel->z = 10.0f; // Keep forward Z velocity for initial movement
+                
                 g_showAsteroidModal = false;
                 g_fuelCheckFailed = false;
+                
+                // Show GET READY splash screen
+                g_showGetReady = true;
+                g_getReadyTimer = 2.0f;  // Show for 2 seconds
                 
                 // Reset rocks (re-generate world for new asteroid?)
                 GenerateRocksAndCollision(); 
@@ -2278,6 +2326,12 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
             if (G_Player.credits < price) {
                 canPurchase = false;
                 strncpy(g_purchaseFailReason, "INSUFFICIENT CREDITS", sizeof(g_purchaseFailReason));
+            } else if (g_selectedShopItemIndex == 0 && G_Player.hasLaser) { // Laser - only one allowed
+                canPurchase = false;
+                strncpy(g_purchaseFailReason, "LASER ALREADY FITTED", sizeof(g_purchaseFailReason));
+            } else if (g_selectedShopItemIndex == 1 && G_Player.hasCollector) { // Collector - only one allowed
+                canPurchase = false;
+                strncpy(g_purchaseFailReason, "COLLECTOR ALREADY FITTED", sizeof(g_purchaseFailReason));
             } else if (g_selectedShopItemIndex == 5 && G_Player.hull >= G_Player.maxHull) { // Repairs
                 canPurchase = false;
                 strncpy(g_purchaseFailReason, "HULL IS FULLY REPAIRED", sizeof(g_purchaseFailReason));
@@ -2624,6 +2678,144 @@ void DrawBarModal(int modalX, int modalY, int modalWidth, int modalHeight) {
     }
 }
 
+// ------------------------------------------------------------
+// DEPOT/STATION SHARED HELPERS
+// ------------------------------------------------------------
+void DrawDepotStats(int statsYOffset) {
+    // Draw Stats Overlay (on top of PNG) - SHIP DATA and PILOT DATA
+    Color coralColor = (Color){255, 127, 80, 255};
+    
+    // SHIP DATA section (left bottom) - Progress bars
+    int shipDataX = 335;   // Base X position
+    int shipDataY = VIRTUAL_HEIGHT - 120 + statsYOffset;  // Base Y position
+    int rectWidth = 9;     // Width of each rectangle
+    int rectHeight = 11;   // Height of each rectangle
+    int rectSpacing = 2;   // Spacing between rectangles
+    int maxRects = 10;     // Maximum rectangles
+    
+    // Individual positions for each bar - Hull aligned horizontally with Power and Fuel
+    int hullX = shipDataX + 9;
+    int hullY = shipDataY + 5;
+    int powerX = shipDataX + 9;
+    int powerY = shipDataY + 35;
+    int fuelX = shipDataX + 9;
+    int fuelY = shipDataY + 63;
+    
+    // HULL progress bars - Green
+    int hullRects = (int)(G_Player.hull / 10.0f);
+    for (int i = 0; i < maxRects; i++) {
+        int rectX = hullX + i * (rectWidth + rectSpacing);
+        if (i < hullRects) {
+            DrawRectangle(rectX, hullY, rectWidth, rectHeight, GREEN);
+        } else {
+            DrawRectangle(rectX, hullY, rectWidth, rectHeight, DARKGRAY);
+        }
+    }
+    
+    // POWER progress bars - Red
+    int powerRects = (int)(G_Player.power / 10.0f);
+    for (int i = 0; i < maxRects; i++) {
+        int rectX = powerX + i * (rectWidth + rectSpacing);
+        if (i < powerRects) {
+            DrawRectangle(rectX, powerY, rectWidth, rectHeight, RED);
+        } else {
+            DrawRectangle(rectX, powerY, rectWidth, rectHeight, DARKGRAY);
+        }
+    }
+    
+    // FUEL progress bars - Cyan
+    int fuelRects = (int)(G_Player.fuel / 10.0f);
+    Color cyanColor = (Color){0, 255, 255, 255};
+    for (int i = 0; i < maxRects; i++) {
+        int rectX = fuelX + i * (rectWidth + rectSpacing);
+        if (i < fuelRects) {
+            DrawRectangle(rectX, fuelY, rectWidth, rectHeight, cyanColor);
+        } else {
+            DrawRectangle(rectX, fuelY, rectWidth, rectHeight, DARKGRAY);
+        }
+    }
+    
+    // PILOT DATA section (right bottom) - Rank and Credits
+    int pilotDataX = VIRTUAL_WIDTH - 180;
+    int pilotDataY = VIRTUAL_HEIGHT - 125 + statsYOffset;
+    
+    const char* rankName = GetRankName(G_Player.rank);
+    char rankUpper[64];
+    int i = 0;
+    while (rankName[i] != '\0' && i < 63) {
+        rankUpper[i] = (rankName[i] >= 'a' && rankName[i] <= 'z') ? (rankName[i] - 32) : rankName[i];
+        i++;
+    }
+    rankUpper[i] = '\0';
+    
+    if (retroFont.texture.id > 0) {
+        DrawTextEx(retroFont, rankUpper, (Vector2){(float)pilotDataX, (float)pilotDataY}, 24, 0, WHITE);
+    } else {
+        DrawText(rankUpper, pilotDataX, pilotDataY, 24, WHITE);
+    }
+    
+    char creditsText[32];
+    snprintf(creditsText, sizeof(creditsText), "%d", G_Player.credits);
+    if (retroFont.texture.id > 0) {
+        DrawTextEx(retroFont, creditsText, (Vector2){(float)pilotDataX, (float)pilotDataY + 60}, 24, 0, WHITE);
+    } else {
+        DrawText(creditsText, pilotDataX, pilotDataY + 60, 24, WHITE);
+    }
+}
+
+void HandleDepotInput(GameState* state, int* menuSelection) {
+    // Handle Page Switching (Up/Down Arrows)
+    if (CustomIsKeyPressed(KEY_DOWN)) {
+        g_depotHomePage++;
+        if (g_depotHomePage > 4) g_depotHomePage = 1;
+        // Reset overlay states when changing pages
+        g_showProspectAsteroids = false;
+        g_showShipyardShop = false;
+        g_showBarView = false;
+    }
+    if (CustomIsKeyPressed(KEY_UP)) {
+        g_depotHomePage--;
+        if (g_depotHomePage < 1) g_depotHomePage = 4;
+        g_showProspectAsteroids = false;
+        g_showShipyardShop = false;
+        g_showBarView = false;
+    }
+}
+
+Texture2D* GetDepotPageTexture() {
+    if (g_showProspectAsteroids && g_depotHomePage == 1) {
+        switch (g_prospectPageOverlay) {
+            case 1: return &prospectPageATx;
+            case 2: return &prospectPageBTx;
+            case 3: return &prospectPageCTx;
+            case 4: return &prospectPageDTx;
+            case 5: return &prospectPageETx;
+            case 6: return &prospectPageFTx;
+            default: return &prospectPageTx;
+        }
+    } else if (g_showShipyardShop && g_depotHomePage == 2) {
+        switch (g_shipyardPageOverlay) {
+            case 1: return &shipyardPageATx;
+            case 2: return &shipyardPageBTx;
+            case 3: return &shipyardPageCTx;
+            case 4: return &shipyardPageDTx;
+            case 5: return &shipyardPageETx;
+            case 6: return &shipyardPageFTx;
+            default: return &shipyardPageTx;
+        }
+    } else if (g_showBarView && g_depotHomePage == 4) {
+        return &barPageTx;
+    } else {
+        switch (g_depotHomePage) {
+            case 1: return &prospectGuiTx;
+            case 2: return &shipyardGuiTx;
+            case 3: return &commoditiesGuiTx;
+            case 4: return &barGuiTx;
+            default: return &prospectGuiTx;
+        }
+    }
+}
+
 void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, Vector3* shipVel) {
     // 1. Clear Background
     ClearBackground(BLACK);
@@ -2924,6 +3116,17 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
         DrawTexturePro(*currentGuiTx, srcRectGui, destRectGui, (Vector2){0, 0}, 0.0f, WHITE);
     }
     
+    // Draw Location Overlay (Hirohito/Nagako) if applicable
+    if (g_currentLocation == 1 && hirohitoOverlayTx.id > 0) { // Station
+        Rectangle srcRectGui = { 0, 0, (float)hirohitoOverlayTx.width, (float)hirohitoOverlayTx.height };
+        Rectangle destRectGui = { 0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT };
+        DrawTexturePro(hirohitoOverlayTx, srcRectGui, destRectGui, (Vector2){0, 0}, 0.0f, WHITE);
+    } else if (g_currentLocation == 2 && nagakoOverlayTx.id > 0) { // Halo
+        Rectangle srcRectGui = { 0, 0, (float)nagakoOverlayTx.width, (float)nagakoOverlayTx.height };
+        Rectangle destRectGui = { 0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT };
+        DrawTexturePro(nagakoOverlayTx, srcRectGui, destRectGui, (Vector2){0, 0}, 0.0f, WHITE);
+    }
+    
     // 5. Draw Stats Overlay (on top of PNG) - SHIP DATA and PILOT DATA
     // Coral color for progress bars: RGB(255, 127, 80) or similar coral shade
     Color coralColor = (Color){255, 127, 80, 255};
@@ -3091,6 +3294,30 @@ void DrawPageDepotSelect(GameState* state, int* menuSelection) {
 }
 
 // ------------------------------------------------------------
+// PAGE: STATION HOME (Hirohito Station)
+// ------------------------------------------------------------
+void DrawPageStationHome(GameState* state, int* menuSelection, Vector3* shipPos, Vector3* shipVel) {
+    // Refuel player when at station
+    G_Player.fuel = G_Player.maxFuel;
+    
+    // Reuse Depot Home logic (including input, stats, and overlays)
+    // The UpdateFrame function sets the correct 3D Viewport (Icosahedron)
+    // The DrawPageDepotHome function now handles the extra Hirohito overlay based on g_currentLocation
+    DrawPageDepotHome(state, menuSelection, shipPos, shipVel);
+}
+
+// ------------------------------------------------------------
+// PAGE: HALO HOME (Nagako's Halo)
+// ------------------------------------------------------------
+void DrawPageHaloHome(GameState* state, int* menuSelection, Vector3* shipPos, Vector3* shipVel) {
+    // Refuel player when at halo
+    G_Player.fuel = G_Player.maxFuel;
+    
+    // Reuse Depot Home logic
+    DrawPageDepotHome(state, menuSelection, shipPos, shipVel);
+}
+
+// ------------------------------------------------------------
 // PAGE: GAME OVER
 // ------------------------------------------------------------
 void DrawPageGameOver(GameState* state, int* menuSelection) {
@@ -3139,6 +3366,37 @@ void DrawPageGameOver(GameState* state, int* menuSelection) {
     
     if (anyKeyPressed) {
         ResetState(state, menuSelection, STATE_SPLASH);
+    }
+}
+
+// ------------------------------------------------------------
+// PAGE: GET READY SPLASH SCREEN
+// ------------------------------------------------------------
+void DrawPageGetReady(GameState* state, int* menuSelection) {
+    ClearBackground((Color){5, 5, 10, 255});  // Dark blue background (similar to game over style)
+    
+    // Draw "GET READY" text with flashing effect
+    char getReadyText[] = "GET READY";
+    int textWidth = MeasureText(getReadyText, 80);
+    int centerX = VIRTUAL_WIDTH / 2;
+    int centerY = VIRTUAL_HEIGHT / 2;
+    
+    // Flash effect: alternate between visible and invisible (4 times per second)
+    bool flashOn = ((int)(GetTime() * 4) % 2 == 0);
+    
+    if (flashOn) {
+        // Draw with outline for visibility (same style as game over)
+        DrawText(getReadyText, centerX - textWidth/2 + 3, centerY - 40 + 3, 80, BLACK);
+        DrawText(getReadyText, centerX - textWidth/2, centerY - 40, 80, (Color){0, 255, 255, 255}); // Cyan color
+    }
+    
+    // Update timer and transition to lander when timer expires
+    float dt = GetFrameTime();
+    g_getReadyTimer -= dt;
+    if (g_getReadyTimer <= 0.0f) {
+        g_showGetReady = false;
+        *state = STATE_LANDER;
+        *menuSelection = 0;
     }
 }
 
@@ -3275,7 +3533,7 @@ typedef struct {
 
 DebrisChunk g_debris[MAX_DEBRIS];
 
-void SpawnDebris(Vector3 pos, int count) {
+void SpawnDebris(Vector3 pos, int count, float sourceRockScale, int asteroidProspect) {
     for (int k = 0; k < count; k++) {
         // Find empty slot
         int slot = -1;
@@ -3284,20 +3542,59 @@ void SpawnDebris(Vector3 pos, int count) {
         }
         if (slot != -1) {
             g_debris[slot].active = true;
-            g_debris[slot].position = pos;
-            g_debris[slot].velocity = (Vector3){
-                (float)GetRandomValue(-20, 20) / 10.0f,
-                (float)GetRandomValue(20, 50) / 10.0f, // Upwards burst
-                (float)GetRandomValue(-20, 20) / 10.0f
-            };
-            g_debris[slot].scale = (float)GetRandomValue(2, 5) / 10.0f; // 0.2 - 0.5 size
             
-            // Random colors for debris (grey, coral, white, cyan traces)
-            int colType = GetRandomValue(0, 3);
-            if (colType == 0) g_debris[slot].color = GRAY;
-            else if (colType == 1) g_debris[slot].color = (Color){255, 127, 80, 255}; // Coral
-            else if (colType == 2) g_debris[slot].color = (Color){200, 200, 200, 255}; // White-ish
-            else g_debris[slot].color = (Color){0, 200, 200, 255}; // Cyan traces
+            // Add random offset to position for explosion spread
+            float spreadRadius = sourceRockScale * 0.5f;
+            g_debris[slot].position = (Vector3){
+                pos.x + ((float)GetRandomValue(-100, 100) / 100.0f) * spreadRadius,
+                pos.y + ((float)GetRandomValue(-100, 100) / 100.0f) * spreadRadius,
+                pos.z + ((float)GetRandomValue(-100, 100) / 100.0f) * spreadRadius
+            };
+            
+            // Explosive velocity - faster and more random
+            g_debris[slot].velocity = (Vector3){
+                (float)GetRandomValue(-50, 50) / 10.0f,
+                (float)GetRandomValue(30, 80) / 10.0f, // Upwards burst
+                (float)GetRandomValue(-50, 50) / 10.0f
+            };
+            
+            // Debris size: always smaller than source rock, varies more
+            // Source rock scale is typically 0.5 to 3.0, so debris should be 0.05 to 0.3
+            float maxDebrisScale = sourceRockScale * 0.1f; // Max 10% of source size
+            if (maxDebrisScale < 0.05f) maxDebrisScale = 0.05f; // Minimum size
+            if (maxDebrisScale > 0.3f) maxDebrisScale = 0.3f; // Maximum size
+            float minDebrisScale = maxDebrisScale * 0.2f; // 20% of max for variety
+            g_debris[slot].scale = minDebrisScale + ((float)GetRandomValue(0, 1000) / 1000.0f) * (maxDebrisScale - minDebrisScale);
+            
+            // Random colors for debris - only colored ones (not gray) are collectible
+            // Gray probability is inversely related to asteroid prosperity
+            // Higher prosperity (70%) = lower gray chance (10%)
+            // Lower prosperity (10%) = higher gray chance (50%)
+            // Map prosperity (10-70) to gray probability (50%-10%)
+            float prospectFactor = (float)asteroidProspect / 100.0f; // 0.1 to 0.7
+            float grayProbability = 0.5f - (prospectFactor - 0.1f) * (0.4f / 0.6f); // 0.5 to 0.1
+            if (grayProbability < 0.1f) grayProbability = 0.1f;
+            if (grayProbability > 0.5f) grayProbability = 0.5f;
+            
+            // Roll for gray vs colored debris
+            float roll = (float)GetRandomValue(0, 99) / 100.0f;
+            int colType;
+            if (roll < grayProbability) {
+                colType = 0; // Gray - not collectible
+            } else {
+                // Colored debris (coral, white, cyan)
+                colType = GetRandomValue(1, 3);
+            }
+            
+            if (colType == 0) {
+                g_debris[slot].color = GRAY; // Gray - not collectible
+            } else if (colType == 1) {
+                g_debris[slot].color = (Color){255, 127, 80, 255}; // Coral - collectible
+            } else if (colType == 2) {
+                g_debris[slot].color = (Color){200, 200, 200, 255}; // White-ish - collectible
+            } else {
+                g_debris[slot].color = (Color){0, 200, 200, 255}; // Cyan traces - collectible
+            }
         }
     }
 }
@@ -3308,7 +3605,16 @@ void UpdateRocksAndDebris(float dt, Vector3 shipPos) {
         if (!g_debris[i].active) continue;
         
         // Gravity
-        g_debris[i].velocity.y += SHIP_GRAVITY * dt; // Gravity is negative
+        // Calculate dynamic gravity based on asteroid gravity (matching ship logic but heavier)
+        float asteroidGravityFactor = (float)g_selectedAsteroidGravity / 100.0f;
+        float minGravity = -6.0f;
+        float maxGravity = -18.0f;
+        float asteroidGravity = Lerp(minGravity, maxGravity, asteroidGravityFactor);
+        
+        // Debris is "heavy" - apply 2.0x multiplier to make it fall quickly
+        float debrisGravity = asteroidGravity * 2.0f;
+        
+        g_debris[i].velocity.y += debrisGravity * dt;
         
         // Update Position
         g_debris[i].position = Vector3Add(g_debris[i].position, Vector3Scale(g_debris[i].velocity, dt));
@@ -3322,21 +3628,27 @@ void UpdateRocksAndDebris(float dt, Vector3 shipPos) {
             g_debris[i].velocity.z *= 0.8f;
         }
         
-        // Collector Vacuum Logic
+        // Collector Vacuum Logic - only attracts colored debris (not gray)
         if (G_Player.hasCollector && G_Player.cargoFilled < 25) {
-            float dist = Vector3Distance(g_debris[i].position, shipPos);
-            if (dist < 20.0f) { // Vacuum Range
-                Vector3 dir = Vector3Normalize(Vector3Subtract(shipPos, g_debris[i].position));
-                float speed = 30.0f * (1.0f - dist/20.0f) + 10.0f; // Faster when closer
-                
-                // Move towards ship
-                g_debris[i].position = Vector3Add(g_debris[i].position, Vector3Scale(dir, speed * dt));
-                
-                // Collection
-                if (dist < 3.0f) { // Close enough to collect
-                    g_debris[i].active = false;
-                    G_Player.cargoFilled++;
-                    // Spawn simple spark or effect?
+            // Check if debris is colored (not gray) - only colored debris is collectible
+            Color debrisColor = g_debris[i].color;
+            bool isColored = !(debrisColor.r == 128 && debrisColor.g == 128 && debrisColor.b == 128); // Not GRAY
+            
+            if (isColored) {
+                float dist = Vector3Distance(g_debris[i].position, shipPos);
+                if (dist < 20.0f) { // Vacuum Range
+                    Vector3 dir = Vector3Normalize(Vector3Subtract(shipPos, g_debris[i].position));
+                    float speed = 30.0f * (1.0f - dist/20.0f) + 10.0f; // Faster when closer
+                    
+                    // Move towards ship
+                    g_debris[i].position = Vector3Add(g_debris[i].position, Vector3Scale(dir, speed * dt));
+                    
+                    // Collection
+                    if (dist < 3.0f) { // Close enough to collect
+                        g_debris[i].active = false;
+                        G_Player.cargoFilled++;
+                        // Spawn simple spark or effect?
+                    }
                 }
             }
         }
@@ -3351,28 +3663,32 @@ void UpdateLaserLogic(float dt, Vector3 shipPos, Vector3 shipDir) {
             G_Player.laserOverheated = false;
             G_Player.laserHeat = 0;
         }
-    } else if (G_Player.laserHeat > 0) {
-        G_Player.laserHeat -= 20.0f * dt; // Cool down rate
+    } else if (G_Player.laserHeat > 0 && !CustomIsKeyDown(KEY_SPACE)) {
+        // Cool down when not firing: 5 seconds to cool from 100 to 0
+        G_Player.laserHeat -= (100.0f / 5.0f) * dt; // 20.0f per second
         if (G_Player.laserHeat < 0) G_Player.laserHeat = 0;
     }
 
-    if (CustomIsKeyPressed(KEY_SPACE) && G_Player.hasLaser && !G_Player.laserOverheated) {
-        // Heat up
-        G_Player.laserHeat += 25.0f * dt; // Heats up in ~4 seconds
+    // Continuous beam while space is held (not just on key press)
+    if (CustomIsKeyDown(KEY_SPACE) && G_Player.hasLaser && !G_Player.laserOverheated) {
+        // Heat up: 3 seconds to reach max heat (100)
+        G_Player.laserHeat += (100.0f / 3.0f) * dt; // ~33.33 per second
         if (G_Player.laserHeat >= G_Player.maxLaserHeat) {
             G_Player.laserOverheated = true;
-            G_Player.laserCooldown = 3.0f; // 3 seconds penalty
+            G_Player.laserCooldown = 5.0f; // 5 seconds cooldown
+            G_Player.laserHeat = G_Player.maxLaserHeat; // Clamp to max
         }
         
         // Raycast Setup
-        // Origin: Just in front of thrusters (assuming shipPos is center/bottom)
-        // Adjust origin to be slightly below center and forward
-        Vector3 laserOrigin = Vector3Add(shipPos, Vector3Scale(shipDir, 2.0f)); 
-        laserOrigin.y -= 0.5f; 
+        // Origin: Just a few units in front of the ship's nose (not center)
+        // Move forward by 3.5 units (just ahead of the nose assuming center is 0,0,0)
+        Vector3 laserOrigin = Vector3Add(shipPos, Vector3Scale(shipDir, 3.5f)); 
+        // Adjust Y slightly down to align with "belly" or weapon mount, but keep it high enough to see
+        laserOrigin.y -= 0.2f; 
         
         // Ray Direction is shipDir
         Vector3 rayDir = Vector3Normalize(shipDir);
-        float maxRange = 150.0f;
+        float maxRange = (float)RENDER_DISTANCE; // Limit range to render distance
         Vector3 laserEnd = Vector3Add(laserOrigin, Vector3Scale(rayDir, maxRange));
         
         // Check Collision with ROCKS (Using existing G_Rocks)
@@ -3381,6 +3697,9 @@ void UpdateLaserLogic(float dt, Vector3 shipPos, Vector3 shipDir) {
         
         for (int i = 0; i < NUM_ROCKS; i++) {
             if (!G_Rocks[i].active) continue;
+            
+            // Check if rock is within render distance (optimization)
+            if (Vector3Distance(G_Rocks[i].position, shipPos) > maxRange) continue;
             
             // Rock radius approximation
             float radius = G_Rocks[i].scale * 0.5f;
@@ -3427,13 +3746,38 @@ void UpdateLaserLogic(float dt, Vector3 shipPos, Vector3 shipDir) {
 
         // Draw Laser
         Vector3 hitPoint = Vector3Add(laserOrigin, Vector3Scale(rayDir, closestDist));
-        DrawLine3D(laserOrigin, hitPoint, (Color){0, 255, 255, 255}); // Cyan Core
-        DrawLine3D(laserOrigin, hitPoint, (Color){0, 255, 255, 100}); // Cyan Bloom
+        
+        // Draw Laser (Thinner: 75% of previous size, Continuous Beam Visual)
+        rlDrawRenderBatchActive(); // Flush batch
+        BeginBlendMode(BLEND_ADDITIVE);
+        
+        // Outer Glow (Wide, very transparent cyan)
+        // Was 0.4f -> Now 0.3f
+        DrawCylinderEx(laserOrigin, hitPoint, 0.3f, 0.3f, 8, (Color){0, 255, 255, 40});
+        
+        // Inner Glow (Thicker cyan)
+        // Was 0.15f -> Now 0.11f
+        DrawCylinderEx(laserOrigin, hitPoint, 0.11f, 0.11f, 8, (Color){0, 255, 255, 180});
+        
+        // Core (White hot center)
+        // Was 0.05f -> Now 0.04f
+        DrawCylinderEx(laserOrigin, hitPoint, 0.04f, 0.04f, 6, (Color){255, 255, 255, 255});
+        
+        EndBlendMode();
         
         // Hit Logic
         if (hitRockIdx != -1) {
-            // Spawn debris (3-5 chunks)
-            SpawnDebris(G_Rocks[hitRockIdx].position, GetRandomValue(3, 5));
+            // Spawn massive debris explosion: 200-500 pieces based on rock size
+            // Rock scale is typically 0.5 to 3.0, map to 200-500 pieces
+            float rockScale = G_Rocks[hitRockIdx].scale;
+            int minPieces = 200;
+            int maxPieces = 500;
+            // Larger rocks create more debris
+            int pieceCount = minPieces + (int)((rockScale / 3.0f) * (maxPieces - minPieces));
+            if (pieceCount > maxPieces) pieceCount = maxPieces;
+            if (pieceCount < minPieces) pieceCount = minPieces;
+            
+            SpawnDebris(G_Rocks[hitRockIdx].position, pieceCount, rockScale, g_selectedAsteroidProspect);
             // Destroy rock
             G_Rocks[hitRockIdx].active = false;
             
@@ -3446,6 +3790,327 @@ void UpdateLaserLogic(float dt, Vector3 shipPos, Vector3 shipDir) {
             g_debris[hitDebrisIdx].active = false;
              Vector3 normal = {0, 1, 0}; 
              SpawnCollisionParticles(hitPoint, normal);
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// NAVIGATION SCREEN VARIABLES
+// ------------------------------------------------------------
+float g_navRotation = 0.0f;
+bool g_navModelsLoaded = false;
+Model g_navTorusA = {0};
+Model g_navIcoB = {0};
+Model g_navTorusC = {0};
+bool g_showNavModal = false;
+int g_navTarget = 0; // 0=None, 1=A, 2=B, 3=C
+int g_navSelection = 0; // 0=Engage, 1=Exit
+
+// ------------------------------------------------------------
+// RENDER: NAVIGATION SCREEN (3 destinations in triangle)
+// ------------------------------------------------------------
+void RenderNavScreen() {
+    // Initialize render texture if needed
+    if (!g_navViewportInitialized) {
+        g_navViewport = LoadRenderTexture(RENDER_WIDTH, RENDER_HEIGHT);
+        g_navViewportInitialized = true;
+    }
+    
+    // Update rotation
+    float dt = GetFrameTime();
+    g_navRotation += 20.0f * dt;
+    if (g_navRotation > 360) g_navRotation -= 360;
+    
+    // Load models if needed - use larger sizes to match depot home viewport
+    if (!g_navModelsLoaded) {
+        // Use GenFlatShadedTorus for better appearance (matching station viewport)
+        Mesh meshA = GenFlatShadedTorus(12.0f, 3.0f, 24, 16);  // Large torus for Depot
+        g_navTorusA = LoadModelFromMesh(meshA);
+        
+        Mesh meshB = GenFlatShadedIcosahedron(6.0f);  // Large icosahedron for Hirohito Station
+        g_navIcoB = LoadModelFromMesh(meshB);
+        
+        Mesh meshC = GenFlatShadedTorus(12.0f, 3.0f, 24, 16);  // Large torus for Nagako's Halo
+        g_navTorusC = LoadModelFromMesh(meshC);
+        
+        g_navModelsLoaded = true;
+    }
+    
+    // Render to texture
+    BeginTextureMode(g_navViewport);
+    ClearBackground(BLACK);
+    
+    // Simple Starfield (moving towards camera)
+    static float starZ[200];
+    static float starX[200];
+    static float starY[200];
+    static bool starsInit = false;
+    
+    if (!starsInit) {
+        for(int i=0; i<200; i++) {
+            starX[i] = (float)GetRandomValue(-RENDER_WIDTH, RENDER_WIDTH);
+            starY[i] = (float)GetRandomValue(-RENDER_HEIGHT, RENDER_HEIGHT);
+            starZ[i] = (float)GetRandomValue(1, 100) / 10.0f; // 0.1 to 10.0 depth
+        }
+        starsInit = true;
+    }
+    
+    // Update and Draw Stars
+    for(int i=0; i<200; i++) {
+        // Move star towards camera (decrease Z)
+        starZ[i] -= dt * 2.0f; // Speed
+        if (starZ[i] <= 0.1f) {
+            starZ[i] = 10.0f; // Reset to back
+            starX[i] = (float)GetRandomValue(-RENDER_WIDTH, RENDER_WIDTH);
+            starY[i] = (float)GetRandomValue(-RENDER_HEIGHT, RENDER_HEIGHT);
+        }
+        
+        // Project to screen (Perspective)
+        float invZ = 1.0f / starZ[i];
+        int sx = (int)(RENDER_WIDTH/2 + starX[i] * invZ);
+        int sy = (int)(RENDER_HEIGHT/2 + starY[i] * invZ);
+        
+        if (sx >= 0 && sx < RENDER_WIDTH && sy >= 0 && sy < RENDER_HEIGHT) {
+            float brightness = 1.0f - (starZ[i] / 10.0f);
+            Color starCol = (Color){255, 255, 255, (unsigned char)(brightness * 255)};
+            DrawPixel(sx, sy, starCol);
+        }
+    }
+    
+    // Setup camera - looking down slightly upon 3D objects
+    Camera3D navCamera = {0};
+    navCamera.position = (Vector3){0, 3, 15};  // Camera slightly above, looking down
+    navCamera.target = (Vector3){0, -1, 0};   // Target slightly below center
+    navCamera.up = (Vector3){0, 1, 0};
+    navCamera.fovy = 45.0f;
+    navCamera.projection = CAMERA_PERSPECTIVE;
+    
+    BeginMode3D(navCamera);
+    rlDisableBackfaceCulling();
+    
+    // Apply lighting shader (like depot home torus)
+    static Shader navShader = {0};
+    static bool navShaderLoaded = false;
+    static int navLocViewPos = -1;
+    static int navLocAmbient = -1;
+    static int navLocLightPos[5] = {-1};
+    static int navLocLightColor[5] = {-1};
+    
+    if (!navShaderLoaded) {
+        navShader = LoadShader("lighting.vs", "lighting.fs");
+        if (navShader.id == 0) {
+            navShader = LoadShader("Data/games/AstroMiner/lighting.vs", "Data/games/AstroMiner/lighting.fs");
+        }
+        if (navShader.id > 0) {
+            navLocViewPos = GetShaderLocation(navShader, "viewPos");
+            navLocAmbient = GetShaderLocation(navShader, "ambientColor");
+            navLocLightPos[0] = GetShaderLocation(navShader, "lightPos");
+            navLocLightColor[0] = GetShaderLocation(navShader, "lightColor");
+            navLocLightPos[1] = GetShaderLocation(navShader, "lightPos2");
+            navLocLightColor[1] = GetShaderLocation(navShader, "lightColor2");
+            navLocLightPos[2] = GetShaderLocation(navShader, "lightPos3");
+            navLocLightColor[2] = GetShaderLocation(navShader, "lightColor3");
+            navLocLightPos[3] = GetShaderLocation(navShader, "lightPos4");
+            navLocLightColor[3] = GetShaderLocation(navShader, "lightColor4");
+            navLocLightPos[4] = GetShaderLocation(navShader, "lightPos5");
+            navLocLightColor[4] = GetShaderLocation(navShader, "lightColor5");
+            
+            // Set up lighting (same as station viewport)
+            float ambient[3] = { 0.1f, 0.1f, 0.1f };
+            SetShaderValue(navShader, navLocAmbient, ambient, SHADER_UNIFORM_VEC3);
+            
+            float lightColor[3] = { 0.8f, 0.8f, 0.8f };
+            Vector3 lightPos = { 0.0f, 50.0f, 0.0f };
+            SetShaderValue(navShader, navLocLightColor[0], lightColor, SHADER_UNIFORM_VEC3);
+            SetShaderValue(navShader, navLocLightPos[0], &lightPos, SHADER_UNIFORM_VEC3);
+            
+            float lightColor2[3] = { 0.4f, 0.4f, 0.4f };
+            Vector3 lightPos2 = { -40.0f, 0.0f, 0.0f };
+            SetShaderValue(navShader, navLocLightColor[1], lightColor2, SHADER_UNIFORM_VEC3);
+            SetShaderValue(navShader, navLocLightPos[1], &lightPos2, SHADER_UNIFORM_VEC3);
+            
+            float lightColor3[3] = { 1.0f, 1.0f, 1.0f };
+            Vector3 lightPos3 = { -40.0f, 40.0f, 20.0f };
+            SetShaderValue(navShader, navLocLightColor[2], lightColor3, SHADER_UNIFORM_VEC3);
+            SetShaderValue(navShader, navLocLightPos[2], &lightPos3, SHADER_UNIFORM_VEC3);
+            
+            float lightColor4[3] = { 0.8f, 0.9f, 1.0f };
+            Vector3 lightPos4 = { 0.0f, 100.0f, 0.0f };
+            SetShaderValue(navShader, navLocLightColor[3], lightColor4, SHADER_UNIFORM_VEC3);
+            SetShaderValue(navShader, navLocLightPos[3], &lightPos4, SHADER_UNIFORM_VEC3);
+            
+            float lightColor5[3] = { 0.53f, 0.81f, 0.92f };
+            Vector3 lightPos5 = navCamera.position;
+            SetShaderValue(navShader, navLocLightColor[4], lightColor5, SHADER_UNIFORM_VEC3);
+            SetShaderValue(navShader, navLocLightPos[4], &lightPos5, SHADER_UNIFORM_VEC3);
+            
+            // Apply shader to models
+            g_navTorusA.materials[0].shader = navShader;
+            g_navIcoB.materials[0].shader = navShader;
+            g_navTorusC.materials[0].shader = navShader;
+        }
+        navShaderLoaded = true;
+    }
+    
+    // Update shader uniforms
+    if (navShader.id > 0 && navLocViewPos >= 0) {
+        float camPos[3] = { navCamera.position.x, navCamera.position.y, navCamera.position.z };
+        SetShaderValue(navShader, navLocViewPos, camPos, SHADER_UNIFORM_VEC3);
+        Vector3 lightPos5 = navCamera.position;
+        SetShaderValue(navShader, navLocLightPos[4], &lightPos5, SHADER_UNIFORM_VEC3);
+    }
+    
+    BeginShaderMode(navShader);
+    
+    // Rearranged layout: Hirohito Station (Icosahedron) in center, two toruses on either side
+    // Scale down models 60% smaller (0.15 * 0.4 = 0.06)
+    float shapeScale = 0.06f;  // 60% smaller than before (was 0.15f)
+    Vector3 rotationAxis = {0, 1, 0};
+    
+    // B: Icosahedron (Center) - HIROHITO STATION
+    Vector3 posB = {0.0f, 0.0f, 0.0f};
+    DrawModelEx(g_navIcoB, posB, rotationAxis, g_navRotation * DEG2RAD, 
+               (Vector3){shapeScale, shapeScale, shapeScale}, WHITE);
+    
+    // A: Torus (Left) - SHINJUKU DEPOT
+    Vector3 posA = {-8.0f, 0.0f, 0.0f};
+    DrawModelEx(g_navTorusA, posA, rotationAxis, g_navRotation * DEG2RAD, 
+               (Vector3){shapeScale, shapeScale, shapeScale}, WHITE);
+    
+    // C: Torus (Right) - NAGAKO'S HALO
+    Vector3 posC = {8.0f, 0.0f, 0.0f};
+    DrawModelEx(g_navTorusC, posC, rotationAxis, g_navRotation * DEG2RAD, 
+               (Vector3){shapeScale, shapeScale, shapeScale}, WHITE);
+    
+    EndShaderMode();
+    rlEnableBackfaceCulling();
+    EndMode3D();
+    
+    // Draw labels on render texture - positioned 5px below each 3D object
+    // Text is 5pt smaller (16 - 5 = 11)
+    int fontSize = 11;
+    int centerX = RENDER_WIDTH / 2;
+    int centerY = RENDER_HEIGHT / 2;
+    int textOffsetY = 5;  // 5px below 3D objects
+    
+    // Calculate approximate screen positions based on 3D layout
+    // Objects are at Y=0 in 3D, camera looking down, so they appear roughly at centerY
+    int objectScreenY = centerY + 20;  // Objects appear slightly below center
+    
+    // B: Center - HIROHITO STATION (Icosahedron)
+    const char* labelB = "HIROHITO STATION [B]";
+    int wB = MeasureText(labelB, fontSize);
+    int textY_B = objectScreenY + textOffsetY;
+    // Ensure text doesn't go off screen
+    int textX_B = centerX - wB/2;
+    if (textX_B < 0) textX_B = 0;
+    if (textX_B + wB > RENDER_WIDTH) textX_B = RENDER_WIDTH - wB;
+    DrawText(labelB, textX_B, textY_B, fontSize, WHITE);
+    const char* fuelB = "FUEL REQ: 80";
+    int wFuelB = MeasureText(fuelB, fontSize);
+    Color fuelColB = (G_Player.fuel >= 80) ? GREEN : RED;
+    int fuelX_B = centerX - wFuelB/2;
+    if (fuelX_B < 0) fuelX_B = 0;
+    if (fuelX_B + wFuelB > RENDER_WIDTH) fuelX_B = RENDER_WIDTH - wFuelB;
+    DrawText(fuelB, fuelX_B, textY_B + fontSize + 2, fontSize, fuelColB);
+    
+    // A: Left - SHINJUKU DEPOT (Torus)
+    const char* labelA = "SHINJUKU DEPOT [A]";
+    int fuelReqA = 20;
+    int wA = MeasureText(labelA, fontSize);
+    int textX_A = (int)(RENDER_WIDTH * 0.25f);  // Left side
+    int textY_A = objectScreenY + textOffsetY;
+    // Ensure text doesn't go off screen
+    if (textX_A - wA/2 < 0) textX_A = wA/2;
+    if (textX_A + wA/2 > RENDER_WIDTH) textX_A = RENDER_WIDTH - wA/2;
+    DrawText(labelA, textX_A - wA/2, textY_A, fontSize, (Color){0, 255, 255, 255});
+    char fuelA[32];
+    snprintf(fuelA, sizeof(fuelA), "FUEL REQ: %d", fuelReqA);
+    int wFuelA = MeasureText(fuelA, fontSize);
+    Color fuelColA = (G_Player.fuel >= fuelReqA) ? GREEN : RED;
+    int fuelX_A = textX_A - wFuelA/2;
+    if (fuelX_A < 0) fuelX_A = 0;
+    if (fuelX_A + wFuelA > RENDER_WIDTH) fuelX_A = RENDER_WIDTH - wFuelA;
+    DrawText(fuelA, fuelX_A, textY_A + fontSize + 2, fontSize, fuelColA);
+    
+    // C: Right - NAGAKO'S HALO (Torus)
+    const char* labelC = "NAGAKO'S HALO [C]";
+    int wC = MeasureText(labelC, fontSize);
+    int textX_C = (int)(RENDER_WIDTH * 0.75f);  // Right side
+    int textY_C = objectScreenY + textOffsetY;
+    // Ensure text doesn't go off screen
+    if (textX_C - wC/2 < 0) textX_C = wC/2;
+    if (textX_C + wC/2 > RENDER_WIDTH) textX_C = RENDER_WIDTH - wC/2;
+    DrawText(labelC, textX_C - wC/2, textY_C, fontSize, MAGENTA);
+    const char* fuelC = "FUEL REQ: 100";
+    int wFuelC = MeasureText(fuelC, fontSize);
+    Color fuelColC = (G_Player.fuel >= 100) ? GREEN : RED;
+    int fuelX_C = textX_C - wFuelC/2;
+    if (fuelX_C < 0) fuelX_C = 0;
+    if (fuelX_C + wFuelC > RENDER_WIDTH) fuelX_C = RENDER_WIDTH - wFuelC;
+    DrawText(fuelC, fuelX_C, textY_C + fontSize + 2, fontSize, fuelColC);
+    
+    EndTextureMode();
+}
+
+void DrawNavScreen(GameState* state, int* selection) {
+    // Draw background from viewport texture
+    Texture2D viewTex = g_navViewport.texture;
+    Rectangle srcRect = { 0, 0, (float)viewTex.width, (float)-viewTex.height }; // Flip Y
+    Rectangle destRect = { 0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT }; // Full virtual screen
+    DrawTexturePro(viewTex, srcRect, destRect, (Vector2){0,0}, 0.0f, WHITE);
+    
+    // Input handling
+    if (!g_showNavModal) {
+        if (CustomIsKeyPressed(KEY_A)) { g_navTarget = 1; g_showNavModal = true; g_navSelection = 0; }
+        if (CustomIsKeyPressed(KEY_B)) { g_navTarget = 2; g_showNavModal = true; g_navSelection = 0; }
+        if (CustomIsKeyPressed(KEY_C)) { g_navTarget = 3; g_showNavModal = true; g_navSelection = 0; }
+        if (CustomIsKeyPressed(KEY_ESCAPE)) { ResetState(state, selection, STATE_LANDER); }
+    } else {
+        // MODAL
+        DrawRectangle(300, 200, 600, 300, (Color){10, 10, 20, 240});
+        DrawRectangleLines(300, 200, 600, 300, WHITE);
+        
+        const char* targetName = (g_navTarget==1)?"SHINJUKU DEPOT":(g_navTarget==2)?"HIROHITO STATION":"NAGAKO'S HALO";
+        int req = (g_navTarget==1)?20:(g_navTarget==2)?80:100;
+        bool canGo = G_Player.fuel >= req;
+        
+        DrawText(TextFormat("DESTINATION: %s", targetName), 350, 250, 24, WHITE);
+        DrawText(TextFormat("FUEL REQUIRED: %d", req), 350, 290, 20, canGo?GREEN:RED);
+        DrawText(TextFormat("CURRENT FUEL: %.1f", G_Player.fuel), 350, 320, 20, WHITE);
+        
+        if (!canGo) DrawText("INSUFFICIENT FUEL!", 450, 360, 24, RED);
+        
+        // Buttons
+        Color btnCol1 = (g_navSelection==0)?WHITE:GRAY;
+        Color btnCol2 = (g_navSelection==1)?WHITE:GRAY;
+        
+        if (canGo) {
+            DrawText("> ENGAGE <", 400, 420, 20, btnCol1);
+        } else {
+            DrawText("  ENGAGE  ", 400, 420, 20, DARKGRAY);
+        }
+        DrawText("> EXIT <", 700, 420, 20, btnCol2);
+        
+        if (CustomIsKeyPressed(KEY_LEFT) || CustomIsKeyPressed(KEY_RIGHT)) g_navSelection = !g_navSelection;
+        
+        if (CustomIsKeyPressed(KEY_ENTER)) {
+            if (g_navSelection == 1) { // Exit
+                g_showNavModal = false;
+            } else if (canGo) {
+                G_Player.fuel -= req;
+                if (g_navTarget == 1) {
+                    g_currentLocation = 0; // Depot
+                    ResetState(state, selection, STATE_DEPOT_HOME);
+                } else if (g_navTarget == 2) {
+                    g_currentLocation = 1; // Station
+                    ResetState(state, selection, STATE_STATION_HOME); 
+                } else if (g_navTarget == 3) {
+                    g_currentLocation = 2; // Halo
+                    ResetState(state, selection, STATE_HALO_HOME); 
+                }
+                g_showNavModal = false;
+            }
         }
     }
 }
@@ -3482,7 +4147,16 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
     stationViewport.Update(dt);
     
     // Render Station Viewport (Offscreen) to low-res target
-    stationViewport.Render(STATION_ALPHA);
+    // Use correct station type based on current location
+    StationType activeStationType = STATION_ALPHA; // Default (Depot)
+    if (g_currentState == STATE_STATION_HOME) {
+        activeStationType = STATION_BETA; // Icosahedron for Hirohito
+    } else if (g_currentState == STATE_HALO_HOME) {
+        activeStationType = STATION_GAMMA; // Angled Torus for Nagako
+    } else if (g_currentState == STATE_DEPOT_HOME) {
+        activeStationType = STATION_ALPHA; // Torus for Depot
+    }
+    stationViewport.Render(activeStationType);
     
     // Render Asteroid Prospect Viewport (Offscreen) if active
     // This matches the method used for the station viewport to prevent zoom issues
@@ -3493,6 +4167,11 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
     // Render shipyard shop 3D items
     if (g_currentState == STATE_DEPOT_HOME && g_showShipyardShop && g_depotHomePage == 2) {
         RenderShipyardShop();
+    }
+    
+    // Render navigation screen viewport
+    if (g_currentState == STATE_NAV_SCREEN) {
+        RenderNavScreen();
     }
     
     // Start rendering to framebuffer (low resolution)
@@ -3514,6 +4193,17 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                g_currentState, STATE_SPLASH, STATE_DEPOT_HOME);
     }
     
+    // Check for GET READY splash screen (shown before transitioning to lander)
+    if (g_showGetReady) {
+        EnableCursor();
+        DrawPageGetReady(&g_currentState, &g_menuSelection);
+        DrawScanlines();
+        EndMode2D();
+        EndTextureMode();
+        ClearInputFrame();
+        return; // Early return, don't process other states
+    }
+    
     switch(g_currentState) {
         case STATE_SPLASH: {
             static int splash_state_count = 0;
@@ -3530,6 +4220,18 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
         case STATE_DEPOT_HOME:
             EnableCursor();
             DrawPageDepotHome(&g_currentState, &g_menuSelection, &g_shipPos, &g_shipVel);
+            DrawScanlines();
+            break;
+
+        case STATE_STATION_HOME:
+            EnableCursor();
+            DrawPageStationHome(&g_currentState, &g_menuSelection, &g_shipPos, &g_shipVel);
+            DrawScanlines();
+            break;
+
+        case STATE_HALO_HOME:
+            EnableCursor();
+            DrawPageHaloHome(&g_currentState, &g_menuSelection, &g_shipPos, &g_shipVel);
             DrawScanlines();
             break;
 
@@ -3578,6 +4280,12 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
         case STATE_GAME_OVER:
             EnableCursor();
             DrawPageGameOver(&g_currentState, &g_menuSelection);
+            DrawScanlines();
+            break;
+
+        case STATE_NAV_SCREEN:
+            EnableCursor();
+            DrawNavScreen(&g_currentState, &g_menuSelection);
             DrawScanlines();
             break;
 
@@ -3634,6 +4342,14 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             // --- Physics & Systems ---
             UpdateRocksAndDebris(dt, g_shipPos);
 
+            // Check if ship is inside navigation target cylinder (zero gravity zone)
+            Vector3 targetCylPos = {0.0f, 0.0f, 0.0f};
+            float targetCylRadius = 5.0f; // 50% smaller (was 10.0f)
+            float targetCylTerrainH = GetTerrainHeight(0.0f, 0.0f);
+            float targetCylTop = targetCylTerrainH + 300.0f;
+            float distToCylXZ = sqrtf(powf(g_shipPos.x - targetCylPos.x, 2) + powf(g_shipPos.z - targetCylPos.z, 2));
+            bool insideTargetCyl = (distToCylXZ < targetCylRadius && g_shipPos.y >= targetCylTerrainH && g_shipPos.y <= targetCylTop);
+            
             // Calculate dynamic gravity based on asteroid gravity + cargo effect
             float asteroidGravityFactor = (float)g_selectedAsteroidGravity / 100.0f;
             float cargoGravityFactor = (float)G_Player.cargoFilled / 25.0f;  // Max 25
@@ -3645,10 +4361,31 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             float cargoGravityBonus = cargoGravityFactor * -4.0f; 
             float dynamicGravity = asteroidGravity + cargoGravityBonus;
             
+            // Zero gravity inside target cylinder + auto-thrust and stabilization
+            bool autoThrusting = false;
+            if (insideTargetCyl) {
+                dynamicGravity = 0.0f;
+                // Auto-thrust: apply upward thrust automatically
+                autoThrusting = true;
+                // Stabilize ship: reduce pitch, roll, and yaw rotation
+                g_shipPitch = Lerp(g_shipPitch, 0.0f, 3.0f * dt); // Stabilize pitch
+                g_shipRoll = Lerp(g_shipRoll, 0.0f, 3.0f * dt);   // Stabilize roll
+                // Reduce horizontal velocity to center in cylinder
+                g_shipVel.x = Lerp(g_shipVel.x, 0.0f, 2.0f * dt);
+                g_shipVel.z = Lerp(g_shipVel.z, 0.0f, 2.0f * dt);
+                
+                // Check if reached altitude 20 (relative to terrain) and switch to navigation screen
+                float altAboveTerrain = g_shipPos.y - targetCylTerrainH;
+                if (altAboveTerrain >= 20.0f) {
+                    ResetState(&g_currentState, &g_menuSelection, STATE_NAV_SCREEN);
+                }
+            }
+            
             g_shipVel.y += dynamicGravity * dt;
 
-            // Thrust Logic with Cargo Penalty
-            bool isThrusting = CustomIsMouseButtonDown(MOUSE_LEFT_BUTTON) || CustomIsKeyDown(KEY_W);
+            // Thrust Logic with Cargo Penalty (or auto-thrust if inside cylinder)
+            bool isThrusting = CustomIsMouseButtonDown(MOUSE_LEFT_BUTTON) || CustomIsKeyDown(KEY_W) || autoThrusting;
+            // Only allow thrusting if fuel is available
             if (isThrusting && G_Player.fuel > 0.0f && !explosionTriggered) {
                 // Apply thruster boost and cargo penalty (-5% per debris)
                 float cargoPenalty = G_Player.cargoFilled * 0.05f;
@@ -3660,8 +4397,13 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                 g_shipVel = Vector3Add(g_shipVel, Vector3Scale(shipUp, effectiveThrustPower * dt));
                 Vector3 engineNozzle = Vector3Add(g_shipPos, Vector3Scale(shipUp, -0.4f));
                 SpawnThrustParticles(engineNozzle, shipUp);
+                
+                // Consume fuel based on burn rate
                 G_Player.fuel -= SHIP_FUEL_BURN_RATE * dt;
-                if (G_Player.fuel < 0) G_Player.fuel = 0;
+                if (G_Player.fuel < 0.0f) G_Player.fuel = 0.0f;
+            } else if (isThrusting && G_Player.fuel <= 0.0f && !explosionTriggered) {
+                // Fuel depleted - no thrust available
+                // Visual/audio feedback could be added here
             }
             
             // Note: Laser logic moved to drawing phase for visuals, but input checked there too.
@@ -3678,31 +4420,47 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             g_shipVel = Vector3Scale(g_shipVel, SHIP_DRAG_FACTOR);
             Vector3 nextPos = Vector3Add(g_shipPos, Vector3Scale(g_shipVel, dt));
 
-            // --- Collision ---
+            // --- Terrain Collision ---
             float worldH = GetWorldHeight(nextPos.x, nextPos.z);
             float softCeiling = worldH + 12.0f;
             if (nextPos.y > softCeiling) {
                  g_shipVel.y -= (nextPos.y - softCeiling) * 2.0f * dt;
                  nextPos = Vector3Add(g_shipPos, Vector3Scale(g_shipVel, dt));
             }
-            if (nextPos.y < worldH + 0.5f && !explosionTriggered) {
-                nextPos.y = worldH + 0.5f;
+            
+            // Always ensure ship is above terrain - prevent embedding
+            // Use a larger clearance to account for shadow and prevent getting stuck
+            float minTerrainHeight = worldH + 1.2f; // Increased clearance to prevent shadow/terrain sticking
+            if (nextPos.y < minTerrainHeight && !explosionTriggered) {
+                // Force ship above terrain immediately - use lerp to smooth but ensure it's always above
+                float targetY = minTerrainHeight;
+                if (nextPos.y < targetY - 0.1f) {
+                    // Ship is significantly below - snap it up immediately
+                    nextPos.y = targetY;
+                } else {
+                    // Ship is close - lerp it up smoothly
+                    nextPos.y = Lerp(nextPos.y, targetY, 10.0f * dt);
+                }
                 
                 bool isNewCollision = !wasColliding;
                 wasColliding = true;
                 
-                if (isNewCollision && G_Player.hull > 0) {
+                // Apply damage every frame while embedded in terrain
+                if (G_Player.hull > 0) {
                     float collisionVelocity = Vector3Length(g_shipVel);
                     float highVelocityThreshold = 15.0f;
                     
-                    Vector3 collisionNormal = {0, 1, 0};
-                    SpawnCollisionParticles(nextPos, collisionNormal);
-                    SpawnAsteroidDebris(nextPos);
+                    if (isNewCollision) {
+                        Vector3 collisionNormal = {0, 1, 0};
+                        SpawnCollisionParticles(nextPos, collisionNormal);
+                        SpawnAsteroidDebris(nextPos);
+                    }
                     
                     if (collisionVelocity > highVelocityThreshold) {
                         G_Player.hull = 0;
                     } else {
-                        float damageAmount = 1.0f * G_Player.hullResistance;
+                        // Continuous damage while stuck in terrain
+                        float damageAmount = 2.0f * G_Player.hullResistance * dt;
                         G_Player.hull -= damageAmount;
                         if (G_Player.hull < 0) G_Player.hull = 0;
                     }
@@ -3718,8 +4476,12 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                     }
                 }
                 
-                if (g_shipVel.y < 0) g_shipVel.y = 0;
-                g_shipVel = Vector3Scale(g_shipVel, 0.5f); 
+                // Strong upward push to prevent sticking - ensure minimum upward velocity
+                if (g_shipVel.y < 2.0f) g_shipVel.y = 2.0f; // Minimum upward velocity
+                g_shipVel.y += 5.0f * dt; // Add upward acceleration
+                // Don't dampen Y velocity as much - allow ship to escape
+                g_shipVel.x = Vector3Scale((Vector3){g_shipVel.x, 0, 0}, 0.7f).x;
+                g_shipVel.z = Vector3Scale((Vector3){0, 0, g_shipVel.z}, 0.7f).z;
             } else {
                 wasColliding = false;
             }
@@ -3738,50 +4500,67 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             }
             
             // --- Rock Collision ---
-            static bool wasCollidingWithRock = false;
+            // Always check and push ship out of rocks - prevent embedding
             float rockCollisionRadius = 0.8f;
+            bool hitAnyRock = false;
             for (int i = 0; i < NUM_ROCKS && G_Player.hull > 0 && !explosionTriggered; i++) {
                 if (!G_Rocks[i].active) continue; // Skip inactive rocks
+                
                 float rockRadius = G_Rocks[i].scale * 0.5f;
                 float distance = Vector3Distance(nextPos, G_Rocks[i].position);
+                float minDistance = rockCollisionRadius + rockRadius;
                 
-                if (distance < (rockCollisionRadius + rockRadius)) {
-                    bool isNewRockCollision = !wasCollidingWithRock;
-                    wasCollidingWithRock = true;
+                // If ship is inside or touching the rock, push it out and apply damage
+                if (distance < minDistance) {
+                    hitAnyRock = true;
                     
-                    if (isNewRockCollision) {
-                        float collisionVelocity = Vector3Length(g_shipVel);
-                        Vector3 rockToShip = Vector3Normalize(Vector3Subtract(nextPos, G_Rocks[i].position));
-                        SpawnCollisionParticles(nextPos, rockToShip);
-                        
-                        // Collision damage
-                         if (collisionVelocity > 15.0f) G_Player.hull = 0;
-                         else {
-                             G_Player.hull -= 1.0f * G_Player.hullResistance;
-                             if (G_Player.hull < 0) G_Player.hull = 0;
-                         }
-                        
-                        if (G_Player.hull <= 0 && !explosionTriggered) {
-                            explosionPos = nextPos;
-                            SpawnExplosionParticles(nextPos);
-                            explosionTriggered = true;
-                            frozenCameraPos = g_camera.position;
-                            cameraFrozen = true; // (height check omitted for brevity, using simple logic)
-                            break;
-                        }
-                        
-                        // Bounce
-                        Vector3 pushDir = Vector3Normalize(Vector3Subtract(nextPos, G_Rocks[i].position));
-                        nextPos = Vector3Add(G_Rocks[i].position, Vector3Scale(pushDir, rockCollisionRadius + rockRadius + 0.1f));
-                        g_shipVel = Vector3Scale(g_shipVel, 0.3f);
+                    // Calculate push direction (from rock center to ship)
+                    Vector3 pushDir;
+                    if (distance < 0.01f) {
+                        // Ship is exactly at rock center - use upward direction
+                        pushDir = (Vector3){0.0f, 1.0f, 0.0f};
+                    } else {
+                        pushDir = Vector3Normalize(Vector3Subtract(nextPos, G_Rocks[i].position));
                     }
-                    break;
+                    
+                    // Always push ship outside the rock with extra clearance to prevent re-embedding
+                    float pushDistance = minDistance + 0.5f; // Increased from 0.2f for better clearance
+                    nextPos = Vector3Add(G_Rocks[i].position, Vector3Scale(pushDir, pushDistance));
+                    
+                    // Apply damage every frame while colliding
+                    float collisionVelocity = Vector3Length(g_shipVel);
+                    if (collisionVelocity > 15.0f) {
+                        G_Player.hull = 0; // Instant destruction at high speed
+                    } else {
+                        // Continuous damage while embedded
+                        float damageAmount = 2.0f * G_Player.hullResistance * dt; // Damage per second
+                        G_Player.hull -= damageAmount;
+                        if (G_Player.hull < 0) G_Player.hull = 0;
+                    }
+                    
+                    // Spawn collision particles
+                    Vector3 negPushDir = Vector3Scale(pushDir, -1.0f);
+                    SpawnCollisionParticles(nextPos, negPushDir);
+                    
+                    // Strong bounce velocity - push ship away from rock
+                    float bounceStrength = 8.0f; // Increased from 5.0f for stronger push
+                    g_shipVel = Vector3Add(g_shipVel, Vector3Scale(pushDir, bounceStrength));
+                    // Less dampening to allow ship to escape
+                    g_shipVel = Vector3Scale(g_shipVel, 0.7f); // Increased from 0.5f
+                    
+                    // Check for destruction
+                    if (G_Player.hull <= 0 && !explosionTriggered) {
+                        explosionPos = nextPos;
+                        SpawnExplosionParticles(nextPos);
+                        explosionTriggered = true;
+                        frozenCameraPos = g_camera.position;
+                        float worldH = GetWorldHeight(frozenCameraPos.x, frozenCameraPos.z);
+                        if (frozenCameraPos.y < worldH + 10.0f) frozenCameraPos.y = worldH + 10.0f;
+                        cameraFrozen = true;
+                        break;
+                    }
                 }
             }
-            
-            // Check collision flag reset logic (simplified)
-            // ... (keep existing if robust, or simplify)
-            wasCollidingWithRock = false; // Reset per frame for simplicity in this replacement (or improve)
             
             if (nextPos.x > PROSPECT_PERIMETER) { nextPos.x = PROSPECT_PERIMETER; g_shipVel.x = 0; }
             if (nextPos.x < -PROSPECT_PERIMETER) { nextPos.x = -PROSPECT_PERIMETER; g_shipVel.x = 0; }
@@ -3838,6 +4617,23 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                     }
                 }
                 
+                // Navigation Target Marker (Red cylinder on terrain surface at 0,0,0)
+                // Only draw if within render distance (like other objects)
+                Vector3 targetPos = {0.0f, 0.0f, 0.0f};
+                if (fabs(g_shipPos.x - targetPos.x) < (float)RENDER_DISTANCE && fabs(g_shipPos.z - targetPos.z) < (float)RENDER_DISTANCE) {
+                    float targetTerrainH = GetTerrainHeight(0.0f, 0.0f);
+                    float targetHeight = 300.0f; // Tall cylinder
+                    float targetRadius = 5.0f; // 50% smaller (was 10.0f, originally 20.0f)
+                    Vector3 targetDrawPos = {0.0f, targetTerrainH, 0.0f};
+                    
+                    // Draw tall red cylinder (no wireframe)
+                    rlDrawRenderBatchActive();
+                    BeginBlendMode(BLEND_ALPHA);
+                    // 60% opacity = alpha 153 (255 * 0.6 = 153)
+                    DrawCylinder(targetDrawPos, targetRadius, targetRadius, targetHeight, 32, (Color){255, 0, 0, 153}); // Red, 60% transparent
+                    EndBlendMode();
+                }
+                
                 // Laser Visuals
                 UpdateLaserLogic(dt, g_shipPos, shipForward);
                 
@@ -3852,6 +4648,10 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             DrawFPS(10, 10);
             
             int screenH = VIRTUAL_HEIGHT;
+            
+            // Check if cargo is full (used for flashing effects)
+            bool cargoFull = (G_Player.cargoFilled >= 25);
+            bool cargoFlashOn = cargoFull && ((int)(GetTime() * 4) % 2 == 0); // Flash 4 times per second
             
             // Altitude Meter
             float alt = g_shipPos.y - GetTerrainHeight(g_shipPos.x, g_shipPos.z);
@@ -3886,25 +4686,155 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                 DrawRectangle(70 + (i * 25), screenH - 120, 20, 20, barCol);
             }
             
-            // Laser Heat Bar (if fitted)
+            // Laser Heat Bar (if fitted) - Make sure it's always visible
             if (G_Player.hasLaser) {
                  DrawText("LASER TEMP", 10, 100, 20, WHITE);
                  float heatPct = G_Player.laserHeat / G_Player.maxLaserHeat;
+                 if (heatPct > 1.0f) heatPct = 1.0f;
                  Color heatCol = G_Player.laserOverheated ? RED : ORANGE;
                  if (G_Player.laserOverheated && (int)(GetTime()*10)%2==0) heatCol = WHITE; 
                  
+                 // Background (always visible)
                  DrawRectangle(10, 130, 200, 20, DARKGRAY);
+                 // Fill bar
                  DrawRectangle(10, 130, (int)(200 * heatPct), 20, heatCol);
+                 // Border
                  DrawRectangleLines(10, 130, 200, 20, WHITE);
                  
+                 // Show heat percentage
+                 DrawText(TextFormat("%.0f%%", G_Player.laserHeat), 220, 130, 18, WHITE);
+                 
                  if (G_Player.laserOverheated) {
-                     DrawText("OVERHEAT", 220, 130, 20, RED);
+                     DrawText("OVERHEAT", 220, 150, 20, RED);
                  }
             }
             
             if (laserErrorDisplayTime > 0.0f) {
                 DrawText("ERROR: NO LASER", 10, 70, 20, RED);
             }
+            
+            // Mini Map (Bottom Right)
+            int mapSize = 150;
+            int mapX = VIRTUAL_WIDTH - mapSize - 10;
+            int mapY = VIRTUAL_HEIGHT - mapSize - 10;
+            
+            // Background
+            DrawRectangle(mapX, mapY, mapSize, mapSize, (Color){10, 10, 20, 200});
+            DrawRectangleLines(mapX, mapY, mapSize, mapSize, WHITE);
+            
+            // Map center (ship position - always centered, ship never moves on map)
+            int mapCenterX = mapX + mapSize / 2;
+            int mapCenterY = mapY + mapSize / 2;
+            
+            // Scale: PROSPECT_PERIMETER * 2 is the full map size, mapSize is the display size
+            float mapScale = (float)mapSize / (PROSPECT_PERIMETER * 2.0f);
+            
+            // Draw boundary square (teal/cyan) - moves relative to ship
+            // Boundary is at ±PROSPECT_PERIMETER from origin
+            // Convert boundary corners to map coordinates (relative to ship at center)
+            float boundarySize = PROSPECT_PERIMETER * 2.0f; // Full boundary size
+            float boundaryHalf = PROSPECT_PERIMETER;
+            
+            // Calculate boundary corners relative to ship position
+            // Top-left corner of boundary in world
+            float worldBoundTL_X = -boundaryHalf - g_shipPos.x;
+            float worldBoundTL_Z = -boundaryHalf - g_shipPos.z;
+            // Bottom-right corner of boundary in world
+            float worldBoundBR_X = boundaryHalf - g_shipPos.x;
+            float worldBoundBR_Z = boundaryHalf - g_shipPos.z;
+            
+            // Convert to map coordinates
+            // Note: X is negated so when ship moves left, world moves right on minimap
+            // Note: Z is negated because screen Y increases downward, but world Z forward should appear upward on minimap
+            Vector2 boundTL = {
+                mapCenterX - worldBoundTL_X * mapScale,  // Negate X for correct orientation
+                mapCenterY - worldBoundTL_Z * mapScale  // Negate Z for correct orientation
+            };
+            Vector2 boundBR = {
+                mapCenterX - worldBoundBR_X * mapScale,  // Negate X for correct orientation
+                mapCenterY - worldBoundBR_Z * mapScale  // Negate Z for correct orientation
+            };
+            
+            // Draw boundary square (clamp to map bounds)
+            float boundX = (boundTL.x < mapX) ? mapX : boundTL.x;
+            float boundY = (boundTL.y < mapY) ? mapY : boundTL.y;
+            float boundW = ((boundBR.x > mapX + mapSize) ? (mapX + mapSize) : boundBR.x) - boundX;
+            float boundH = ((boundBR.y > mapY + mapSize) ? (mapY + mapSize) : boundBR.y) - boundY;
+            
+            if (boundW > 0 && boundH > 0) {
+                DrawRectangleLines((int)boundX, (int)boundY, (int)boundW, (int)boundH, (Color){0, 255, 255, 200}); // Teal/Cyan
+            }
+            
+            // Draw exit tube (red circle) - cylinder is at (0, 0) in world XZ plane
+            // Always visible, moves relative to ship
+            // Calculate relative position: cylinder at (0, 0) in XZ, ship at (x, z)
+            float relX = 0.0f - g_shipPos.x;  // Relative X position
+            float relZ = 0.0f - g_shipPos.z;  // Relative Z position
+            // Map to screen: X is negated so when ship moves left, world moves right on minimap
+            // Z is negated so when ship moves forward, world moves backward on minimap
+            Vector2 tubeMapPos = {
+                mapCenterX - relX * mapScale,  // Negate X for correct orientation
+                mapCenterY - relZ * mapScale   // Negate Z for correct orientation
+            };
+            
+            // Check if cargo is full for flashing effect (use shared variable from HUD section)
+            Color tubeColor = cargoFlashOn ? (Color){255, 255, 255, 255} : RED; // White when flashing, red otherwise
+            
+            // Always draw exit cylinder (may be off-screen but we draw it anyway)
+            DrawCircle((int)tubeMapPos.x, (int)tubeMapPos.y, 8, tubeColor);
+            DrawCircleLines((int)tubeMapPos.x, (int)tubeMapPos.y, 8, WHITE);
+            
+            // Draw nearby rocks on minimap (optional - for reference)
+            for (int i = 0; i < NUM_ROCKS; i++) {
+                if (!G_Rocks[i].active) continue;
+                float rockRelX = G_Rocks[i].position.x - g_shipPos.x;
+                float rockRelZ = G_Rocks[i].position.z - g_shipPos.z;
+                // Only draw rocks within minimap view range
+                float dist = sqrtf(rockRelX * rockRelX + rockRelZ * rockRelZ);
+                if (dist < PROSPECT_PERIMETER) {
+                    Vector2 rockMapPos = {
+                        mapCenterX - rockRelX * mapScale,  // Negate X for correct orientation
+                        mapCenterY - rockRelZ * mapScale   // Negate Z for correct orientation
+                    };
+                    // Only draw if within minimap bounds
+                    if (rockMapPos.x >= mapX && rockMapPos.x <= mapX + mapSize &&
+                        rockMapPos.y >= mapY && rockMapPos.y <= mapY + mapSize) {
+                        DrawCircle((int)rockMapPos.x, (int)rockMapPos.y, 2, GRAY);
+                    }
+                }
+            }
+            
+            // Draw ship (blue triangle pointing forward) - ALWAYS at center, never moves
+            // Ship yaw: 0° = pointing in +Z direction (forward), which should point "up" on minimap
+            float shipAngle = g_shipYaw; // Already in degrees
+            
+            Vector2 shipTip = {(float)mapCenterX, (float)(mapCenterY - 6)};
+            Vector2 shipLeft = {(float)(mapCenterX - 4), (float)(mapCenterY + 4)};
+            Vector2 shipRight = {(float)(mapCenterX + 4), (float)(mapCenterY + 4)};
+            
+            // Rotate triangle based on ship yaw
+            float cosA = cosf(DEG2RAD * shipAngle);
+            float sinA = sinf(DEG2RAD * shipAngle);
+            
+            // Rotate points around center
+            Vector2 center = {(float)mapCenterX, (float)mapCenterY};
+            Vector2 tipRot, leftRot, rightRot;
+            float dx, dy;
+            
+            dx = shipTip.x - center.x; dy = shipTip.y - center.y;
+            tipRot.x = center.x + dx * cosA - dy * sinA;
+            tipRot.y = center.y + dx * sinA + dy * cosA;
+            
+            dx = shipLeft.x - center.x; dy = shipLeft.y - center.y;
+            leftRot.x = center.x + dx * cosA - dy * sinA;
+            leftRot.y = center.y + dx * sinA + dy * cosA;
+            
+            dx = shipRight.x - center.x; dy = shipRight.y - center.y;
+            rightRot.x = center.x + dx * cosA - dy * sinA;
+            rightRot.y = center.y + dx * sinA + dy * cosA;
+            
+            DrawTriangle(tipRot, leftRot, rightRot, BLUE);
+            DrawTriangleLines(tipRot, leftRot, rightRot, WHITE);
             
             DrawScanlines();
             break;
@@ -3956,6 +4886,10 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
     // Initialize asteroid viewport render texture
     g_asteroidViewport = LoadRenderTexture(RENDER_WIDTH, RENDER_HEIGHT);
     g_asteroidViewportInitialized = true;
+    
+    // Initialize navigation viewport render texture
+    g_navViewport = LoadRenderTexture(RENDER_WIDTH, RENDER_HEIGHT);
+    g_navViewportInitialized = true;
     
     // Initialize camera (position it near the ship's starting position)
     g_camera.up = (Vector3){0,1,0};
@@ -4102,6 +5036,36 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
         }
     }
     
+    // Load Station and Halo overlay textures
+    const char* overlayPaths[][3] = {
+        {"Hirohito_overlay.png", "Data/games/AstroMiner/Hirohito_overlay.png", "../../games/AstroMiner/Hirohito_overlay.png"},
+        {"Nagako_overlay.png", "Data/games/AstroMiner/Nagako_overlay.png", "../../games/AstroMiner/Nagako_overlay.png"}
+    };
+    
+    const char* overlayNames[] = {"Hirohito_overlay", "Nagako_overlay"};
+    Texture2D* overlayTextures[] = {&hirohitoOverlayTx, &nagakoOverlayTx};
+    
+    printf("[InitializeGame] Loading station/halo overlay textures...\n");
+    for (int i = 0; i < 2; i++) {
+        bool loaded = false;
+        for (int j = 0; j < 3; j++) {
+            printf("[InitializeGame] Trying to load %s from: %s\n", overlayNames[i], overlayPaths[i][j]);
+            *overlayTextures[i] = LoadTexture(overlayPaths[i][j]);
+            if (overlayTextures[i]->id > 0) {
+                printf("[InitializeGame] SUCCESS: Loaded overlay texture %d (%s) from: %s (size: %dx%d)\n", 
+                       i, overlayNames[i], overlayPaths[i][j], 
+                       overlayTextures[i]->width, overlayTextures[i]->height);
+                loaded = true;
+                break;
+            } else {
+                printf("[InitializeGame] Failed to load from: %s\n", overlayPaths[i][j]);
+            }
+        }
+        if (!loaded) {
+            printf("[InitializeGame] ERROR: Failed to load overlay texture %d (%s) from all paths!\n", i, overlayNames[i]);
+        }
+    }
+    
     // Load prospect page overlays (base + A-F variants) with multiple fallbacks
     const char* prospectPagePaths[][3] = {
         {"prospect_page.png", "Data/games/AstroMiner/prospect_page.png", "../../games/AstroMiner/prospect_page.png"},
@@ -4212,12 +5176,22 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
     // Initialize game state
     g_shipPos = (Vector3){0, 60, -PROSPECT_PERIMETER};
     g_shipVel = (Vector3){0, 0, 10};
+    
+    // Stabilize ship at launch start (reset pitch, roll, yaw, and horizontal velocity)
+    g_shipPitch = 0.0f;
+    g_shipRoll = 0.0f;
+    g_shipYaw = 0.0f;
+    g_shipVel.x = 0.0f;  // Zero horizontal X velocity
+    g_shipVel.z = 10.0f; // Keep forward Z velocity for initial movement
     g_shipPitch = 0.0f;
     g_shipRoll = 0.0f;
     g_shipYaw = 0.0f;
     g_yawDirection = 1;
     g_currentState = STATE_SPLASH;
     g_menuSelection = 0;
+    
+    // Ensure fuel is properly initialized
+    G_Player.fuel = G_Player.maxFuel;
     
     // Initialize splash screen state
     g_splashIndex = 0;
