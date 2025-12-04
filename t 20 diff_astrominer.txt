@@ -1,0 +1,346 @@
+[1mdiff --git a/Data/games/AstroMiner/astro_miner_main.cpp b/Data/games/AstroMiner/astro_miner_main.cpp[m
+[1mindex 32f54c5..0a49db0 100644[m
+[1m--- a/Data/games/AstroMiner/astro_miner_main.cpp[m
+[1m+++ b/Data/games/AstroMiner/astro_miner_main.cpp[m
+[36m@@ -19,9 +19,11 @@[m [munsigned char* g_frame_buffer_data = NULL;[m
+ int g_frame_buffer_size = 0;[m
+ bool g_game_initialized = false;[m
+ [m
+[31m-// Optimization: Render at half resolution[m
+[31m-#define RENDER_WIDTH 600[m
+[31m-#define RENDER_HEIGHT 400[m
+[32m+[m[32m// Optimization: Render at half resolution (dynamically adjustable)[m
+[32m+[m[32mint g_dynamicRenderWidth = 600;[m
+[32m+[m[32mint g_dynamicRenderHeight = 400;[m
+[32m+[m[32m#define RENDER_WIDTH g_dynamicRenderWidth[m
+[32m+[m[32m#define RENDER_HEIGHT g_dynamicRenderHeight[m
+ #define VIRTUAL_WIDTH 1200[m
+ #define VIRTUAL_HEIGHT 800[m
+ [m
+[36m@@ -44,12 +46,18 @@[m [m__declspec(dllexport) __cdecl unsigned char* GetFrameBuffer() {[m
+     }[m
+     [m
+     // Read pixels from the render texture[m
+[31m-    // NOTE: This is slow because it reads from GPU to CPU every frame[m
+[31m-    // Reducing resolution to 600x400 (4x fewer pixels) speeds this up significantly[m
+[31m-    Image img = LoadImageFromTexture(g_framebuffer.texture);[m
+[32m+[m[32m    // PERFORMANCE NOTE: This is the bottleneck - glReadPixels forces GPU->CPU transfer[m
+[32m+[m[32m    // The game renders fast on GPU, but reading back 600x400x4 bytes (960KB) every frame[m
+[32m+[m[32m    // causes pipeline stalls. Ideal solution: Share OpenGL texture directly with Pygame[m
+[32m+[m[32m    // to avoid CPU readback entirely. Current workaround: Keep resolution low (600x400).[m
+[32m+[m[41m    [m
+[32m+[m[32m    // OPTIMIZATION: Use rlReadTexturePixels directly to avoid Image struct overhead[m
+[32m+[m[32m    // This still does glReadPixels internally, but avoids one allocation/free cycle[m
+[32m+[m[32m    int width = g_framebuffer.texture.width;[m
+[32m+[m[32m    int height = g_framebuffer.texture.height;[m
+[32m+[m[32m    int size = width * height * 4; // RGBA[m
+     [m
+     // Allocate persistent buffer if needed[m
+[31m-    int size = img.width * img.height * 4; // RGBA[m
+     if (g_frame_buffer_size != size) {[m
+         if (g_frame_buffer_data) {[m
+             MemFree(g_frame_buffer_data);[m
+[36m@@ -58,11 +66,18 @@[m [m__declspec(dllexport) __cdecl unsigned char* GetFrameBuffer() {[m
+         g_frame_buffer_size = size;[m
+     }[m
+     [m
+[31m-    // Copy pixel data to persistent buffer[m
+[32m+[m[32m    // Read texture pixels directly into our buffer[m
+[32m+[m[32m    // This internally uses glReadPixels which is slow, but we avoid Image allocation[m
+[32m+[m[32m    void* pixels = rlReadTexturePixels(g_framebuffer.texture.id, width, height, g_framebuffer.texture.format);[m
+[32m+[m[32m    if (pixels) {[m
+[32m+[m[32m        memcpy(g_frame_buffer_data, pixels, size);[m
+[32m+[m[32m        MemFree(pixels); // rlReadTexturePixels allocates, we must free[m
+[32m+[m[32m    } else {[m
+[32m+[m[32m        // Fallback to LoadImageFromTexture if rlReadTexturePixels fails[m
+[32m+[m[32m        Image img = LoadImageFromTexture(g_framebuffer.texture);[m
+     memcpy(g_frame_buffer_data, img.data, size);[m
+[31m-    [m
+[31m-    // Clean up temporary image[m
+     UnloadImage(img);[m
+[32m+[m[32m    }[m
+     [m
+     return g_frame_buffer_data;[m
+ }[m
+[36m@@ -77,6 +92,51 @@[m [m__declspec(dllexport) __cdecl int GetHeight() {[m
+     return g_framebuffer.texture.height;[m
+ }[m
+ [m
+[32m+[m[32m__declspec(dllexport) __cdecl unsigned int GetFrameTextureHandle() {[m
+[32m+[m[32m    return g_framebuffer.texture.id;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m__declspec(dllexport) __cdecl void SetRenderResolution(int width, int height) {[m
+[32m+[m[32m    if (g_framebuffer_initialized || g_game_initialized) {[m
+[32m+[m[32m        printf("[SetRenderResolution] Warning: Attempted to change resolution after initialization - request ignored.\n");[m
+[32m+[m[32m        return;[m
+[32m+[m[32m    }[m
+[32m+[m[32m    if (width < 320) width = 320;[m
+[32m+[m[32m    if (height < 200) height = 200;[m
+[32m+[m[32m    g_dynamicRenderWidth = width;[m
+[32m+[m[32m    g_dynamicRenderHeight = height;[m
+[32m+[m[32m    printf("[SetRenderResolution] Using custom %dx%d render resolution.\n", width, height);[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m__declspec(dllexport) __cdecl void SetRenderResolutionPreset(int preset) {[m
+[32m+[m[32m    if (g_framebuffer_initialized || g_game_initialized) {[m
+[32m+[m[32m        printf("[SetRenderResolutionPreset] Warning: Attempted to change resolution after initialization - request ignored.\n");[m
+[32m+[m[32m        return;[m
+[32m+[m[32m    }[m
+[32m+[m[41m    [m
+[32m+[m[32m    int newWidth = 600;[m
+[32m+[m[32m    int newHeight = 400;[m
+[32m+[m[41m    [m
+[32m+[m[32m    switch (preset) {[m
+[32m+[m[32m        case 0: // Low[m
+[32m+[m[32m            newWidth = 480;[m
+[32m+[m[32m            newHeight = 320;[m
+[32m+[m[32m            break;[m
+[32m+[m[32m        case 2: // High[m
+[32m+[m[32m            newWidth = 720;[m
+[32m+[m[32m            newHeight = 480;[m
+[32m+[m[32m            break;[m
+[32m+[m[32m        default: // Medium / fallback[m
+[32m+[m[32m            newWidth = 600;[m
+[32m+[m[32m            newHeight = 400;[m
+[32m+[m[32m            break;[m
+[32m+[m[32m    }[m
+[32m+[m[41m    [m
+[32m+[m[32m    g_dynamicRenderWidth = newWidth;[m
+[32m+[m[32m    g_dynamicRenderHeight = newHeight;[m
+[32m+[m[32m    printf("[SetRenderResolutionPreset] Using %dx%d render resolution preset (%d).\n", newWidth, newHeight, preset);[m
+[32m+[m[32m}[m
+[32m+[m
+ // Forward declarations for functions defined later[m
+ __declspec(dllexport) __cdecl bool InitializeGame();[m
+ __declspec(dllexport) __cdecl void UpdateFrame();[m
+[36m@@ -113,6 +173,62 @@[m [mtypedef enum {[m
+     STATE_GAME_OVER[m
+ } GameState;[m
+ [m
+[32m+[m[32m// ------------------------------------------------------------[m
+[32m+[m[32m// COMMODITIES SYSTEM[m
+[32m+[m[32m// ------------------------------------------------------------[m
+[32m+[m[32mtypedef enum {[m
+[32m+[m[32m    COMMODITY_WATER_ICE = 0,[m
+[32m+[m[32m    COMMODITY_LUNAR_REGOLITH,[m
+[32m+[m[32m    COMMODITY_HYDROCARBONS,[m
+[32m+[m[32m    COMMODITY_CRYOGENIC_FLUIDS,[m
+[32m+[m[32m    COMMODITY_HELIUM_4,[m
+[32m+[m[32m    COMMODITY_HYDROGEN_ISOTOPES,[m
+[32m+[m[32m    COMMODITY_ARCANITE,[m
+[32m+[m[32m    COMMODITY_PYROTHITE,[m
+[32m+[m[32m    COMMODITY_CHRONITE,[m
+[32m+[m[32m    COMMODITY_XENON_CRYSTALS,[m
+[32m+[m[32m    COMMODITY_PLASMATIC_DIAMONDS,[m
+[32m+[m[32m    NUM_COMMODITIES[m
+[32m+[m[32m} CommodityType;[m
+[32m+[m
+[32m+[m[32mconst char* g_commodityNames[NUM_COMMODITIES] = {[m
+[32m+[m[32m    "Water Ice", "Lunar Regolith", "Hydrocarbons",[m[41m [m
+[32m+[m[32m    "Cryogenic Fluids", "Helium-4 Isotopes", "Hydrogen Isotopes",[m
+[32m+[m[32m    "Arcanite", "Pyrothite Geodes", "Chronite",[m
+[32m+[m[32m    "Xenon Crystals", "Plasmatic Diamonds"[m
+[32m+[m[32m};[m
+[32m+[m
+[32m+[m[32m// Base prices for commodities (in credits per unit)[m
+[32m+[m[32mint g_commodityBasePrices[NUM_COMMODITIES] = {[m
+[32m+[m[32m    5, 10, 15,    // Low: Water Ice, Lunar Regolith, Hydrocarbons[m
+[32m+[m[32m    30, 50, 70,   // Medium: Cryogenic Fluids, Helium-4, Hydrogen Isotopes[m
+[32m+[m[32m    120, 180, 250,// High: Arcanite, Pyrothite Geodes, Chronite[m
+[32m+[m[32m    400, 800      // Very High: Xenon Crystals, Plasmatic Diamonds[m
+[32m+[m[32m};[m
+[32m+[m
+[32m+[m[32m// Asteroid-to-Commodity Abundance Matrix[m
+[32m+[m[32m// Each asteroid (index 0-5 = A-F) has a distribution of commodities[m
+[32m+[m[32m// Values represent relative abundance (0-100), higher = more common[m
+[32m+[m[32m// Based on Oort Cloud science: ice/volatiles common, exotic materials rare[m
+[32m+[m[32mint g_asteroidCommodityAbundance[6][NUM_COMMODITIES] = {[m
+[32m+[m[32m    // Asteroid A (Low prosperity): More common materials, rare materials very rare[m
+[32m+[m[32m    // Water Ice, Regolith, Hydrocarbons, Cryogenic Fluids, Helium-4, Hydrogen Isotopes, Arcanite, Pyrothite, Chronite, Xenon, Plasmatic[m
+[32m+[m[32m    {80, 70, 60, 40, 30, 25, 5, 4, 3, 1, 1},  // Hundreds: 5-3%, Thousands: 1%[m
+[32m+[m[32m    // Asteroid B[m
+[32m+[m[32m    {75, 65, 55, 45, 35, 30, 8, 6, 4, 1, 1},  // Hundreds: 8-4%, Thousands: 1%[m
+[32m+[m[32m    // Asteroid C (Medium prosperity): Balanced[m
+[32m+[m[32m    {70, 60, 50, 50, 40, 35, 12, 10, 7, 2, 1},  // Hundreds: 12-7%, Thousands: 2-1%[m
+[32m+[m[32m    // Asteroid D[m
+[32m+[m[32m    {65, 55, 45, 55, 45, 40, 15, 12, 9, 2, 1},  // Hundreds: 15-9%, Thousands: 2-1%[m
+[32m+[m[32m    // Asteroid E (High prosperity): More rare materials but still rare[m
+[32m+[m[32m    {60, 50, 40, 60, 50, 45, 18, 15, 12, 3, 2},  // Hundreds: 18-12%, Thousands: 3-2%[m
+[32m+[m[32m    // Asteroid F (Very high prosperity): Exotic materials slightly more common but still rare[m
+[32m+[m[32m    {55, 45, 35, 65, 55, 50, 20, 18, 15, 4, 3}   // Hundreds: 20-15%, Thousands: 4-3%[m
+[32m+[m[32m};[m
+[32m+[m
+[32m+[m[32m// Station-specific buy prices (calculated based on available asteroids)[m
+[32m+[m[32mint g_stationBuyPrices[3][NUM_COMMODITIES];  // [location][commodity][m
+[32m+[m
+ typedef struct {[m
+     float fuel;[m
+     float maxFuel;[m
+[36m@@ -125,9 +241,8 @@[m [mtypedef struct {[m
+     int maxCredits;   // Max credits (100000)[m
+     int cargoSpace;[m
+     int cargoFilled;[m
+[31m-    // Market Goods[m
+[31m-    int iron;[m
+[31m-    int gold;[m
+[32m+[m[32m    // Market Goods - REPLACED with Inventory Array[m
+[32m+[m[32m    int inventory[NUM_COMMODITIES];[m
+     bool hasLaser;  // Whether player has a laser equipped[m
+     bool hasCollector;  // Whether player has collector upgrade[m
+     float thrusterBoost;  // Thruster boost multiplier (1.0 = no boost, 1.2 = 20% boost)[m
+[36m@@ -138,15 +253,23 @@[m [mtypedef struct {[m
+     float maxLaserHeat;     // Max heat (100.0)[m
+     float laserCooldown;    // Timer for overheat cooldown[m
+     bool laserOverheated;   // Flag if overheated[m
+[32m+[m[32m    // Ship upgrades[m
+[32m+[m[32m    bool hasFuelTankUpgrade;  // Station: Increased fuel capacity[m
+[32m+[m[32m    bool hasCargoBlackHole;  // Station: 50 cargo capacity[m
+[32m+[m[32m    bool hasBetterLaser;      // Halo: Better laser[m
+[32m+[m[32m    bool hasBetterCollector;  // Halo: Better collector[m
+[32m+[m[32m    int shipColor;            // 0=Blue (default), 1=Red, 2=Green, 3=Purple[m
+ } PlayerData;[m
+ [m
+ // Global Player Instance - New game defaults[m
+ // cargoSpace = 50 (max cargo capacity) - actually used as 25 for debris[m
+ // hasLaser = false (new players start with no laser)[m
+ PlayerData G_Player = { [m
+[31m-    100.0f, 100.0f, 100.0f, 100.0f, 20.0f, 100.0f, 1, 1000, 100000, 25, 0, 0, 0, [m
+[32m+[m[32m    100.0f, 100.0f, 100.0f, 100.0f, 20.0f, 100.0f, 1, 1000, 100000, 25, 0,[m[41m [m
+[32m+[m[32m    {0,0,0,0,0,0,0,0,0,0,0}, // Inventory initialized to 0[m
+     false, false, 1.0f, 1.0f, false, [m
+[31m-    0.0f, 100.0f, 0.0f, false // Laser defaults[m
+[32m+[m[32m    0.0f, 100.0f, 0.0f, false, // Laser defaults[m
+[32m+[m[32m    false, false, false, false, 0 // Ship upgrades[m
+ };[m
+ [m
+ // ------------------------------------------------------------[m
+[36m@@ -168,6 +291,8 @@[m [mCamera3D g_camera = {0};[m
+ Model g_ship = {0};[m
+ Model g_rockModel = {0};[m
+ Model g_shopItemModels[6] = {0};  // Shop item models: A=Laser, B=Collector, C=Thruster, D=ExoPlating, E=Fuel, F=Repairs[m
+[32m+[m[32mModel g_stationShopModels[6] = {0};  // Station shop models: A=FuelTank, B=CargoBlackHole, C=Fuel, D=RedShip, E=GreenShip, F=PurpleShip[m
+[32m+[m[32mModel g_haloShopModels[6] = {0};  // Halo shop models: A=BetterLaser, B=BetterCollector, C=Fuel, D=RedShip, E=GreenShip, F=PurpleShip[m
+ Texture2D scanlineTx = {0};[m
+ Texture2D guiHudTx = {0};[m
+ Texture2D splash0Tx = {0};[m
+[36m@@ -199,6 +324,8 @@[m [mint g_selectedAsteroidFuelCost = 0;  // Random fuel cost (20-50)[m
+ int g_selectedAsteroidGravity = 0;  // Gravity percentage of selected asteroid[m
+ int g_selectedAsteroidProspect = 0;  // Prosperity percentage of selected asteroid[m
+ bool g_fuelCheckFailed = false;  // Flag for fuel check failure[m
+[32m+[m[32mbool g_showFuelWarningModal = false;  // Show separate fuel warning modal[m
+[32m+[m[32mfloat g_fuelWarningTimer = 0.0f;  // Timer for fuel warning modal (3 seconds)[m
+ bool g_missionInProgress = false;  // Track if player is on a mission (for return fuel deduction)[m
+ float g_asteroidRotation = 0.0f;  // Rotation angle for spinning asteroids[m
+ bool g_showGetReady = false;  // Show "GET READY" splash screen before lander[m
+[36m@@ -208,10 +335,20 @@[m [mRenderTexture2D g_navViewport = {0};  // Render texture for navigation screen[m
+ bool g_navViewportInitialized = false;[m
+ bool g_asteroidViewportInitialized = false;[m
+ [m
+[32m+[m[32m// Audio[m
+[32m+[m[32mSound g_terminalTypeSound = {0};  // Sound for terminal typing[m
+[32m+[m[32mMusic g_backgroundMusic = {0};  // Background music (AstroMiner.mp3)[m
+[32m+[m[32mMusic g_backgroundMusic2 = {0}; // Background music 2 (AstroMiner2.mp3)[m
+[32m+[m[32mint g_currentTrack = 0; // 0=AstroMiner, 1=AstroMiner2[m
+[32m+[m
+ // Shipyard shop system[m
+ bool g_showShipyardShop = false;  // Show shipyard shop when Enter pressed on page 2[m
+ int g_shipyardPageOverlay = 0;  // 0=base, 1=A, 2=B, 3=C, 4=D, 5=E, 6=F[m
+ bool g_showShopModal = false;  // Show modal when shop item letter is pressed[m
+[32m+[m[32mbool g_showCommoditiesMarket = false;  // Show commodities market when Enter pressed on page 3[m
+[32m+[m[32mint g_commoditiesMarketSelection = 0;  // Selected commodity index (0-NUM_COMMODITIES)[m
+[32m+[m[32mbool g_showNoCommodityModal = false;  // Show modal when trying to sell commodity you don't have[m
+[32m+[m[32mchar g_noCommodityName[64] = "";  // Name of commodity you tried to sell[m
+ int g_shopModalSelection = 0;  // 0=Purchase, 1=Exit[m
+ int g_selectedShopItemIndex = 0;  // Which shop item (0-5 = A-F)[m
+ bool g_purchaseFailed = false;  // Flag for purchase failure (insufficient credits)[m
+[36m@@ -219,10 +356,24 @@[m [mchar g_purchaseFailReason[64] = "INSUFFICIENT CREDITS";  // Reason for purchase[m
+ RenderTexture2D g_shipyardShopViewport = {0};  // Render texture for shop view[m
+ bool g_shipyardShopViewportInitialized = false;[m
+ float g_shopItemRotation = 0.0f;  // Rotation angle for shop items[m
+[32m+[m[32mRenderTexture2D g_commoditiesMarketViewport = {0};  // Render texture for commodities market view[m
+[32m+[m[32mbool g_commoditiesMarketViewportInitialized = false;[m
+ [m
+ // Asteroid Data (Persistent for Bar events)[m
+[32m+[m[32m// Depot asteroids (lower prosperity, lower fuel)[m
+ int g_prospectScores[6] = {10, 22, 34, 46, 58, 70};[m
+ int g_gravityScores[6] = {25, 38, 51, 64, 76, 88};[m
+[32m+[m[32m// Station asteroids (higher prosperity, higher fuel)[m
+[32m+[m[32mint g_stationProspectScores[6] = {35, 48, 62, 75, 85, 95};[m
+[32m+[m[32mint g_stationGravityScores[6] = {45, 58, 71, 84, 90, 95};[m
+[32m+[m[32m// Halo asteroids (highest prosperity, highest fuel)[m
+[32m+[m[32mint g_haloProspectScores[6] = {50, 65, 78, 88, 95, 100};[m
+[32m+[m[32mint g_haloGravityScores[6] = {55, 68, 81, 90, 95, 98};[m
+[32m+[m
+[32m+[m[32m// Forward declarations for commodity functions[m
+[32m+[m[32mvoid ConvertDebrisToCommodity();[m
+[32m+[m[32mvoid CalculateStationPrices();[m
+[32m+[m[32mvoid RenderCommoditiesMarket();[m
+ [m
+ // Shop item overlay textures[m
+ Texture2D shipyardPageTx = {0};  // Base shipyard_page.png[m
+[36m@@ -235,9 +386,10 @@[m [mTexture2D shipyardPageFTx = {0}; // shipyard_page_F.png[m
+ [m
+ // Bar system[m
+ Texture2D barPageTx = {0}; // bar_page.png[m
+[31m-// Station and Halo overlays[m
+[32m+[m[32m// Station, Halo, and Depot overlays[m
+ Texture2D hirohitoOverlayTx = {0}; // Hirohito_overlay.png[m
+ Texture2D nagakoOverlayTx = {0};  // Nagako_overlay.png[m
+[32m+[m[32mTexture2D shinjukuOverlayTx = {0}; // Shinjuku_overlay.png[m
+ // Track current location for customization[m
+ int g_currentLocation = 0; // 0=Depot, 1=Station, 2=Halo[m
+ bool g_showBarView = false;[m
+[36m@@ -245,9 +397,14 @@[m [mfloat g_barModalTimer = 0.0f; // Delay timer for modal appearance[m
+ int g_barDrinksPurchased = 0;[m
+ bool g_showBarRumorModal = false;[m
+ bool g_showBarGoldCardModal = false;[m
+[32m+[m[32mbool g_showBarGamblingModal = false;[m
+[32m+[m[32mbool g_showBarScientistModal = false;[m
+ char g_barRumorText[512] = {0};[m
+[31m-int g_barMenuSelection = 0; // 0=Beer, 1=Shot, 2=DrinksOnMe, 3=Exit[m
+[32m+[m[32mchar g_barGamblingText[512] = {0};[m
+[32m+[m[32mchar g_barScientistText[512] = {0};[m
+[32m+[m[32mint g_barMenuSelection = 0; // Menu selection (varies by location)[m
+ int g_barRandomMood = 0; // Random mood index for bar atmosphere[m
+[32m+[m[32mint g_barMaxMenuItems = 4; // Number of menu items (varies by location)[m
+ const char* g_barMoods[] = {[m
+     "The air is thick with smoke and the smell of ozone.",[m
+     "A rowdy group of miners are singing shanties in the corner.",[m
+[36m@@ -767,6 +924,92 @@[m [mMesh CreateFuelMesh() {[m
+     return mesh;[m
+ }[m
+ [m
+[32m+[m[32m// Create colored ship mesh (red, green, or purple)[m
+[32m+[m[32mMesh CreateColoredShipMesh(int colorType) {  // 0=red, 1=green, 2=purple[m
+[32m+[m[32m    Vector3 nose={0,0,1.0f}, tail={0,0,-1.0f}, left={-0.8f,0,-0.5f}, right={0.8f,0,-0.5f}, top={0,0.3f,-0.2f}, bottom={0,-0.3f,-0.2f};[m
+[32m+[m[32m    Vector3 tris[8][3]={{top,left,nose},{top,nose,right},{top,tail,left},{top,right,tail},{bottom,nose,left},{bottom,right,nose},{bottom,left,tail},{bottom,tail,right}};[m
+[32m+[m[41m    [m
+[32m+[m[32m    // Color palettes for different ship colors[m
+[32m+[m[32m    Color col[8];[m
+[32m+[m[32m    if (colorType == 0) {  // Red ship[m
+[32m+[m[32m        Color redPalette[8] = {{255,50,50,255},{220,30,30,255},{200,20,20,255},{180,10,10,255},{160,5,5,255},{140,0,0,255},{120,0,0,255},{100,0,0,255}};[m
+[32m+[m[32m        for(int i=0;i<8;i++) col[i]=redPalette[i];[m
+[32m+[m[32m    } else if (colorType == 1) {  // Green ship[m
+[32m+[m[32m        Color greenPalette[8] = {{50,255,50,255},{30,220,30,255},{20,200,20,255},{10,180,10,255},{5,160,5,255},{0,140,0,255},{0,120,0,255},{0,100,0,255}};[m
+[32m+[m[32m        for(int i=0;i<8;i++) col[i]=greenPalette[i];[m
+[32m+[m[32m    } else {  // Purple ship[m
+[32m+[m[32m        Color purplePalette[8] = {{200,50,255,255},{180,30,220,255},{160,20,200,255},{140,10,180,255},{120,5,160,255},{100,0,140,255},{80,0,120,255},{60,0,100,255}};[m
+[32m+[m[32m        for(int i=0;i<8;i++) col[i]=purplePalette[i];[m
+[32m+[m[32m    }[m
+[32m+[m[41m    [m
+[32m+[m[32m    Mesh mesh={0}; mesh.triangleCount=8; mesh.vertexCount=24;[m
+[32m+[m[32m    mesh.vertices=(float*)MemAlloc(mesh.vertexCount*3*sizeof(float));[m
+[32m+[m[32m    mesh.normals=(float*)MemAlloc(mesh.vertexCount*3*sizeof(float));[m
+[32m+[m[32m    mesh.colors=(unsigned char*)MemAlloc(mesh.vertexCount*4);[m
+[32m+[m[32m    int idx=0;[m
+[32m+[m[32m    for(int t=0;t<8;t++){[m
+[32m+[m[32m        Vector3 n=Vector3Normalize(Vector3CrossProduct(Vector3Subtract(tris[t][1],tris[t][0]), Vector3Subtract(tris[t][2],tris[t][0])));[m
+[32m+[m[32m        for(int k=0;k<3;k++){[m
+[32m+[m[32m            mesh.vertices[idx*3+0]=tris[t][k].x; mesh.vertices[idx*3+1]=tris[t][k].y; mesh.vertices[idx*3+2]=tris[t][k].z;[m
+[32m+[m[32m            mesh.normals[idx*3+0]=n.x; mesh.normals[idx*3+1]=n.y; mesh.normals[idx*3+2]=n.z;[m
+[32m+[m[32m            mesh.colors[idx*4+0]=col[t].r; mesh.colors[idx*4+1]=col[t].g; mesh.colors[idx*4+2]=col[t].b; mesh.colors[idx*4+3]=col[t].a;[m
+[32m+[m[32m            idx++;[m
+[32m+[m[32m        }[m
+[32m+[m[32m    }[m
+[32m+[m[

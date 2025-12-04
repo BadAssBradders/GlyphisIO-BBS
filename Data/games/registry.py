@@ -193,34 +193,68 @@ class AstroMinerSession(BaseGameSession):
         desktop_x = int(self.baseline_desktop_x * self.app.scale)
         desktop_y = int(self.baseline_desktop_y * self.app.scale)
         return (desktop_x, desktop_y)
+
+    def _load_base_desktop_size(self) -> Tuple[int, int]:
+        if getattr(self, "_base_desktop_size", None):
+            return self._base_desktop_size
+        desktop_path = os.path.join("Data", "OS", "Desktop-Enviroment.png")
+        try:
+            desktop_image = pygame.image.load(desktop_path)
+            self._base_desktop_size = desktop_image.get_size()
+        except Exception:
+            self._base_desktop_size = (self.app.bbs_width, self.app.bbs_height)
+        return self._base_desktop_size
+
+    def _get_desktop_dimensions(self) -> Tuple[int, int]:
+        width = height = None
+        if hasattr(self.app, "os_mode") and self.app.os_mode and hasattr(self.app.os_mode, "desktop_size"):
+            ds = self.app.os_mode.desktop_size
+            if ds:
+                try:
+                    width = int(ds[0])
+                    height = int(ds[1])
+                except (TypeError, ValueError):
+                    width = height = None
+        if width is None or height is None:
+            base_w, base_h = self._load_base_desktop_size()
+            width = int(base_w * self.app.scale)
+            height = int(base_h * self.app.scale)
+        width = max(720, width)
+        height = max(480, height)
+        return (width, height)
     
     def _get_game_mouse_pos(self, screen_pos: Tuple[int, int]) -> Tuple[float, float]:
         """Convert screen mouse position to game-relative position."""
         desktop_x, desktop_y = self._get_desktop_pos()
         # Get game size
+        desktop_w, desktop_h = self._get_desktop_dimensions()
+        rel_x = screen_pos[0] - desktop_x
+        rel_y = screen_pos[1] - desktop_y
+        
         if self.embed_module:
             game_width, game_height = self.embed_module.get_size()
-            if game_width > 0 and game_height > 0:
-                # Calculate relative position within game area
-                rel_x = screen_pos[0] - desktop_x
-                rel_y = screen_pos[1] - desktop_y
-                # Scale to game's internal coordinates (game is 1200x800)
-                # But we need to account for the scaling that happens when drawing
-                scaled_width = int(game_width * self.app.scale)
-                scaled_height = int(game_height * self.app.scale)
-                if scaled_width > 0 and scaled_height > 0:
-                    # Map from scaled screen coordinates to game coordinates
-                    game_x = (rel_x / scaled_width) * game_width
-                    game_y = (rel_y / scaled_height) * game_height
-                    return (max(0, min(game_width, game_x)), max(0, min(game_height, game_y)))
+            if game_width > 0 and game_height > 0 and desktop_w > 0 and desktop_h > 0:
+                game_x = (rel_x / desktop_w) * game_width
+                game_y = (rel_y / desktop_h) * game_height
+                return (
+                    max(0.0, min(float(game_width), float(game_x))),
+                    max(0.0, min(float(game_height), float(game_y)))
+                )
         # Fallback: just subtract desktop offset
-        return (float(screen_pos[0] - desktop_x), float(screen_pos[1] - desktop_y))
+        return (float(rel_x), float(rel_y))
             
     def enter(self) -> None:
         """Initialize the embedded game DLL."""
         try:
             from . import astrominer_embed
             self.embed_module = astrominer_embed
+            desired_mode = (getattr(self.app, "astro_render_mode", "auto") or "auto").strip().lower()
+            resolution_applied = False
+            if desired_mode in ("low", "medium", "high") and hasattr(astrominer_embed, "set_resolution_mode"):
+                resolution_applied = astrominer_embed.set_resolution_mode(desired_mode)
+            if not resolution_applied and hasattr(astrominer_embed, "set_render_resolution"):
+                width, height = self._get_desktop_dimensions()
+                astrominer_embed.set_render_resolution(width, height)
             
             if not astrominer_embed.initialize():
                 print("Failed to initialize Astro Miner DLL")
@@ -496,21 +530,12 @@ class AstroMinerSession(BaseGameSession):
         desktop_x = int(baseline_desktop_x * self.app.scale)
         desktop_y = int(baseline_desktop_y * self.app.scale)
         
-        # Get desktop size
-        desktop_path = os.path.join("Data", "OS", "Desktop-Enviroment.png")
-        if os.path.exists(desktop_path):
-            desktop_image = pygame.image.load(desktop_path)
-            original_size = desktop_image.get_size()
-            desktop_size = (
-                int(original_size[0] * self.app.scale),
-                int(original_size[1] * self.app.scale)
-            )
-        else:
-            # Fallback size
-            desktop_size = (int(848 * self.app.scale), int(382 * self.app.scale))
+        desktop_width, desktop_height = self._get_desktop_dimensions()
         
-        # Scale frame to match desktop size
-        scaled_frame = pygame.transform.scale(self.last_frame, desktop_size)
+        if self.last_frame.get_size() != (desktop_width, desktop_height):
+            scaled_frame = pygame.transform.smoothscale(self.last_frame, (desktop_width, desktop_height))
+        else:
+            scaled_frame = self.last_frame
         
         return (scaled_frame, (desktop_x, desktop_y))
     

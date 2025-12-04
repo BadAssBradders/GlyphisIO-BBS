@@ -960,6 +960,8 @@ class GLYPHIS_IOBBS:
         scale_y = self.screen_height / self.baseline_height
         self.scale = min(scale_x, scale_y)  # Use minimum to maintain aspect ratio and fit on screen
         # Store scale as instance variable so we can use it for fonts, images, etc.
+
+        self.astro_render_mode = os.environ.get("ASTROMINER_RESOLUTION", "auto")
         
         # Scale the BBS window dimensions and position proportionally (maintaining aspect ratio)
         self.bbs_width = int(self.baseline_bbs_width * self.scale)
@@ -984,6 +986,9 @@ class GLYPHIS_IOBBS:
         
         # Create a surface for the BBS window (with alpha support for transparency)
         self.bbs_surface = pygame.Surface((self.bbs_width, self.bbs_height), pygame.SRCALPHA)
+        self.game_freeze_active = False
+        self.game_freeze_pending_capture = False
+        self.game_freeze_frame = None
         
         # Load font (scaled based on resolution)
         try:
@@ -1646,15 +1651,17 @@ class GLYPHIS_IOBBS:
         base_filename_for_detection = current_filename.replace("night-", "").replace("day-", "")
         
         # Check if Astro Miner is active - use Audio-Desktop-os video
-        astro_miner_active = (self.state == "game_session" and 
-                             self.active_game_session and 
-                             isinstance(self.active_game_session, AstroMinerSession))
+        astro_miner_active = self._is_astro_miner_session_active()
         
         # PRIORITY 1: If OSBoot video is playing, force Audio-Desktop-No-Sound-os video (highest priority)
         # Night cycle will be applied automatically via _get_time_aware_video_name() below
         if self.os_boot_video_playing:
             desired_state = "osboot-playing"
             base_video = "Audio-Desktop-No-Sound-os.mp4"  # Will become "night-Audio-Desktop-No-Sound-os.mp4" if nighttime
+        elif astro_miner_active:
+            # Astro Miner is playing - always use -os variant so frozen backgrounds look correct
+            desired_state = "astro-miner"
+            base_video = "Audio-Desktop-os.mp4"
         # Treat RadioMusic same as cracker_audio_playing for video selection
         elif cracker_audio_playing or radio_music_active:
             desired_state = "audio-playing"
@@ -1674,10 +1681,6 @@ class GLYPHIS_IOBBS:
                     base_video = "Audio-Desktop-No-Sound.mp4"
                 else:
                     base_video = "Audio-Desktop.mp4"
-        elif astro_miner_active:
-            # Astro Miner is playing - use Audio-Desktop-os video
-            desired_state = "astro-miner"
-            base_video = "Audio-Desktop-os.mp4"
         elif has_audio_on and not (cracker_audio_playing or radio_music_active):
             # AUDIO_ON is present but music has ended - use No-Sound fallback videos
             desired_state = "audio-on-no-music"
@@ -1702,6 +1705,13 @@ class GLYPHIS_IOBBS:
         if desired_state != self.desktop_state or time_aware_video != self.desktop_video_filename:
             self.desktop_state = desired_state
             self._set_desktop_video(time_aware_video)
+
+    def _is_astro_miner_session_active(self) -> bool:
+        return (
+            self.state == "game_session"
+            and self.active_game_session is not None
+            and isinstance(self.active_game_session, AstroMinerSession)
+        )
 
     # ------------------------------------------------------------------
     # Game registry helpers
@@ -1741,14 +1751,15 @@ class GLYPHIS_IOBBS:
         if not definition.session_factory:
             self.show_main_menu_message("Game session unavailable.")
             return
-
         self.active_game_session = definition.session_factory(self)
         self.state = "game_session"
         self.active_game_session.enter()
+        self._update_audio_power_state()
 
     def end_game_session(self) -> None:
         if self.active_game_session:
             self.active_game_session.exit()
+        self._update_audio_power_state()
         self.active_game_session = None
         self.state = "games"
 
@@ -4900,6 +4911,16 @@ class GLYPHIS_IOBBS:
                 self.active_game_session.update(dt)
                 if self.active_game_session.should_exit():
                     self.end_game_session()
+            
+            astro_active = self._is_astro_miner_session_active()
+            if astro_active:
+                if not self.game_freeze_active and not self.game_freeze_pending_capture:
+                    self.game_freeze_pending_capture = True
+            else:
+                if self.game_freeze_active or self.game_freeze_pending_capture:
+                    self.game_freeze_active = False
+                    self.game_freeze_pending_capture = False
+                    self.game_freeze_frame = None
 
             if self.state == "urgent_ops_session" and self.active_ops_session:
                 self.active_ops_session.update(dt)
@@ -4920,10 +4941,11 @@ class GLYPHIS_IOBBS:
                 if self.active_ops_session.should_exit():
                     self._end_ops_session()
 
-            self.documentation_viewer.update(dt)
+            if not self.game_freeze_active:
+                self.documentation_viewer.update(dt)
             
             # Update OS Mode if active
-            if self.os_mode_active and self.os_mode:
+            if self.os_mode_active and self.os_mode and not self.game_freeze_active:
                 self.os_mode.update(dt)
                 # Check if modem modal requested BBS reset and OS exit
                 if hasattr(self.os_mode, 'modem_modal_should_reset_bbs') and self.os_mode.modem_modal_should_reset_bbs:
@@ -4941,110 +4963,137 @@ class GLYPHIS_IOBBS:
                 self.steam.run_callbacks()
 
             # Clear BBS surface
-            self.bbs_surface.fill(BLACK)
-            
-            # For new_game_prompt: Fill entire screen with solid black rectangle FIRST (before any other rendering)
-            if self.state == "new_game_prompt":
-                pygame.draw.rect(self.screen, BLACK, (0, 0, self.screen_width, self.screen_height))
-            
-            # Draw current state (BBS content)
-            if self.state == "bbs_scroll":
-                self.draw_bbs_scroll()
-            elif self.state == "new_game_prompt":
-                self.draw_new_game_prompt()
-            elif self.state == "intro":
-                self.draw_intro_screen()
-                # No auto-advance - wait for keypress only
-            elif self.state == "loading":
-                self.draw_loading_screen()
-            elif self.state == "main_menu":
-                self.draw_main_menu()
-            elif self.state == "front_post":
-                self.draw_front_post_board()
-            elif self.state == "email_menu" or self.state == "compose" or self.state == "inbox" or self.state == "outbox" or self.state == "sent" or self.state == "reading":
-                self.draw_email_system()
-            elif self.state == "games":
-                self.draw_games_module()
-            elif self.state == "tasks":
-                self.draw_tasks_module()
-            elif self.state == "team":
-                self.draw_team_module()
-            elif self.state == "radio":
-                self.draw_radio_module()
-            elif self.state == "game_session":
-                if self.active_game_session:
-                    self.active_game_session.draw()
-                else:
-                    self.state = "games"
-            elif self.state == "urgent_ops_session":
-                if self.active_ops_session:
-                    self.active_ops_session.draw()
-                else:
-                    # Session was cleared - this shouldn't happen, but log it for debugging
-                    print(f"WARNING: urgent_ops_session state but active_ops_session is None! Resetting to tasks.")
-                    log_event("urgent_ops_session state but active_ops_session is None - resetting to tasks")
-                    self.state = "tasks"
-            elif self.state == "ghost_user_sequence":
-                # Draw BBS main menu during ghost user sequence (before OS mode activates)
-                # Once OS mode is active, it will be drawn automatically
-                if not self.os_mode_active:
+            if not self.game_freeze_active:
+                self.bbs_surface.fill(BLACK)
+                
+                # For new_game_prompt: Fill entire screen with solid black rectangle FIRST (before any other rendering)
+                if self.state == "new_game_prompt":
+                    pygame.draw.rect(self.screen, BLACK, (0, 0, self.screen_width, self.screen_height))
+                
+                # Draw current state (BBS content)
+                if self.state == "bbs_scroll":
+                    self.draw_bbs_scroll()
+                elif self.state == "new_game_prompt":
+                    self.draw_new_game_prompt()
+                elif self.state == "intro":
+                    self.draw_intro_screen()
+                    # No auto-advance - wait for keypress only
+                elif self.state == "loading":
+                    self.draw_loading_screen()
+                elif self.state == "main_menu":
                     self.draw_main_menu()
-                elif self.os_mode_active and self.os_mode:
-                    # OS mode is active, draw it
-                    self.os_mode.draw()
-                    # Only print debug every 60 frames (once per second at 60fps) to avoid spam
-                    if hasattr(self, '_ghost_user_draw_debug_counter'):
-                        self._ghost_user_draw_debug_counter += 1
+                elif self.state == "front_post":
+                    self.draw_front_post_board()
+                elif self.state == "email_menu" or self.state == "compose" or self.state == "inbox" or self.state == "outbox" or self.state == "sent" or self.state == "reading":
+                    self.draw_email_system()
+                elif self.state == "games":
+                    self.draw_games_module()
+                elif self.state == "tasks":
+                    self.draw_tasks_module()
+                elif self.state == "team":
+                    self.draw_team_module()
+                elif self.state == "radio":
+                    self.draw_radio_module()
+                elif self.state == "game_session":
+                    if self.active_game_session:
+                        self.active_game_session.draw()
                     else:
-                        self._ghost_user_draw_debug_counter = 0
-                    if self._ghost_user_draw_debug_counter % 60 == 0:
-                        print(f"DEBUG GHOST USER DRAW: Drawing OS Mode, step={self.ghost_user_step}, os_mode_active={self.os_mode_active}")
-                else:
-                    # Fallback: draw main menu if OS mode isn't ready
-                    if not hasattr(self, '_ghost_user_draw_warned'):
-                        print(f"DEBUG GHOST USER DRAW: OS mode not ready, drawing main menu (os_mode_active={self.os_mode_active}, os_mode={self.os_mode})")
-                        self._ghost_user_draw_warned = True
-                    self.draw_main_menu()
-            elif self.state == "login_username":
-                self.draw_login_username_screen()
-            elif self.state == "login_pin_create":
-                self.draw_login_pin_screen(create_mode=True)
-            elif self.state == "login_pin_verify":
-                self.draw_login_pin_screen(create_mode=False)
-            elif self.state == "login_success":
-                self.draw_login_success_screen()
- 
-            # Overlay in-game clock on the BBS window (skip during urgent ops IDE session)
-            if self.state != "urgent_ops_session":
-                self.draw_system_clock()
+                        self.state = "games"
+                elif self.state == "urgent_ops_session":
+                    if self.active_ops_session:
+                        self.active_ops_session.draw()
+                    else:
+                        # Session was cleared - this shouldn't happen, but log it for debugging
+                        print(f"WARNING: urgent_ops_session state but active_ops_session is None! Resetting to tasks.")
+                        log_event("urgent_ops_session state but active_ops_session is None - resetting to tasks")
+                        self.state = "tasks"
+                elif self.state == "ghost_user_sequence":
+                    # Draw BBS main menu during ghost user sequence (before OS mode activates)
+                    # Once OS mode is active, it will be drawn automatically
+                    if not self.os_mode_active:
+                        self.draw_main_menu()
+                    elif self.os_mode_active and self.os_mode:
+                        # OS mode is active, draw it
+                        self.os_mode.draw()
+                        # Only print debug every 60 frames (once per second at 60fps) to avoid spam
+                        if hasattr(self, '_ghost_user_draw_debug_counter'):
+                            self._ghost_user_draw_debug_counter += 1
+                        else:
+                            self._ghost_user_draw_debug_counter = 0
+                        if self._ghost_user_draw_debug_counter % 60 == 0:
+                            print(f"DEBUG GHOST USER DRAW: Drawing OS Mode, step={self.ghost_user_step}, os_mode_active={self.os_mode_active}")
+                    else:
+                        # Fallback: draw main menu if OS mode isn't ready
+                        if not hasattr(self, '_ghost_user_draw_warned'):
+                            print(f"DEBUG GHOST USER DRAW: OS mode not ready, drawing main menu (os_mode_active={self.os_mode_active}, os_mode={self.os_mode})")
+                            self._ghost_user_draw_warned = True
+                        self.draw_main_menu()
+                elif self.state == "login_username":
+                    self.draw_login_username_screen()
+                elif self.state == "login_pin_create":
+                    self.draw_login_pin_screen(create_mode=True)
+                elif self.state == "login_pin_verify":
+                    self.draw_login_pin_screen(create_mode=False)
+                elif self.state == "login_success":
+                    self.draw_login_success_screen()
+     
+                # Overlay in-game clock on the BBS window (skip during urgent ops IDE session)
+                if self.state != "urgent_ops_session":
+                    self.draw_system_clock()
 
-            if self.delete_confirmation_active:
-                self.draw_delete_confirmation_modal()
-            if self.delete_email_modal_active:
-                self.draw_delete_email_modal()
-            if self.logout_modal_active:
-                self.draw_logout_modal()
-            
-            # Update desktop background/video state before rendering layers
-            self._update_audio_power_state()
-
-            # Draw BBS window first (before desktop background)
-            if self.state == "new_game_prompt":
-                # New Game Prompt: Skip all background/video rendering - already filled with black
-                # The draw_new_game_prompt() function handles all rendering
-                pass
-            elif self.state == "os_boot_playing":
-                # OSBoot video playing - render desktop video and OSBoot video (no BBS window)
-                if self.video_cap and _cv2_available:
-                    # Read and render desktop background video
+                if self.delete_confirmation_active:
+                    self.draw_delete_confirmation_modal()
+                if self.delete_email_modal_active:
+                    self.draw_delete_email_modal()
+                if self.logout_modal_active:
+                    self.draw_logout_modal()
+                
+                # Draw BBS window first (before desktop background)
+                if self.state == "new_game_prompt":
+                    # New Game Prompt: Skip all background/video rendering - already filled with black
+                    # The draw_new_game_prompt() function handles all rendering
+                    pass
+                elif self.state == "os_boot_playing":
+                    # OSBoot video playing - render desktop video and OSBoot video (no BBS window)
+                    if self.video_cap and _cv2_available:
+                        # Read and render desktop background video
+                        ret, frame = self.video_cap.read()
+                        if ret:
+                            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                            frame_resized = cv2.resize(frame_rgb, (self.screen_width, self.screen_height))
+                            frame_swapped = np.swapaxes(frame_resized, 0, 1)
+                            self.video_frame = pygame.surfarray.make_surface(frame_swapped)
+                            self.screen.blit(self.video_frame, (0, 0))
+                        else:
+                            self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            ret, frame = self.video_cap.read()
+                            if ret:
+                                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                                frame_resized = cv2.resize(frame_rgb, (self.screen_width, self.screen_height))
+                                frame_swapped = np.swapaxes(frame_resized, 0, 1)
+                                self.video_frame = pygame.surfarray.make_surface(frame_swapped)
+                                self.screen.blit(self.video_frame, (0, 0))
+                            else:
+                                self.screen.fill(BLACK)
+                    else:
+                        self.screen.fill(BLACK)
+                elif self.video_cap and _cv2_available:
+                    # Video mode: render video frame, then BBS window, then scanline overlay
+                    # Read next frame from video
                     ret, frame = self.video_cap.read()
                     if ret:
+                        # Convert BGR to RGB (OpenCV uses BGR, pygame uses RGB)
                         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        # Resize video frame to match screen size
                         frame_resized = cv2.resize(frame_rgb, (self.screen_width, self.screen_height))
+                        # Convert numpy array to pygame surface
+                        # pygame.surfarray expects (width, height) format, so we need to swap axes
                         frame_swapped = np.swapaxes(frame_resized, 0, 1)
                         self.video_frame = pygame.surfarray.make_surface(frame_swapped)
+                        # Draw video frame as background
                         self.screen.blit(self.video_frame, (0, 0))
                     else:
+                        # Video ended, loop back to beginning
                         self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         ret, frame = self.video_cap.read()
                         if ret:
@@ -5054,57 +5103,41 @@ class GLYPHIS_IOBBS:
                             self.video_frame = pygame.surfarray.make_surface(frame_swapped)
                             self.screen.blit(self.video_frame, (0, 0))
                         else:
+                            # Fallback if video can't be read
                             self.screen.fill(BLACK)
+                    
+                    # Draw BBS window on top of video
+                    self.screen.blit(self.bbs_surface, (self.bbs_x, self.bbs_y))
+                    
                 else:
-                    self.screen.fill(BLACK)
-            elif self.video_cap and _cv2_available:
-                # Video mode: render video frame, then BBS window, then scanline overlay
-                # Read next frame from video
-                ret, frame = self.video_cap.read()
-                if ret:
-                    # Convert BGR to RGB (OpenCV uses BGR, pygame uses RGB)
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    # Resize video frame to match screen size
-                    frame_resized = cv2.resize(frame_rgb, (self.screen_width, self.screen_height))
-                    # Convert numpy array to pygame surface
-                    # pygame.surfarray expects (width, height) format, so we need to swap axes
-                    frame_swapped = np.swapaxes(frame_resized, 0, 1)
-                    self.video_frame = pygame.surfarray.make_surface(frame_swapped)
-                    # Draw video frame as background
-                    self.screen.blit(self.video_frame, (0, 0))
-                else:
-                    # Video ended, loop back to beginning
-                    self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    ret, frame = self.video_cap.read()
-                    if ret:
-                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        frame_resized = cv2.resize(frame_rgb, (self.screen_width, self.screen_height))
-                        frame_swapped = np.swapaxes(frame_resized, 0, 1)
-                        self.video_frame = pygame.surfarray.make_surface(frame_swapped)
-                        self.screen.blit(self.video_frame, (0, 0))
+                    # Normal mode: render desktop background, then BBS window
+                    # Draw desktop background
+                    if self.desktop_bg:
+                        self.screen.blit(self.desktop_bg, (0, 0))
                     else:
-                        # Fallback if video can't be read
                         self.screen.fill(BLACK)
+                    
+                    # Draw BBS window on top
+                    self.screen.blit(self.bbs_surface, (self.bbs_x, self.bbs_y))
                 
-                # Draw BBS window on top of video
-                self.screen.blit(self.bbs_surface, (self.bbs_x, self.bbs_y))
+                # (OSBoot video rendering moved to after OS Mode)
                 
+                # Draw OS Mode desktop environment (after BBS window and OSBoot video)
+                if self.os_mode_active and self.os_mode:
+                    self.os_mode.draw()
             else:
-                # Normal mode: render desktop background, then BBS window
-                # Draw desktop background
-                if self.desktop_bg:
-                    self.screen.blit(self.desktop_bg, (0, 0))
+                if self.game_freeze_frame:
+                    self.screen.blit(self.game_freeze_frame, (0, 0))
                 else:
                     self.screen.fill(BLACK)
-                
-                # Draw BBS window on top
-                self.screen.blit(self.bbs_surface, (self.bbs_x, self.bbs_y))
-            
-            # (OSBoot video rendering moved to after OS Mode)
-            
-            # Draw OS Mode desktop environment (after BBS window and OSBoot video)
-            if self.os_mode_active and self.os_mode:
-                self.os_mode.draw()
+
+            # Update desktop background/video state before rendering layers (needed for ambient audio logic)
+            self._update_audio_power_state()
+
+            if self.game_freeze_pending_capture and not self.game_freeze_active:
+                self.game_freeze_frame = self.screen.copy()
+                self.game_freeze_pending_capture = False
+                self.game_freeze_active = True
 
             # Draw black rectangle behind game session (matches scanline dimensions, renders before game)
             if self.state == "game_session" and self.active_game_session:
@@ -5205,153 +5238,154 @@ class GLYPHIS_IOBBS:
                         log_event("ERROR: Failed to initialize OS Mode after OSBoot video")
                         self.state = "loading"
 
-            overlays: list[tuple[pygame.Surface, tuple[int, int]]] = []
-            if self.state == "urgent_ops_session" and self.active_ops_session:
-                overlay_getter = getattr(self.active_ops_session, "get_screen_overlays", None)
-                if overlay_getter:
-                    try:
-                        overlays = overlay_getter() or []
-                    except Exception:
-                        overlays = []
-            for overlay_surface, (offset_x, offset_y) in overlays:
-                if overlay_surface:
-                    screen_pos = (self.bbs_x + offset_x, self.bbs_y + offset_y)
-                    self.screen.blit(overlay_surface, screen_pos)
-
-            # Draw OS Mode cursor (before scanlines) if in OS mode and mouse is in desktop
-            if self.os_mode_active and self.os_mode:
-                mouse_x, mouse_y = pygame.mouse.get_pos()
-                if self.os_mode.is_mouse_in_desktop(mouse_x, mouse_y):
-                    # Draw OS cursor as sprite (under scanlines)
-                    self.os_mode.draw_cursor(mouse_x, mouse_y)
-                    # Hide system cursor when using OS cursor
-                    pygame.mouse.set_visible(False)
-                else:
-                    # Mouse outside desktop - show system cursor
-                    pygame.mouse.set_visible(True)
-            
-            # Draw scanline overlay (BBS scanline when not in OS mode, desktop scanline when in OS mode)
-            # Skip scanlines for new_game_prompt state
-            if self.state == "new_game_prompt":
-                pass  # No scanlines on new game prompt
-            elif self.os_mode_active and self.os_mode:
-                # Draw desktop scanline in OS mode (over cursor)
-                self.os_mode.draw_scanline()
-                # Draw OS mode overlay rectangle (after scanline)
-                self.os_mode.draw_overlay()
-            elif self.scanline_image:
-                # Draw BBS scanline when not in OS mode
-                # Position it exactly where the desktop scanline goes (same as OS_Mode.py)
-                baseline_desktop_x = 176
-                baseline_desktop_y = 209
-                desktop_x = int(baseline_desktop_x * self.scale)
-                desktop_y = int(baseline_desktop_y * self.scale)
-                
-                # Get desktop size (use os_mode if available, otherwise load desktop image to get size)
-                if self.os_mode and hasattr(self.os_mode, 'desktop_size'):
-                    desktop_size = self.os_mode.desktop_size
-                else:
-                    # Load desktop image to get its size
-                    try:
-                        desktop_path = get_data_path("OS", "Desktop-Enviroment.png")
-                        desktop_image = pygame.image.load(desktop_path)
-                        original_size = desktop_image.get_size()
-                        desktop_size = (
-                            int(original_size[0] * self.scale),
-                            int(original_size[1] * self.scale)
-                        )
-                    except Exception:
-                        # Fallback to BBS size if desktop image can't be loaded
-                        desktop_size = (self.bbs_width, self.bbs_height)
-                
-                # Scale scanline to match desktop size (not BBS size)
-                scanline_scaled = pygame.transform.scale(self.scanline_image, desktop_size)
-                # Position at desktop coordinates (not BBS coordinates)
-                self.screen.blit(scanline_scaled, (desktop_x, desktop_y))
-
-            # Draw mouse coordinates (skip during new_game_prompt)
-            if self.state != "new_game_prompt":
-                mouse_x, mouse_y = pygame.mouse.get_pos()
-                mouse_text = f"Mouse: {mouse_x}, {mouse_y}"
-                mouse_surface = self.font_tiny.render(mouse_text, True, CYAN)
-                self.screen.blit(mouse_surface, (10, 10))
-
-                bbs_local_x = (mouse_x - self.bbs_x) / self.scale
-                bbs_local_y = (mouse_y - self.bbs_y) / self.scale
-                bbs_text = f"BBS Window: {int(bbs_local_x)}, {int(bbs_local_y)}"
-                bbs_surface = self.font_tiny.render(bbs_text, True, CYAN)
-                bbs_text_y = 10 + mouse_surface.get_height() + int(4 * self.scale)
-                self.screen.blit(bbs_surface, (10, bbs_text_y))
-            
-            # Draw FPS display below Mouse and BBS Window text
-            try:
-                fps_text = f"FPS: {int(self.fps_actual)}/{self.fps_target}"
-                fps_surface = self.font_tiny.render(fps_text, True, CYAN)
-                fps_y = bbs_text_y + bbs_surface.get_height() + int(4 * self.scale)
-                self.screen.blit(fps_surface, (10, fps_y))
-            except Exception:
-                pass  # Silently fail if font rendering fails
-            
-            self.documentation_viewer.draw(self.screen)
-            self.documentation_viewer.apply_cursor()
-            
-            # Update cursor based on mouse position (only for areas outside OS desktop)
-            if self.os_mode_active and self.os_mode:
-                # OS mode is active - cursor drawing is handled above (before scanlines)
-                # Only update system cursor when mouse is outside desktop
-                mouse_x, mouse_y = pygame.mouse.get_pos()
-                if not self.os_mode.is_mouse_in_desktop(mouse_x, mouse_y):
-                    # Mouse is outside desktop - use default cursor (hand cursor)
-                    is_night = _is_tokyo_nighttime()
-                    mouse_buttons = pygame.mouse.get_pressed()
-                    
-                    if is_night:
-                        if mouse_buttons[0] and self.mouse_hand_cursor_click_night:
-                            cursor_to_use = self.mouse_hand_cursor_click_night
-                        else:
-                            cursor_to_use = self.mouse_hand_cursor_night
-                    else:
-                        if mouse_buttons[0] and self.mouse_hand_cursor_click:
-                            cursor_to_use = self.mouse_hand_cursor_click
-                        else:
-                            cursor_to_use = self.mouse_hand_cursor
-                    
-                    if cursor_to_use:
+            if not self.game_freeze_active:
+                overlays: list[tuple[pygame.Surface, tuple[int, int]]] = []
+                if self.state == "urgent_ops_session" and self.active_ops_session:
+                    overlay_getter = getattr(self.active_ops_session, "get_screen_overlays", None)
+                    if overlay_getter:
                         try:
-                            pygame.mouse.set_cursor(cursor_to_use)
+                            overlays = overlay_getter() or []
                         except Exception:
-                            pass
-            else:
-                # OS mode not active - use normal cursor logic
-                self._update_cursor()
-            
-            # Draw black rectangles if overlay is active
-            overlay_x, overlay_y, overlay_w, overlay_h = OVERLAY_HOTSPOT
-            overlay_hotspot_rect = pygame.Rect(
-                int(overlay_x * self.scale),
-                int(overlay_y * self.scale),
-                int(overlay_w * self.scale),
-                int(overlay_h * self.scale)
-            )
-            if self.bbs_overlay_active:
-                # Black rectangle covering entire BBS window
-                bbs_overlay_rect = pygame.Rect(self.bbs_x, self.bbs_y, self.bbs_width, self.bbs_height)
-                pygame.draw.rect(self.screen, BLACK, bbs_overlay_rect)
+                            overlays = []
+                for overlay_surface, (offset_x, offset_y) in overlays:
+                    if overlay_surface:
+                        screen_pos = (self.bbs_x + offset_x, self.bbs_y + offset_y)
+                        self.screen.blit(overlay_surface, screen_pos)
+
+                # Draw OS Mode cursor (before scanlines) if in OS mode and mouse is in desktop
+                if self.os_mode_active and self.os_mode:
+                    mouse_x, mouse_y = pygame.mouse.get_pos()
+                    if self.os_mode.is_mouse_in_desktop(mouse_x, mouse_y):
+                        # Draw OS cursor as sprite (under scanlines)
+                        self.os_mode.draw_cursor(mouse_x, mouse_y)
+                        # Hide system cursor when using OS cursor
+                        pygame.mouse.set_visible(False)
+                    else:
+                        # Mouse outside desktop - show system cursor
+                        pygame.mouse.set_visible(True)
                 
-                # Black rectangle covering the overlay hotspot (stretched right 20px and down 15px, scaled)
-                stretched_hotspot_rect = pygame.Rect(
+                # Draw scanline overlay (BBS scanline when not in OS mode, desktop scanline when in OS mode)
+                # Skip scanlines for new_game_prompt state
+                if self.state == "new_game_prompt":
+                    pass  # No scanlines on new game prompt
+                elif self.os_mode_active and self.os_mode:
+                    # Draw desktop scanline in OS mode (over cursor)
+                    self.os_mode.draw_scanline()
+                    # Draw OS mode overlay rectangle (after scanline)
+                    self.os_mode.draw_overlay()
+                elif self.scanline_image:
+                    # Draw BBS scanline when not in OS mode
+                    # Position it exactly where the desktop scanline goes (same as OS_Mode.py)
+                    baseline_desktop_x = 176
+                    baseline_desktop_y = 209
+                    desktop_x = int(baseline_desktop_x * self.scale)
+                    desktop_y = int(baseline_desktop_y * self.scale)
+                    
+                    # Get desktop size (use os_mode if available, otherwise load desktop image to get size)
+                    if self.os_mode and hasattr(self.os_mode, 'desktop_size'):
+                        desktop_size = self.os_mode.desktop_size
+                    else:
+                        # Load desktop image to get its size
+                        try:
+                            desktop_path = get_data_path("OS", "Desktop-Enviroment.png")
+                            desktop_image = pygame.image.load(desktop_path)
+                            original_size = desktop_image.get_size()
+                            desktop_size = (
+                                int(original_size[0] * self.scale),
+                                int(original_size[1] * self.scale)
+                            )
+                        except Exception:
+                            # Fallback to BBS size if desktop image can't be loaded
+                            desktop_size = (self.bbs_width, self.bbs_height)
+                    
+                    # Scale scanline to match desktop size (not BBS size)
+                    scanline_scaled = pygame.transform.scale(self.scanline_image, desktop_size)
+                    # Position at desktop coordinates (not BBS coordinates)
+                    self.screen.blit(scanline_scaled, (desktop_x, desktop_y))
+
+                # Draw mouse coordinates (skip during new_game_prompt)
+                if self.state != "new_game_prompt":
+                    mouse_x, mouse_y = pygame.mouse.get_pos()
+                    mouse_text = f"Mouse: {mouse_x}, {mouse_y}"
+                    mouse_surface = self.font_tiny.render(mouse_text, True, CYAN)
+                    self.screen.blit(mouse_surface, (10, 10))
+
+                    bbs_local_x = (mouse_x - self.bbs_x) / self.scale
+                    bbs_local_y = (mouse_y - self.bbs_y) / self.scale
+                    bbs_text = f"BBS Window: {int(bbs_local_x)}, {int(bbs_local_y)}"
+                    bbs_surface = self.font_tiny.render(bbs_text, True, CYAN)
+                    bbs_text_y = 10 + mouse_surface.get_height() + int(4 * self.scale)
+                    self.screen.blit(bbs_surface, (10, bbs_text_y))
+                
+                # Draw FPS display below Mouse and BBS Window text
+                try:
+                    fps_text = f"FPS: {int(self.fps_actual)}/{self.fps_target}"
+                    fps_surface = self.font_tiny.render(fps_text, True, CYAN)
+                    fps_y = bbs_text_y + bbs_surface.get_height() + int(4 * self.scale)
+                    self.screen.blit(fps_surface, (10, fps_y))
+                except Exception:
+                    pass  # Silently fail if font rendering fails
+                
+                self.documentation_viewer.draw(self.screen)
+                self.documentation_viewer.apply_cursor()
+                
+                # Update cursor based on mouse position (only for areas outside OS desktop)
+                if self.os_mode_active and self.os_mode:
+                    # OS mode is active - cursor drawing is handled above (before scanlines)
+                    # Only update system cursor when mouse is outside desktop
+                    mouse_x, mouse_y = pygame.mouse.get_pos()
+                    if not self.os_mode.is_mouse_in_desktop(mouse_x, mouse_y):
+                        # Mouse is outside desktop - use default cursor (hand cursor)
+                        is_night = _is_tokyo_nighttime()
+                        mouse_buttons = pygame.mouse.get_pressed()
+                        
+                        if is_night:
+                            if mouse_buttons[0] and self.mouse_hand_cursor_click_night:
+                                cursor_to_use = self.mouse_hand_cursor_click_night
+                            else:
+                                cursor_to_use = self.mouse_hand_cursor_night
+                        else:
+                            if mouse_buttons[0] and self.mouse_hand_cursor_click:
+                                cursor_to_use = self.mouse_hand_cursor_click
+                            else:
+                                cursor_to_use = self.mouse_hand_cursor
+                        
+                        if cursor_to_use:
+                            try:
+                                pygame.mouse.set_cursor(cursor_to_use)
+                            except Exception:
+                                pass
+                else:
+                    # OS mode not active - use normal cursor logic
+                    self._update_cursor()
+                
+                # Draw black rectangles if overlay is active
+                overlay_x, overlay_y, overlay_w, overlay_h = OVERLAY_HOTSPOT
+                overlay_hotspot_rect = pygame.Rect(
                     int(overlay_x * self.scale),
                     int(overlay_y * self.scale),
-                    int((overlay_w + 20) * self.scale),
-                    int((overlay_h + 15) * self.scale)
+                    int(overlay_w * self.scale),
+                    int(overlay_h * self.scale)
                 )
-                pygame.draw.rect(self.screen, BLACK, stretched_hotspot_rect)
-            
-            # Periodically check for new emails (every 60 frames = ~1 second at 60fps)
-            self._email_check_counter += 1
-            if self._email_check_counter >= 60:
-                self.check_email_database()
-                self._email_check_counter = 0
+                if self.bbs_overlay_active:
+                    # Black rectangle covering entire BBS window
+                    bbs_overlay_rect = pygame.Rect(self.bbs_x, self.bbs_y, self.bbs_width, self.bbs_height)
+                    pygame.draw.rect(self.screen, BLACK, bbs_overlay_rect)
+                    
+                    # Black rectangle covering the overlay hotspot (stretched right 20px and down 15px, scaled)
+                    stretched_hotspot_rect = pygame.Rect(
+                        int(overlay_x * self.scale),
+                        int(overlay_y * self.scale),
+                        int((overlay_w + 20) * self.scale),
+                        int((overlay_h + 15) * self.scale)
+                    )
+                    pygame.draw.rect(self.screen, BLACK, stretched_hotspot_rect)
+                
+                # Periodically check for new emails (every 60 frames = ~1 second at 60fps)
+                self._email_check_counter += 1
+                if self._email_check_counter >= 60:
+                    self.check_email_database()
+                    self._email_check_counter = 0
             
             # Update display
             pygame.display.flip()

@@ -9,6 +9,9 @@ from typing import Optional, Tuple
 # Try to load the DLL
 _dll = None
 _dll_path = None
+_PRESET_MAP = {"low": 0, "medium": 1, "high": 2}
+_render_preset: Optional[int] = None
+_requested_resolution: Optional[Tuple[int, int]] = None
 
 def _find_dll() -> Optional[str]:
     """Find the astrominer DLL."""
@@ -24,6 +27,51 @@ def _find_dll() -> Optional[str]:
         if os.path.exists(path):
             return os.path.abspath(path)
     return None
+
+def _get_requested_preset() -> int:
+    global _render_preset
+    if _render_preset is not None:
+        return _render_preset
+    env_value = os.environ.get("ASTROMINER_RESOLUTION", "").strip().lower()
+    if env_value == "auto":
+        return 2  # default to high when auto is requested and no explicit size was set
+    return _PRESET_MAP.get(env_value, 1)
+
+def set_resolution_mode(mode: str) -> bool:
+    """Set desired render preset before initializing the DLL."""
+    global _render_preset, _requested_resolution
+    if not mode:
+        return False
+    preset = _PRESET_MAP.get(mode.strip().lower())
+    if preset is None:
+        print(f"[astrominer_embed] Unknown resolution mode '{mode}', valid options: {list(_PRESET_MAP.keys())}")
+        return False
+    _render_preset = preset
+    _requested_resolution = None
+    if _dll is not None and getattr(_dll, "_has_resolution_preset", False):
+        try:
+            _dll.SetRenderResolutionPreset(preset)
+        except Exception as exc:
+            print(f"[astrominer_embed] Warning: Failed to push resolution preset to DLL: {exc}")
+    return True
+
+def set_render_resolution(width: int, height: int) -> bool:
+    """Request an explicit render resolution before initializing the DLL."""
+    global _requested_resolution, _render_preset
+    try:
+        width = max(320, int(width))
+        height = max(200, int(height))
+    except (TypeError, ValueError):
+        print("[astrominer_embed] Invalid resolution values supplied.")
+        return False
+    _requested_resolution = (width, height)
+    _render_preset = None
+    if _dll is not None and getattr(_dll, "_has_resolution", False):
+        try:
+            _dll.SetRenderResolution(width, height)
+        except Exception as exc:
+            print(f"[astrominer_embed] Warning: Failed to push custom resolution {width}x{height}: {exc}")
+    return True
 
 def initialize() -> bool:
     """Initialize the embedded game DLL."""
@@ -106,8 +154,40 @@ def initialize() -> bool:
         _dll.SetMouseDelta.restype = None
         _dll.SetMouseDelta.argtypes = [ctypes.c_float, ctypes.c_float]
         
+        try:
+            _dll.SetRenderResolution.restype = None
+            _dll.SetRenderResolution.argtypes = [ctypes.c_int, ctypes.c_int]
+            _dll._has_resolution = True
+        except AttributeError:
+            _dll._has_resolution = False
+
+        try:
+            _dll.SetRenderResolutionPreset.restype = None
+            _dll.SetRenderResolutionPreset.argtypes = [ctypes.c_int]
+            _dll._has_resolution_preset = True
+        except AttributeError:
+            _dll._has_resolution_preset = False
+        
         # Initialize the game first (before optional functions)
         # NOTE: CWD is still dll_dir here, so shaders should load fine
+        resolution_applied = False
+        if _requested_resolution and getattr(_dll, "_has_resolution", False):
+            try:
+                width, height = _requested_resolution
+                _dll.SetRenderResolution(int(width), int(height))
+                resolution_applied = True
+                print(f"[astrominer_embed] Applied custom resolution {width}x{height}")
+            except Exception as exc:
+                print(f"[astrominer_embed] Warning: Failed to apply custom resolution {_requested_resolution}: {exc}")
+        if not resolution_applied and getattr(_dll, "_has_resolution_preset", False):
+            try:
+                preset_value = int(_get_requested_preset())
+                _dll.SetRenderResolutionPreset(preset_value)
+                resolution_applied = True
+                print(f"[astrominer_embed] Applied preset resolution '{preset_value}'")
+            except Exception as exc:
+                print(f"[astrominer_embed] Warning: Failed to apply render resolution preset: {exc}")
+
         if not _dll.InitializeGame():
             print("ERROR: Failed to initialize game")
             return False
@@ -198,12 +278,14 @@ def get_frame_surface() -> Optional[pygame.Surface]:
                 print(f"[get_frame_surface] ERROR: GetFrameBuffer returned NULL")
             return None
         
-        # Read the pixel data
+        # Read the pixel data (zero-copy view over DLL buffer)
         size = width * height * 4  # RGBA
-        buf = ctypes.string_at(ptr, size)
+        address = ctypes.addressof(ptr.contents)
+        array_type = ctypes.c_ubyte * size
+        buf_view = memoryview(array_type.from_address(address))
         
         # Create pygame surface from buffer
-        surf = pygame.image.frombuffer(buf, (width, height), "RGBA")
+        surf = pygame.image.frombuffer(buf_view, (width, height), "RGBA")
         surf = pygame.transform.flip(surf, False, True)  # Flip vertically
         return surf.convert_alpha()
     except Exception as e:

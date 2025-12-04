@@ -19,9 +19,11 @@ unsigned char* g_frame_buffer_data = NULL;
 int g_frame_buffer_size = 0;
 bool g_game_initialized = false;
 
-// Optimization: Render at half resolution
-#define RENDER_WIDTH 600
-#define RENDER_HEIGHT 400
+// Optimization: Render at half resolution (dynamically adjustable)
+int g_dynamicRenderWidth = 600;
+int g_dynamicRenderHeight = 400;
+#define RENDER_WIDTH g_dynamicRenderWidth
+#define RENDER_HEIGHT g_dynamicRenderHeight
 #define VIRTUAL_WIDTH 1200
 #define VIRTUAL_HEIGHT 800
 
@@ -44,12 +46,18 @@ __declspec(dllexport) __cdecl unsigned char* GetFrameBuffer() {
     }
     
     // Read pixels from the render texture
-    // NOTE: This is slow because it reads from GPU to CPU every frame
-    // Reducing resolution to 600x400 (4x fewer pixels) speeds this up significantly
-    Image img = LoadImageFromTexture(g_framebuffer.texture);
+    // PERFORMANCE NOTE: This is the bottleneck - glReadPixels forces GPU->CPU transfer
+    // The game renders fast on GPU, but reading back 600x400x4 bytes (960KB) every frame
+    // causes pipeline stalls. Ideal solution: Share OpenGL texture directly with Pygame
+    // to avoid CPU readback entirely. Current workaround: Keep resolution low (600x400).
+    
+    // OPTIMIZATION: Use rlReadTexturePixels directly to avoid Image struct overhead
+    // This still does glReadPixels internally, but avoids one allocation/free cycle
+    int width = g_framebuffer.texture.width;
+    int height = g_framebuffer.texture.height;
+    int size = width * height * 4; // RGBA
     
     // Allocate persistent buffer if needed
-    int size = img.width * img.height * 4; // RGBA
     if (g_frame_buffer_size != size) {
         if (g_frame_buffer_data) {
             MemFree(g_frame_buffer_data);
@@ -58,11 +66,18 @@ __declspec(dllexport) __cdecl unsigned char* GetFrameBuffer() {
         g_frame_buffer_size = size;
     }
     
-    // Copy pixel data to persistent buffer
+    // Read texture pixels directly into our buffer
+    // This internally uses glReadPixels which is slow, but we avoid Image allocation
+    void* pixels = rlReadTexturePixels(g_framebuffer.texture.id, width, height, g_framebuffer.texture.format);
+    if (pixels) {
+        memcpy(g_frame_buffer_data, pixels, size);
+        MemFree(pixels); // rlReadTexturePixels allocates, we must free
+    } else {
+        // Fallback to LoadImageFromTexture if rlReadTexturePixels fails
+        Image img = LoadImageFromTexture(g_framebuffer.texture);
     memcpy(g_frame_buffer_data, img.data, size);
-    
-    // Clean up temporary image
     UnloadImage(img);
+    }
     
     return g_frame_buffer_data;
 }
@@ -75,6 +90,51 @@ __declspec(dllexport) __cdecl int GetWidth() {
 __declspec(dllexport) __cdecl int GetHeight() {
     if (!g_framebuffer_initialized) return 0;
     return g_framebuffer.texture.height;
+}
+
+__declspec(dllexport) __cdecl unsigned int GetFrameTextureHandle() {
+    return g_framebuffer.texture.id;
+}
+
+__declspec(dllexport) __cdecl void SetRenderResolution(int width, int height) {
+    if (g_framebuffer_initialized || g_game_initialized) {
+        printf("[SetRenderResolution] Warning: Attempted to change resolution after initialization - request ignored.\n");
+        return;
+    }
+    if (width < 320) width = 320;
+    if (height < 200) height = 200;
+    g_dynamicRenderWidth = width;
+    g_dynamicRenderHeight = height;
+    printf("[SetRenderResolution] Using custom %dx%d render resolution.\n", width, height);
+}
+
+__declspec(dllexport) __cdecl void SetRenderResolutionPreset(int preset) {
+    if (g_framebuffer_initialized || g_game_initialized) {
+        printf("[SetRenderResolutionPreset] Warning: Attempted to change resolution after initialization - request ignored.\n");
+        return;
+    }
+    
+    int newWidth = 600;
+    int newHeight = 400;
+    
+    switch (preset) {
+        case 0: // Low
+            newWidth = 480;
+            newHeight = 320;
+            break;
+        case 2: // High
+            newWidth = 720;
+            newHeight = 480;
+            break;
+        default: // Medium / fallback
+            newWidth = 600;
+            newHeight = 400;
+            break;
+    }
+    
+    g_dynamicRenderWidth = newWidth;
+    g_dynamicRenderHeight = newHeight;
+    printf("[SetRenderResolutionPreset] Using %dx%d render resolution preset (%d).\n", newWidth, newHeight, preset);
 }
 
 // Forward declarations for functions defined later
@@ -113,6 +173,62 @@ typedef enum {
     STATE_GAME_OVER
 } GameState;
 
+// ------------------------------------------------------------
+// COMMODITIES SYSTEM
+// ------------------------------------------------------------
+typedef enum {
+    COMMODITY_WATER_ICE = 0,
+    COMMODITY_LUNAR_REGOLITH,
+    COMMODITY_HYDROCARBONS,
+    COMMODITY_CRYOGENIC_FLUIDS,
+    COMMODITY_HELIUM_4,
+    COMMODITY_HYDROGEN_ISOTOPES,
+    COMMODITY_ARCANITE,
+    COMMODITY_PYROTHITE,
+    COMMODITY_CHRONITE,
+    COMMODITY_XENON_CRYSTALS,
+    COMMODITY_PLASMATIC_DIAMONDS,
+    NUM_COMMODITIES
+} CommodityType;
+
+const char* g_commodityNames[NUM_COMMODITIES] = {
+    "Water Ice", "Lunar Regolith", "Hydrocarbons", 
+    "Cryogenic Fluids", "Helium-4 Isotopes", "Hydrogen Isotopes",
+    "Arcanite", "Pyrothite Geodes", "Chronite",
+    "Xenon Crystals", "Plasmatic Diamonds"
+};
+
+// Base prices for commodities (in credits per unit)
+int g_commodityBasePrices[NUM_COMMODITIES] = {
+    5, 10, 15,    // Low: Water Ice, Lunar Regolith, Hydrocarbons
+    30, 50, 70,   // Medium: Cryogenic Fluids, Helium-4, Hydrogen Isotopes
+    120, 180, 250,// High: Arcanite, Pyrothite Geodes, Chronite
+    400, 800      // Very High: Xenon Crystals, Plasmatic Diamonds
+};
+
+// Asteroid-to-Commodity Abundance Matrix
+// Each asteroid (index 0-5 = A-F) has a distribution of commodities
+// Values represent relative abundance (0-100), higher = more common
+// Based on Oort Cloud science: ice/volatiles common, exotic materials rare
+int g_asteroidCommodityAbundance[6][NUM_COMMODITIES] = {
+    // Asteroid A (Low prosperity): More common materials, rare materials very rare
+    // Water Ice, Regolith, Hydrocarbons, Cryogenic Fluids, Helium-4, Hydrogen Isotopes, Arcanite, Pyrothite, Chronite, Xenon, Plasmatic
+    {80, 70, 60, 40, 30, 25, 5, 4, 3, 1, 1},  // Hundreds: 5-3%, Thousands: 1%
+    // Asteroid B
+    {75, 65, 55, 45, 35, 30, 8, 6, 4, 1, 1},  // Hundreds: 8-4%, Thousands: 1%
+    // Asteroid C (Medium prosperity): Balanced
+    {70, 60, 50, 50, 40, 35, 12, 10, 7, 2, 1},  // Hundreds: 12-7%, Thousands: 2-1%
+    // Asteroid D
+    {65, 55, 45, 55, 45, 40, 15, 12, 9, 2, 1},  // Hundreds: 15-9%, Thousands: 2-1%
+    // Asteroid E (High prosperity): More rare materials but still rare
+    {60, 50, 40, 60, 50, 45, 18, 15, 12, 3, 2},  // Hundreds: 18-12%, Thousands: 3-2%
+    // Asteroid F (Very high prosperity): Exotic materials slightly more common but still rare
+    {55, 45, 35, 65, 55, 50, 20, 18, 15, 4, 3}   // Hundreds: 20-15%, Thousands: 4-3%
+};
+
+// Station-specific buy prices (calculated based on available asteroids)
+int g_stationBuyPrices[3][NUM_COMMODITIES];  // [location][commodity]
+
 typedef struct {
     float fuel;
     float maxFuel;
@@ -125,9 +241,8 @@ typedef struct {
     int maxCredits;   // Max credits (100000)
     int cargoSpace;
     int cargoFilled;
-    // Market Goods
-    int iron;
-    int gold;
+    // Market Goods - REPLACED with Inventory Array
+    int inventory[NUM_COMMODITIES];
     bool hasLaser;  // Whether player has a laser equipped
     bool hasCollector;  // Whether player has collector upgrade
     float thrusterBoost;  // Thruster boost multiplier (1.0 = no boost, 1.2 = 20% boost)
@@ -138,15 +253,23 @@ typedef struct {
     float maxLaserHeat;     // Max heat (100.0)
     float laserCooldown;    // Timer for overheat cooldown
     bool laserOverheated;   // Flag if overheated
+    // Ship upgrades
+    bool hasFuelTankUpgrade;  // Station: Increased fuel capacity
+    bool hasCargoBlackHole;  // Station: 50 cargo capacity
+    bool hasBetterLaser;      // Halo: Better laser
+    bool hasBetterCollector;  // Halo: Better collector
+    int shipColor;            // 0=Blue (default), 1=Red, 2=Green, 3=Purple
 } PlayerData;
 
 // Global Player Instance - New game defaults
 // cargoSpace = 50 (max cargo capacity) - actually used as 25 for debris
 // hasLaser = false (new players start with no laser)
 PlayerData G_Player = { 
-    100.0f, 100.0f, 100.0f, 100.0f, 20.0f, 100.0f, 1, 1000, 100000, 25, 0, 0, 0, 
+    100.0f, 100.0f, 100.0f, 100.0f, 20.0f, 100.0f, 1, 1000, 100000, 25, 0, 
+    {0,0,0,0,0,0,0,0,0,0,0}, // Inventory initialized to 0
     false, false, 1.0f, 1.0f, false, 
-    0.0f, 100.0f, 0.0f, false // Laser defaults
+    0.0f, 100.0f, 0.0f, false, // Laser defaults
+    false, false, false, false, 0 // Ship upgrades
 };
 
 // ------------------------------------------------------------
@@ -168,6 +291,8 @@ Camera3D g_camera = {0};
 Model g_ship = {0};
 Model g_rockModel = {0};
 Model g_shopItemModels[6] = {0};  // Shop item models: A=Laser, B=Collector, C=Thruster, D=ExoPlating, E=Fuel, F=Repairs
+Model g_stationShopModels[6] = {0};  // Station shop models: A=FuelTank, B=CargoBlackHole, C=Fuel, D=RedShip, E=GreenShip, F=PurpleShip
+Model g_haloShopModels[6] = {0};  // Halo shop models: A=BetterLaser, B=BetterCollector, C=Fuel, D=RedShip, E=GreenShip, F=PurpleShip
 Texture2D scanlineTx = {0};
 Texture2D guiHudTx = {0};
 Texture2D splash0Tx = {0};
@@ -178,7 +303,11 @@ Texture2D splashLoadGameTx = {0};
 Texture2D splashQuitGameTx = {0};
 // Depot home page PNGs
 Texture2D prospectGuiTx = {0};
+Texture2D asteroidProspectsBgTx = {0}; // Astriod_Prospects.png background
 Texture2D shipyardGuiTx = {0};
+Texture2D upgradesShinjukuTx = {0}; // upgrades_shijuku.png for Depot
+Texture2D upgradesHirohitoTx = {0}; // upgrades_hirohito.png for Station
+Texture2D upgradesNagakoTx = {0}; // upgrades_nagako.png for Halo
 Texture2D commoditiesGuiTx = {0};
 Texture2D barGuiTx = {0};
 // Prospect page overlays (base + A-F variants)
@@ -199,6 +328,8 @@ int g_selectedAsteroidFuelCost = 0;  // Random fuel cost (20-50)
 int g_selectedAsteroidGravity = 0;  // Gravity percentage of selected asteroid
 int g_selectedAsteroidProspect = 0;  // Prosperity percentage of selected asteroid
 bool g_fuelCheckFailed = false;  // Flag for fuel check failure
+bool g_showFuelWarningModal = false;  // Show separate fuel warning modal
+float g_fuelWarningTimer = 0.0f;  // Timer for fuel warning modal (3 seconds)
 bool g_missionInProgress = false;  // Track if player is on a mission (for return fuel deduction)
 float g_asteroidRotation = 0.0f;  // Rotation angle for spinning asteroids
 bool g_showGetReady = false;  // Show "GET READY" splash screen before lander
@@ -208,10 +339,20 @@ RenderTexture2D g_navViewport = {0};  // Render texture for navigation screen
 bool g_navViewportInitialized = false;
 bool g_asteroidViewportInitialized = false;
 
+// Audio
+Sound g_terminalTypeSound = {0};  // Sound for terminal typing
+Music g_backgroundMusic = {0};  // Background music (AstroMiner.mp3)
+Music g_backgroundMusic2 = {0}; // Background music 2 (AstroMiner2.mp3)
+int g_currentTrack = 0; // 0=AstroMiner, 1=AstroMiner2
+
 // Shipyard shop system
 bool g_showShipyardShop = false;  // Show shipyard shop when Enter pressed on page 2
 int g_shipyardPageOverlay = 0;  // 0=base, 1=A, 2=B, 3=C, 4=D, 5=E, 6=F
 bool g_showShopModal = false;  // Show modal when shop item letter is pressed
+bool g_showCommoditiesMarket = false;  // Show commodities market when Enter pressed on page 3
+int g_commoditiesMarketSelection = 0;  // Selected commodity index (0-NUM_COMMODITIES)
+bool g_showNoCommodityModal = false;  // Show modal when trying to sell commodity you don't have
+char g_noCommodityName[64] = "";  // Name of commodity you tried to sell
 int g_shopModalSelection = 0;  // 0=Purchase, 1=Exit
 int g_selectedShopItemIndex = 0;  // Which shop item (0-5 = A-F)
 bool g_purchaseFailed = false;  // Flag for purchase failure (insufficient credits)
@@ -219,10 +360,24 @@ char g_purchaseFailReason[64] = "INSUFFICIENT CREDITS";  // Reason for purchase 
 RenderTexture2D g_shipyardShopViewport = {0};  // Render texture for shop view
 bool g_shipyardShopViewportInitialized = false;
 float g_shopItemRotation = 0.0f;  // Rotation angle for shop items
+RenderTexture2D g_commoditiesMarketViewport = {0};  // Render texture for commodities market view
+bool g_commoditiesMarketViewportInitialized = false;
 
 // Asteroid Data (Persistent for Bar events)
+// Depot asteroids (lower prosperity, lower fuel)
 int g_prospectScores[6] = {10, 22, 34, 46, 58, 70};
 int g_gravityScores[6] = {25, 38, 51, 64, 76, 88};
+// Station asteroids (higher prosperity, higher fuel)
+int g_stationProspectScores[6] = {35, 48, 62, 75, 85, 95};
+int g_stationGravityScores[6] = {45, 58, 71, 84, 90, 95};
+// Halo asteroids (highest prosperity, highest fuel)
+int g_haloProspectScores[6] = {50, 65, 78, 88, 95, 100};
+int g_haloGravityScores[6] = {55, 68, 81, 90, 95, 98};
+
+// Forward declarations for commodity functions
+void ConvertDebrisToCommodity();
+void CalculateStationPrices();
+void RenderCommoditiesMarket();
 
 // Shop item overlay textures
 Texture2D shipyardPageTx = {0};  // Base shipyard_page.png
@@ -235,9 +390,10 @@ Texture2D shipyardPageFTx = {0}; // shipyard_page_F.png
 
 // Bar system
 Texture2D barPageTx = {0}; // bar_page.png
-// Station and Halo overlays
+// Station, Halo, and Depot overlays
 Texture2D hirohitoOverlayTx = {0}; // Hirohito_overlay.png
 Texture2D nagakoOverlayTx = {0};  // Nagako_overlay.png
+Texture2D shinjukuOverlayTx = {0}; // Shinjuku_overlay.png
 // Track current location for customization
 int g_currentLocation = 0; // 0=Depot, 1=Station, 2=Halo
 bool g_showBarView = false;
@@ -245,9 +401,14 @@ float g_barModalTimer = 0.0f; // Delay timer for modal appearance
 int g_barDrinksPurchased = 0;
 bool g_showBarRumorModal = false;
 bool g_showBarGoldCardModal = false;
+bool g_showBarGamblingModal = false;
+bool g_showBarScientistModal = false;
 char g_barRumorText[512] = {0};
-int g_barMenuSelection = 0; // 0=Beer, 1=Shot, 2=DrinksOnMe, 3=Exit
+char g_barGamblingText[512] = {0};
+char g_barScientistText[512] = {0};
+int g_barMenuSelection = 0; // Menu selection (varies by location)
 int g_barRandomMood = 0; // Random mood index for bar atmosphere
+int g_barMaxMenuItems = 4; // Number of menu items (varies by location)
 const char* g_barMoods[] = {
     "The air is thick with smoke and the smell of ozone.",
     "A rowdy group of miners are singing shanties in the corner.",
@@ -767,6 +928,92 @@ Mesh CreateFuelMesh() {
     return mesh;
 }
 
+// Create colored ship mesh (red, green, or purple)
+Mesh CreateColoredShipMesh(int colorType) {  // 0=red, 1=green, 2=purple
+    Vector3 nose={0,0,1.0f}, tail={0,0,-1.0f}, left={-0.8f,0,-0.5f}, right={0.8f,0,-0.5f}, top={0,0.3f,-0.2f}, bottom={0,-0.3f,-0.2f};
+    Vector3 tris[8][3]={{top,left,nose},{top,nose,right},{top,tail,left},{top,right,tail},{bottom,nose,left},{bottom,right,nose},{bottom,left,tail},{bottom,tail,right}};
+    
+    // Color palettes for different ship colors
+    Color col[8];
+    if (colorType == 0) {  // Red ship
+        Color redPalette[8] = {{255,50,50,255},{220,30,30,255},{200,20,20,255},{180,10,10,255},{160,5,5,255},{140,0,0,255},{120,0,0,255},{100,0,0,255}};
+        for(int i=0;i<8;i++) col[i]=redPalette[i];
+    } else if (colorType == 1) {  // Green ship
+        Color greenPalette[8] = {{50,255,50,255},{30,220,30,255},{20,200,20,255},{10,180,10,255},{5,160,5,255},{0,140,0,255},{0,120,0,255},{0,100,0,255}};
+        for(int i=0;i<8;i++) col[i]=greenPalette[i];
+    } else {  // Purple ship
+        Color purplePalette[8] = {{200,50,255,255},{180,30,220,255},{160,20,200,255},{140,10,180,255},{120,5,160,255},{100,0,140,255},{80,0,120,255},{60,0,100,255}};
+        for(int i=0;i<8;i++) col[i]=purplePalette[i];
+    }
+    
+    Mesh mesh={0}; mesh.triangleCount=8; mesh.vertexCount=24;
+    mesh.vertices=(float*)MemAlloc(mesh.vertexCount*3*sizeof(float));
+    mesh.normals=(float*)MemAlloc(mesh.vertexCount*3*sizeof(float));
+    mesh.colors=(unsigned char*)MemAlloc(mesh.vertexCount*4);
+    int idx=0;
+    for(int t=0;t<8;t++){
+        Vector3 n=Vector3Normalize(Vector3CrossProduct(Vector3Subtract(tris[t][1],tris[t][0]), Vector3Subtract(tris[t][2],tris[t][0])));
+        for(int k=0;k<3;k++){
+            mesh.vertices[idx*3+0]=tris[t][k].x; mesh.vertices[idx*3+1]=tris[t][k].y; mesh.vertices[idx*3+2]=tris[t][k].z;
+            mesh.normals[idx*3+0]=n.x; mesh.normals[idx*3+1]=n.y; mesh.normals[idx*3+2]=n.z;
+            mesh.colors[idx*4+0]=col[t].r; mesh.colors[idx*4+1]=col[t].g; mesh.colors[idx*4+2]=col[t].b; mesh.colors[idx*4+3]=col[t].a;
+            idx++;
+        }
+    }
+    UploadMesh(&mesh,false); return mesh;
+}
+
+// Create Fuel Tank Upgrade mesh (larger fuel tank)
+Mesh CreateFuelTankUpgradeMesh() {
+    // Similar to fuel mesh but larger
+    Mesh mesh = CreateFuelMesh();
+    // Scale it up slightly
+    for(int i=0; i<mesh.vertexCount*3; i++) {
+        mesh.vertices[i] *= 1.3f;
+    }
+    UploadMesh(&mesh,false);
+    return mesh;
+}
+
+// Create Cargo Black Hole mesh (dark sphere with glow effect)
+Mesh CreateCargoBlackHoleMesh() {
+    // Create a dark sphere-like mesh
+    Mesh mesh = {0};
+    mesh.triangleCount = 32;
+    mesh.vertexCount = mesh.triangleCount * 3;
+    mesh.vertices = (float*)MemAlloc(mesh.vertexCount * 3 * sizeof(float));
+    mesh.normals = (float*)MemAlloc(mesh.vertexCount * 3 * sizeof(float));
+    mesh.colors = (unsigned char*)MemAlloc(mesh.vertexCount * 4);
+    
+    float radius = 0.6f;
+    int idx = 0;
+    for(int i=0; i<16; i++) {
+        float theta1 = (float)i * 2.0f * PI / 16.0f;
+        float theta2 = (float)(i+1) * 2.0f * PI / 16.0f;
+        for(int j=0; j<2; j++) {
+            float phi1 = (float)j * PI / 2.0f - PI/4.0f;
+            float phi2 = (float)(j+1) * PI / 2.0f - PI/4.0f;
+            
+            Vector3 v1 = {radius*cos(phi1)*cos(theta1), radius*sin(phi1), radius*cos(phi1)*sin(theta1)};
+            Vector3 v2 = {radius*cos(phi1)*cos(theta2), radius*sin(phi1), radius*cos(phi1)*sin(theta2)};
+            Vector3 v3 = {radius*cos(phi2)*cos(theta1), radius*sin(phi2), radius*cos(phi2)*sin(theta1)};
+            
+            Vector3 n = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(v2, v1), Vector3Subtract(v3, v1)));
+            Color c = {10, 5, 20, 255};  // Dark purple/black
+            
+            for(int k=0; k<3; k++) {
+                Vector3 v = (k==0) ? v1 : (k==1) ? v2 : v3;
+                mesh.vertices[idx*3+0] = v.x; mesh.vertices[idx*3+1] = v.y; mesh.vertices[idx*3+2] = v.z;
+                mesh.normals[idx*3+0] = n.x; mesh.normals[idx*3+1] = n.y; mesh.normals[idx*3+2] = n.z;
+                mesh.colors[idx*4+0] = c.r; mesh.colors[idx*4+1] = c.g; mesh.colors[idx*4+2] = c.b; mesh.colors[idx*4+3] = c.a;
+                idx++;
+            }
+        }
+    }
+    UploadMesh(&mesh,false);
+    return mesh;
+}
+
 Mesh CreateRepairsMesh() {
     // Repairs: Double Gear (Large + Small) - Increased size by 100% (Double size)
     // GenMeshTorus(radius, size, radSeg, sides)
@@ -1014,7 +1261,7 @@ void DrawProjectedShadow(Vector3 shipPos) {
         for (float z = startZ; z < endZ; z += step) {
             float dx = x - shipPos.x; float dz = z - shipPos.z;
             if ((dx*dx + dz*dz) > (radius*radius)) continue;
-            float lift = 0.04f;
+            float lift = 0.15f; // Increased lift to prevent shadow collision with ship
             float y0 = GetWorldHeight(x, z) + lift;
             float y1 = GetWorldHeight(x, z + step) + lift;
             float y2 = GetWorldHeight(x + step, z + step) + lift;
@@ -1186,6 +1433,27 @@ void ResetState(GameState* currentState, int* menuSelection, GameState newState)
     // Reset depot_home page to 1 when entering DEPOT_HOME state
     if (newState == STATE_DEPOT_HOME) {
         g_depotHomePage = 1;
+        // Close any open overlays when returning to depot
+        g_showProspectAsteroids = false;
+        g_showShipyardShop = false;
+        g_showBarView = false;
+        g_showAsteroidModal = false;
+        g_showShopModal = false;
+        // Simulate left arrow key press to exit previous page
+        if (KEY_LEFT >= 0 && KEY_LEFT < 512) {
+            g_inputState.keysPressed[KEY_LEFT] = true;
+        }
+    } else if (newState == STATE_STATION_HOME || newState == STATE_HALO_HOME) {
+        // Close any open overlays when returning to station or halo
+        g_showProspectAsteroids = false;
+        g_showShipyardShop = false;
+        g_showBarView = false;
+        g_showAsteroidModal = false;
+        g_showShopModal = false;
+        // Simulate left arrow key press to exit previous page
+        if (KEY_LEFT >= 0 && KEY_LEFT < 512) {
+            g_inputState.keysPressed[KEY_LEFT] = true;
+        }
     }
 }
 
@@ -1205,6 +1473,13 @@ static bool CustomIsKeyPressed(int key) {
         return g_inputState.keysPressed[key];
     }
     return false;
+}
+
+// Helper function to play terminal type sound
+static void PlayTerminalTypeSound() {
+    if (g_terminalTypeSound.frameCount > 0) {
+        PlaySound(g_terminalTypeSound);
+    }
 }
 
 static bool CustomIsMouseButtonDown(int button) {
@@ -1313,7 +1588,12 @@ void DrawRetroWindow(const char* title, int x, int y, int w, int h) {
     DrawRectangle(x, y, w, h, panelFill);
     DrawRectangleLines(x, y, w, h, border);
     DrawRectangle(x, y, w, 30, border);
-    DrawText(title, x + 10, y + 5, 20, BLACK);
+    if (retroFont.texture.id > 0) {
+        Vector2 titleSize = MeasureTextEx(retroFont, title, 20.0f, 0);
+        DrawTextEx(retroFont, title, (Vector2){(float)(x + 10), (float)(y + 5)}, 20.0f, 0, BLACK);
+    } else {
+        DrawText(title, x + 10, y + 5, 20, BLACK);
+    }
 }
 
 // KEYBOARD NAVIGATION BUTTON
@@ -1323,10 +1603,21 @@ bool DrawButton(const char* text, int x, int y, int w, int h, bool selected) {
     
     DrawRectangle(x, y, w, h, fill);
     DrawRectangleLines(x, y, w, h, border);
-    int textW = MeasureText(text, 20);
-    DrawText(text, x + (w-textW)/2, y + (h-20)/2, 20, border);
     
-    if (selected && (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE))) return true;
+    int fontSize = 20;
+    if (retroFont.texture.id > 0) {
+        Vector2 textSize = MeasureTextEx(retroFont, text, (float)fontSize, 0);
+        Vector2 pos = {(float)(x + (w - textSize.x) / 2), (float)(y + (h - textSize.y) / 2)};
+        DrawTextEx(retroFont, text, pos, (float)fontSize, 0, border);
+    } else {
+        int textW = MeasureText(text, fontSize);
+        DrawText(text, x + (w-textW)/2, y + (h-fontSize)/2, fontSize, border);
+    }
+    
+    if (selected && (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE))) {
+        PlayTerminalTypeSound();
+        return true;
+    }
     return false;
 }
 
@@ -1829,6 +2120,7 @@ void DrawPageSplash(GameState* state, int* menuSelection, Vector3* shipPos, Vect
         
         // Handle selection
         if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
+            PlayTerminalTypeSound();
             if (g_menuOption == 0) {
                 // New Game - reset to Depot_Home
                 *shipPos = (Vector3){0, 60, -PROSPECT_PERIMETER};
@@ -1848,8 +2140,15 @@ void DrawPageSplash(GameState* state, int* menuSelection, Vector3* shipPos, Vect
                 G_Player.rank = 1;
                 G_Player.credits = 1000;
                 G_Player.cargoFilled = 0;
-                G_Player.iron = 0;
-                G_Player.gold = 0;
+                G_Player.hasFuelTankUpgrade = false;
+                G_Player.hasCargoBlackHole = false;
+                G_Player.hasBetterLaser = false;
+                G_Player.hasBetterCollector = false;
+                G_Player.shipColor = 0;
+                // Clear inventory
+                for (int i = 0; i < NUM_COMMODITIES; i++) {
+                    G_Player.inventory[i] = 0;
+                }
                 G_Player.hasLaser = false;  // Reset upgrades
                 G_Player.hasCollector = false;
                 G_Player.thrusterBoost = 1.0f;
@@ -1887,6 +2186,99 @@ const char* GetRankName(int rank) {
     }
 }
 
+// Function to convert collected debris to commodities
+void ConvertDebrisToCommodity() {
+    // Get the current asteroid index (0-5 for A-F)
+    int asteroidIdx = g_selectedAsteroidIndex;
+    
+    // Safety check: if asteroid index is invalid, use default (asteroid A = index 0)
+    // This ensures debris is always converted even if index wasn't set properly
+    if (asteroidIdx < 0 || asteroidIdx >= 6) {
+        asteroidIdx = 0;  // Default to asteroid A
+    }
+    
+    // Get abundance values for this asteroid
+    int* abundances = g_asteroidCommodityAbundance[asteroidIdx];
+    
+    // Calculate total abundance for probability distribution
+    int totalAbundance = 0;
+    for (int i = 0; i < NUM_COMMODITIES; i++) {
+        totalAbundance += abundances[i];
+    }
+    
+    if (totalAbundance == 0) {
+        // Fallback: if abundance is 0, give a random common commodity
+        int commonCommodities[] = {COMMODITY_WATER_ICE, COMMODITY_LUNAR_REGOLITH, COMMODITY_HYDROCARBONS};
+        int randomCommon = commonCommodities[GetRandomValue(0, 2)];
+        G_Player.inventory[randomCommon]++;
+        return;
+    }
+    
+    // Roll for which commodity this debris becomes
+    int roll = GetRandomValue(0, totalAbundance - 1);
+    int cumulative = 0;
+    
+    for (int i = 0; i < NUM_COMMODITIES; i++) {
+        cumulative += abundances[i];
+        if (roll < cumulative) {
+            // This debris becomes commodity i
+            G_Player.inventory[i]++;
+            return;
+        }
+    }
+    
+    // Fallback: if we somehow didn't assign a commodity, give water ice
+    G_Player.inventory[COMMODITY_WATER_ICE]++;
+}
+
+// Function to calculate station buy prices based on available asteroids
+void CalculateStationPrices() {
+    // For each location (0=Depot, 1=Station, 2=Halo)
+    for (int location = 0; location < 3; location++) {
+        // Get available asteroids for this location
+        int* prospectScores;
+        int* gravityScores;
+        int numAsteroids = 6;
+        
+        if (location == 1) {  // Station
+            prospectScores = g_stationProspectScores;
+            gravityScores = g_stationGravityScores;
+        } else if (location == 2) {  // Halo
+            prospectScores = g_haloProspectScores;
+            gravityScores = g_haloGravityScores;
+        } else {  // Depot
+            prospectScores = g_prospectScores;
+            gravityScores = g_gravityScores;
+        }
+        
+        // Calculate average abundance for each commodity across all asteroids
+        float avgAbundance[NUM_COMMODITIES] = {0};
+        for (int ast = 0; ast < numAsteroids; ast++) {
+            for (int comm = 0; comm < NUM_COMMODITIES; comm++) {
+                avgAbundance[comm] += (float)g_asteroidCommodityAbundance[ast][comm];
+            }
+        }
+        for (int comm = 0; comm < NUM_COMMODITIES; comm++) {
+            avgAbundance[comm] /= (float)numAsteroids;
+        }
+        
+        // Calculate prices: Lower abundance = Higher price (demand without supply)
+        // Price multiplier: 1.0 (common) to 3.0 (rare)
+        for (int comm = 0; comm < NUM_COMMODITIES; comm++) {
+            // Normalize abundance (0-100 scale)
+            float normalizedAbundance = avgAbundance[comm] / 100.0f;
+            
+            // Inverse relationship: low abundance = high price
+            // If abundance is 0, price is 3x base. If abundance is 100, price is 1x base
+            float priceMultiplier = 1.0f + (2.0f * (1.0f - normalizedAbundance));
+            
+            // Calculate final price
+            int basePrice = g_commodityBasePrices[comm];
+            g_stationBuyPrices[location][comm] = (int)(basePrice * priceMultiplier);
+        }
+    }
+}
+
 // Function to render asteroid prospect view to texture (like StationViewport)
 void RenderAsteroidProspects() {
     // Initialize render texture if needed (lazy init fallback)
@@ -1913,9 +2305,17 @@ void RenderAsteroidProspects() {
     
     // Render to texture (like StationViewport does)
     BeginTextureMode(g_asteroidViewport);
-    ClearBackground(BLACK);
     
-    // Setup camera for 3D rendering
+    // Draw background texture (Astriod_Prospects.png) if loaded, otherwise clear black
+    if (asteroidProspectsBgTx.id > 0) {
+        Rectangle srcRect = { 0, 0, (float)asteroidProspectsBgTx.width, (float)asteroidProspectsBgTx.height };
+        Rectangle destRect = { 0, 0, (float)RENDER_WIDTH, (float)RENDER_HEIGHT };
+        DrawTexturePro(asteroidProspectsBgTx, srcRect, destRect, (Vector2){0,0}, 0.0f, WHITE);
+    } else {
+        ClearBackground(BLACK);
+    }
+    
+    // Setup camera for 3D calculations (for text positioning only - no models drawn)
     Camera3D asteroidCamera = {0};
     asteroidCamera.position = (Vector3){0, 0, 15};  // Camera position (match StationViewport)
     asteroidCamera.target = (Vector3){0, 0, 0};     // Look at center
@@ -1923,36 +2323,25 @@ void RenderAsteroidProspects() {
     asteroidCamera.fovy = 45.0f;                     // Match StationViewport FOV
     asteroidCamera.projection = CAMERA_PERSPECTIVE;
     
-    // Calculate asteroid positions (3 top, 3 bottom)
-    // Shifted: Right 55px (+X) (was 100, moved left 45) and Up 50px (+Y)
-    // Top row moved down 20px more (subtract ~0.62 units from Y)
-    
-    // Converting pixel shifts to world coordinates roughly:
-    // Screen width 600px corresponds to approx view width at depth 0
-    // At depth 0 (distance 15 from camera), view height is ~12.4 units
-    // 50px up is approx +1.5 units in Y
-    // 20px down is approx -0.62 units in Y (20/400 * 12.4)
-    // 5px right is approx +0.15 units in X (5/600 * 18.6) - was 55px, moved left 50px
-    
-    float shiftX = 0.15f;   // Approx shift for 5px right (was 55px, moved left 50px)
-    float shiftY = 1.5f;    // Approx shift for 50px up
-    float topRowDown = 0.62f; // Approx shift for 20px down (for top row only)
-    float topRowUp = 0.155f;  // Approx shift for 5px up (for top row only)
-
+    // Centered asteroid positions: three on top row, three on bottom row
+    // Shift whole grid left (~50px) and down (~50px) from previous placement
+    // Rough mapping at depth ~15: ~1.6 units ≈ 80px horizontally, ~1.5 units ≈ 50px vertically
     Vector3 asteroidPositions[6] = {
-        {-3.5f + shiftX, 2.0f + shiftY - topRowDown + topRowUp, 0},   // Asteroid A (top left) - moved up 5px
-        {0.0f + shiftX, 2.0f + shiftY - topRowDown + topRowUp, 0},    // Asteroid B (top middle) - moved up 5px
-        {3.5f + shiftX, 2.0f + shiftY - topRowDown + topRowUp, 0},    // Asteroid C (top right) - moved up 5px
-        {-3.5f + shiftX, -2.0f + shiftY, 0},  // Asteroid D (bottom left)
-        {0.0f + shiftX, -2.0f + shiftY, 0},   // Asteroid E (bottom middle)
-        {3.5f + shiftX, -2.0f + shiftY, 0}    // Asteroid F (bottom right)
+        {-3.0f, 3.0f, 0},   // Asteroid A (top left)
+        {0.0f,  3.0f, 0},   // Asteroid B (top middle)
+        {3.0f,  3.0f, 0},   // Asteroid C (top right)
+        {-3.0f, 0.2f, 0},   // Asteroid D (bottom left) - moved down ~20px
+        {0.0f,  0.2f, 0},   // Asteroid E (bottom middle) - moved down ~20px
+        {3.0f,  0.2f, 0}    // Asteroid F (bottom right) - moved down ~20px
     };
     
+    // 3D Model Rendering Disabled - Using static PNG background
+    /*
     // Render asteroids in 3D
     BeginMode3D(asteroidCamera);
     rlDisableBackfaceCulling();
     
-    float scale = 0.75f;  // Scale to roughly 75px
+    float scale = 0.85f;  // Slightly larger but still leaving breathing room
     Vector3 rotationAxis = {0, 1, 0};  // Rotate around Y axis
     
     for (int i = 0; i < 6; i++) {
@@ -1962,56 +2351,40 @@ void RenderAsteroidProspects() {
     
     rlEnableBackfaceCulling();
     EndMode3D();
+    */
     
-    // Draw text labels for each asteroid (on the render texture)
-    // Use Render Coordinates (based on RENDER_WIDTH/HEIGHT)
-    
-    // Base positions: was +55px, moved left 50px = +5px
-    int baseX = (int)(RENDER_WIDTH * 0.17f) + 5;
-    int colSpacing = (int)(RENDER_WIDTH * 0.25f);
-    
-    // Base Y positions: top row moved down 20px, so adjust text Y accordingly
-    // Top row: originally -50px, now needs +20px adjustment = -30px from 25% height
-    // Bottom row: stays at -50px from 75% height
-    int labelYTop = (int)(RENDER_HEIGHT * 0.25f) - 30;  // Top row moved down 20px
-    int labelYBottom = (int)(RENDER_HEIGHT * 0.75f) - 50;
-
-    // Text X positions with additional shifts:
-    // A: baseX + 50 + 30 = 80px right from base
-    // B: baseX + colSpacing + 40 + 10 = 50px right from colSpacing
-    // C: baseX + colSpacing*2 + 30 - 15 = 15px right from colSpacing*2
-    // D, E, F align under A, B, C respectively
-    int labelX[6] = {
-        baseX + 80,                     // Asteroid A - moved right 30px more (was 50, now 80)
-        baseX + colSpacing + 50,        // Asteroid B - moved right 10px more (was 40, now 50)
-        baseX + colSpacing * 2 + 15,    // Asteroid C - moved left 15px (was 30, now 15)
-        baseX + 80,                     // Asteroid D - aligned under A
-        baseX + colSpacing + 50,        // Asteroid E - aligned under B
-        baseX + colSpacing * 2 + 15     // Asteroid F - aligned under C
-    };
-    
-    // Asteroid data: Prospect and Gravity percentages
-    int prospectScores[6] = {10, 22, 34, 46, 58, 70};
-    int gravityScores[6] = {25, 38, 51, 64, 76, 88};
+    // Asteroid data: Prospect and Gravity percentages (based on location)
+    int* prospectScores;
+    int* gravityScores;
+    if (g_currentLocation == 1) {  // Station
+        prospectScores = g_stationProspectScores;
+        gravityScores = g_stationGravityScores;
+    } else if (g_currentLocation == 2) {  // Halo
+        prospectScores = g_haloProspectScores;
+        gravityScores = g_haloGravityScores;
+    } else {  // Depot (default)
+        prospectScores = g_prospectScores;
+        gravityScores = g_gravityScores;
+    }
     
     // Reduced font size
     int fontSizeName = 10; 
     int fontSizeStats = 9; 
+    int labelGap = 12; // pixels between model footprint and first line
     
-    // Asteroid visual size: roughly 75px (radius ~37.5px)
-    // Text should be 10px below the bottom edge of the asteroid
-    int asteroidRadius = 38;  // Approx radius in pixels
-    int textGap = 10;         // Gap between asteroid bottom and text
+    // Establish row baselines so text forms a tidy grid beneath each row
+    Vector2 topRowPos = GetWorldToScreen(asteroidPositions[0], asteroidCamera);
+    Vector2 bottomRowPos = GetWorldToScreen(asteroidPositions[3], asteroidCamera);
+    int textYTopRow = (int)(topRowPos.y + labelGap);
+    int textYBottomRow = (int)(bottomRowPos.y + labelGap);
     
-    // Calculate text Y positions for top and bottom rows
-    int textYTop = labelYTop + asteroidRadius + textGap + 25;  // A, B, C moved down 25px (was 22, now +3px more)
-    int textYBottom = labelYBottom + asteroidRadius + textGap - 42;  // D, E, F moved up 42px (was 45, now 42px up)
-    
+    // Draw labels using projected screen positions so they remain centered under each rock
+    // DISABLED: Text is now baked into the background PNG (Astriod_Prospects.png)
+    /*
     for (int i = 0; i < 6; i++) {
-        // Get the text Y position (top or bottom row)
-        int textY = (i < 3) ? textYTop : textYBottom;
-        // Get the text X position (already calculated with shifts)
-        int centerX = labelX[i];
+        Vector2 screenPos = GetWorldToScreen(asteroidPositions[i], asteroidCamera);
+        int centerX = (int)screenPos.x;
+        int textY = (i < 3) ? textYTopRow : textYBottomRow; // keep per-row grid alignment
         
         // Asteroid name (A-F) - centered horizontally
         char asteroidName[32];
@@ -2031,7 +2404,118 @@ void RenderAsteroidProspects() {
         int gravityW = MeasureText(gravityText, fontSizeStats);
         DrawText(gravityText, centerX - gravityW/2, textY + 22, fontSizeStats, (Color){0, 255, 255, 255});  // Cyan
     }
+    */
     
+    EndTextureMode();
+}
+
+// ------------------------------------------------------------
+// RENDER: COMMODITIES MARKET (2D UI list inside viewport)
+// ------------------------------------------------------------
+void RenderCommoditiesMarket() {
+    // Initialize render texture if needed
+    if (!g_commoditiesMarketViewportInitialized) {
+        g_commoditiesMarketViewport = LoadRenderTexture(RENDER_WIDTH, RENDER_HEIGHT);
+        g_commoditiesMarketViewportInitialized = true;
+    }
+    
+    // Render to texture
+    BeginTextureMode(g_commoditiesMarketViewport);
+    ClearBackground((Color){5, 5, 10, 255});  // Dark space background
+    
+    // Setup 2D camera for UI rendering
+    Camera2D uiCam = {0};
+    uiCam.zoom = 1.0f;
+    BeginMode2D(uiCam);
+    
+    // Get current station's buy prices
+    int* buyPrices = g_stationBuyPrices[g_currentLocation];
+    
+    // Draw market header (shifted right to avoid overlap)
+    const char* marketTitle = (g_currentLocation == 1) ? "HIROHITO STATION MARKET" : 
+                              (g_currentLocation == 2) ? "NAGAKO'S HALO MARKET" : 
+                              "SHINJUKU DEPOT MARKET";
+    int headerX = 270;
+    DrawText(marketTitle, headerX, 30, 24, YELLOW);
+    
+    // Draw credits and cargo info (aligned with header)
+    DrawText(TextFormat("CREDITS: %d", G_Player.credits), headerX, 70, 24, GREEN);
+    DrawText(TextFormat("CARGO: %d/%d", G_Player.cargoFilled, G_Player.cargoSpace), headerX, 100, 24, (Color){0, 255, 255, 255});
+    
+    // Draw commodities list
+    int startY = 140;
+    int lineHeight = 24;  // Adjusted for smaller commodity font
+    int maxVisible = 10;  // Show up to 10 commodities at once
+
+    // Pre-calc layout so names and prices stay tight and aligned
+    int nameFontSize = 14;
+    int maxNameWidth = 0;
+    for (int i = 0; i < NUM_COMMODITIES; i++) {
+        int w = MeasureText(g_commodityNames[i], nameFontSize);
+        if (w > maxNameWidth) maxNameWidth = w;
+    }
+    int nameX = headerX + 10;                // Shift whole list right by ~120px
+    int priceGap = MeasureText("MMMMM", nameFontSize); // Roughly 5 characters
+    int priceStartX = nameX + maxNameWidth + priceGap;
+    
+    // Calculate scroll offset - start moving list up when reaching Hydrogen Isotopes (index 5)
+    int scrollOffset = 0;
+    if (g_commoditiesMarketSelection >= 5) {  // Hydrogen Isotopes and beyond
+        // When selection reaches Hydrogen Isotopes, start scrolling
+        // Keep it at position 3 in the visible list, then scroll from there
+        int targetPosition = 3;  // Position in visible list where selected item appears
+        scrollOffset = g_commoditiesMarketSelection - targetPosition;
+        if (scrollOffset < 0) scrollOffset = 0;
+    }
+    
+    // Calculate highlight width based on name + price columns
+    int rectStartX = nameX - 15;
+    int rectWidth = (priceStartX - nameX) + 110;
+    
+    for (int i = 0; i < NUM_COMMODITIES && i < maxVisible; i++) {
+        int commIdx = i + scrollOffset;
+        if (commIdx >= NUM_COMMODITIES) break;
+        
+        int yPos = startY + (i * lineHeight);
+        bool selected = (g_commoditiesMarketSelection == commIdx);
+        
+        // Highlight selected item (aligned to name/price columns)
+        if (selected) {
+            DrawRectangle(rectStartX, yPos - 2, rectWidth, lineHeight, (Color){100, 100, 150, 100});
+            DrawRectangleLines(rectStartX, yPos - 2, rectWidth, lineHeight, YELLOW);
+        }
+        
+        // Commodity name and quantity (shifted right, fixed column)
+        char commText[128];
+        snprintf(commText, sizeof(commText), "%s: %d", g_commodityNames[commIdx], G_Player.inventory[commIdx]);
+        Color textColor = (G_Player.inventory[commIdx] > 0) ? WHITE : GRAY;
+        DrawText(commText, nameX, yPos, nameFontSize, textColor);
+        
+        // Price positioned just after longest name with a small gap
+        char priceText[64];
+        snprintf(priceText, sizeof(priceText), "%dcr", buyPrices[commIdx]);
+        DrawText(priceText, priceStartX, yPos, nameFontSize, (G_Player.inventory[commIdx] > 0) ? GREEN : GRAY);
+        
+        // Sell indicator positioned after price
+        if (G_Player.inventory[commIdx] > 0 && selected) {
+            int sellIndicatorX = priceStartX + MeasureText(priceText, nameFontSize) + 15;  // 15px spacing after price
+            DrawText("[S TO SELL]", sellIndicatorX, yPos, nameFontSize, YELLOW);
+        }
+    }
+    
+    // Back option aligned with list columns
+    int backY = startY + (maxVisible * lineHeight) + 20;
+    bool backSelected = (g_commoditiesMarketSelection == NUM_COMMODITIES);
+    if (backSelected) {
+        DrawRectangle(rectStartX, backY - 2, rectWidth, lineHeight, (Color){100, 100, 150, 100});
+        DrawRectangleLines(rectStartX, backY - 2, rectWidth, lineHeight, YELLOW);
+    }
+    DrawText("[BACK]", nameX, backY, nameFontSize, backSelected ? YELLOW : WHITE);
+    
+    // Instructions aligned with header
+    DrawText("UP/DOWN: Navigate | S: Sell | ENTER: Back", headerX, RENDER_HEIGHT - 40, nameFontSize, GRAY);
+    
+    EndMode2D();
     EndTextureMode();
 }
 
@@ -2045,6 +2529,8 @@ void RenderShipyardShop() {
         g_shipyardShopViewportInitialized = true;
     }
     
+    // Rotation update disabled - using static PNG background instead of 3D models
+    /*
     // Update rotation (same ping-pong effect as asteroids)
     float dt = GetFrameTime();
     static float rotationDir = 1.0f;
@@ -2057,11 +2543,32 @@ void RenderShipyardShop() {
         g_shopItemRotation = -45.0f;
         rotationDir = 1.0f;
     }
+    */
     
     // Render to texture
     BeginTextureMode(g_shipyardShopViewport);
-    ClearBackground(BLACK);
     
+    // Select appropriate upgrade PNG based on location
+    Texture2D* upgradeBgTx = NULL;
+    if (g_currentLocation == 1) {  // Station (Hirohito)
+        upgradeBgTx = &upgradesHirohitoTx;
+    } else if (g_currentLocation == 2) {  // Halo (Nagako)
+        upgradeBgTx = &upgradesNagakoTx;
+    } else {  // Depot (Shinjuku) - default
+        upgradeBgTx = &upgradesShinjukuTx;
+    }
+    
+    // Draw background texture if loaded, otherwise clear black
+    if (upgradeBgTx && upgradeBgTx->id > 0) {
+        Rectangle srcRect = { 0, 0, (float)upgradeBgTx->width, (float)upgradeBgTx->height };
+        Rectangle destRect = { 0, 0, (float)RENDER_WIDTH, (float)RENDER_HEIGHT };
+        DrawTexturePro(*upgradeBgTx, srcRect, destRect, (Vector2){0,0}, 0.0f, WHITE);
+    } else {
+        ClearBackground(BLACK);
+    }
+    
+    // 3D Model and Text Rendering Disabled - Using static PNG background
+    /*
     // Setup camera for 3D rendering (same as asteroids)
     Camera3D shopCamera = {0};
     shopCamera.position = (Vector3){0, 0, 15};
@@ -2070,66 +2577,100 @@ void RenderShipyardShop() {
     shopCamera.fovy = 45.0f;
     shopCamera.projection = CAMERA_PERSPECTIVE;
     
-    // Use same positions as asteroids
-    float shiftX = 0.15f;
-    float shiftY = 1.5f;
-    float topRowDown = 0.62f;
-    float topRowUp = 0.155f;
-    
+    // Use centered positions: three on top, three on bottom
+    // Same layout as asteroids
     Vector3 shopItemPositions[6] = {
-        {-3.5f + shiftX, 2.0f + shiftY - topRowDown + topRowUp, 0},   // Item A (top left)
-        {0.0f + shiftX, 2.0f + shiftY - topRowDown + topRowUp, 0},    // Item B (top middle)
-        {3.5f + shiftX, 2.0f + shiftY - topRowDown + topRowUp, 0},    // Item C (top right)
-        {-3.5f + shiftX, -2.0f + shiftY, 0},  // Item D (bottom left)
-        {0.0f + shiftX, -2.0f + shiftY, 0},   // Item E (bottom middle)
-        {3.5f + shiftX, -2.0f + shiftY, 0}    // Item F (bottom right)
+        {-3.0f, 3.0f, 0},   // Item A (top left)
+        {0.0f,  3.0f, 0},   // Item B (top middle)
+        {3.0f,  3.0f, 0},   // Item C (top right)
+        {-3.0f, 0.2f, 0},   // Item D (bottom left)
+        {0.0f,  0.2f, 0},   // Item E (bottom middle)
+        {3.0f,  0.2f, 0}    // Item F (bottom right)
     };
     
     // Render shop items in 3D with custom models
     BeginMode3D(shopCamera);
     rlDisableBackfaceCulling();
     
-    float scale = 1.125f;  // Increased size by 50% (was 0.75f)
+    float scale = 0.95f;  // Slightly larger than asteroids but leaves room for labels
     Vector3 rotationAxis = {0, 1, 0};
     
-    // Render each shop item with its custom model
+    // Render each shop item with its custom model (location-specific)
+    Model* modelsToUse = g_shopItemModels;  // Default to depot models
+    if (g_currentLocation == 1) {  // Station
+        modelsToUse = g_stationShopModels;
+    } else if (g_currentLocation == 2) {  // Halo
+        modelsToUse = g_haloShopModels;
+    }
+    
     for (int i = 0; i < 6; i++) {
-        DrawModelEx(g_shopItemModels[i], shopItemPositions[i], rotationAxis, g_shopItemRotation * DEG2RAD, 
+        DrawModelEx(modelsToUse[i], shopItemPositions[i], rotationAxis, g_shopItemRotation * DEG2RAD, 
                    (Vector3){scale, scale, scale}, WHITE);
     }
     
     rlEnableBackfaceCulling();
     EndMode3D();
     
-    // Draw text labels for each shop item (same positioning as asteroids)
-    int baseX = (int)(RENDER_WIDTH * 0.17f) + 5;
-    int colSpacing = (int)(RENDER_WIDTH * 0.25f);
-    int labelYTop = (int)(RENDER_HEIGHT * 0.25f) - 30;
-    int labelYBottom = (int)(RENDER_HEIGHT * 0.75f) - 50;
+    // Draw text labels for each shop item using projected screen positions
+    // Shop item names and prices (location-specific)
+    const char* shopItemNames[6];
+    int shopItemPrices[6];
     
-    int labelX[6] = {
-        baseX + 80,
-        baseX + colSpacing + 50,
-        baseX + colSpacing * 2 + 15,
-        baseX + 80,
-        baseX + colSpacing + 50,
-        baseX + colSpacing * 2 + 15
-    };
-    
-    // Shop item names and prices
-    const char* shopItemNames[6] = {"[A] LASER", "[B] COLLECTOR", "[C] THRUSTER", "[D] EXO-PLATING", "[E] FUEL", "[F] REPAIRS"};
-    int shopItemPrices[6] = {200, 500, 500, 1000, 50, 100};
+    if (g_currentLocation == 1) {  // Station
+        shopItemNames[0] = "[A] FUEL TANK UPGRADE";
+        shopItemNames[1] = "[B] CARGO BLACK HOLE";
+        shopItemNames[2] = "[C] FUEL";
+        shopItemNames[3] = "[D] RED SHIP";
+        shopItemNames[4] = "[E] GREEN SHIP";
+        shopItemNames[5] = "[F] PURPLE SHIP";
+        shopItemPrices[0] = 1500;  // Fuel Tank Upgrade
+        shopItemPrices[1] = 2000;  // Cargo Black Hole
+        shopItemPrices[2] = 60;    // Fuel (15% more expensive: 50 * 1.15 = 57.5, round to 60)
+        shopItemPrices[3] = 5000;  // Red Ship
+        shopItemPrices[4] = 8000;  // Green Ship
+        shopItemPrices[5] = 10000; // Purple Ship
+    } else if (g_currentLocation == 2) {  // Halo
+        shopItemNames[0] = "[A] BETTER LASER";
+        shopItemNames[1] = "[B] BETTER COLLECTOR";
+        shopItemNames[2] = "[C] FUEL";
+        shopItemNames[3] = "[D] RED SHIP";
+        shopItemNames[4] = "[E] GREEN SHIP";
+        shopItemNames[5] = "[F] PURPLE SHIP";
+        shopItemPrices[0] = 300;   // Better Laser
+        shopItemPrices[1] = 750;   // Better Collector
+        shopItemPrices[2] = 60;    // Fuel (20% more expensive: 50 * 1.20 = 60)
+        shopItemPrices[3] = 5000;  // Red Ship
+        shopItemPrices[4] = 8000;  // Green Ship
+        shopItemPrices[5] = 10000; // Purple Ship
+    } else {  // Depot (default)
+        shopItemNames[0] = "[A] LASER";
+        shopItemNames[1] = "[B] COLLECTOR";
+        shopItemNames[2] = "[C] THRUSTER";
+        shopItemNames[3] = "[D] EXO-PLATING";
+        shopItemNames[4] = "[E] FUEL";
+        shopItemNames[5] = "[F] REPAIRS";
+        shopItemPrices[0] = 200;
+        shopItemPrices[1] = 500;
+        shopItemPrices[2] = 500;
+        shopItemPrices[3] = 1000;
+        shopItemPrices[4] = 50;
+        shopItemPrices[5] = 100;
+    }
     
     int fontSizeName = 10;
     int fontSizePrice = 9;
-    int asteroidRadius = 38;
-    int textGap = 10;
-    int textYTop = labelYTop + asteroidRadius + textGap + 25;
-    int textYBottom = labelYBottom + asteroidRadius + textGap - 42;
+    int labelGap = 12;
+
+    // Establish row baselines so text forms a tidy grid beneath each row
+    Vector2 topRowPos = GetWorldToScreen(shopItemPositions[0], shopCamera);
+    Vector2 bottomRowPos = GetWorldToScreen(shopItemPositions[3], shopCamera);
+    int textYTopRow = (int)(topRowPos.y + labelGap);
+    int textYBottomRow = (int)(bottomRowPos.y + labelGap);
     
     for (int i = 0; i < 6; i++) {
-        int textY = (i < 3) ? textYTop : textYBottom;
-        int centerX = labelX[i];
+        Vector2 screenPos = GetWorldToScreen(shopItemPositions[i], shopCamera);
+        int centerX = (int)screenPos.x;
+        int textY = (i < 3) ? textYTopRow : textYBottomRow;
         
         // Shop item name
         int nameW = MeasureText(shopItemNames[i], fontSizeName);
@@ -2141,6 +2682,7 @@ void RenderShipyardShop() {
         int priceW = MeasureText(priceText, fontSizePrice);
         DrawText(priceText, centerX - priceW/2, textY + 12, fontSizePrice, (Color){255, 255, 0, 255});  // Yellow
     }
+    */
     
     EndTextureMode();
 }
@@ -2170,13 +2712,12 @@ void DrawAsteroidModal(GameState* state, int* menuSelection, Vector3* shipPos, V
     
     // Handle selection
     if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
+        PlayTerminalTypeSound();
         if (g_modalSelection == 0) {
             // Launch - check fuel first
             int requiredFuel = g_selectedAsteroidFuelCost / 2;  // Half fuel on launch
             if (G_Player.fuel >= requiredFuel) {
-                // Store asteroid gravity and prosperity for lander
-                g_selectedAsteroidGravity = g_gravityScores[g_selectedAsteroidIndex];
-                g_selectedAsteroidProspect = g_prospectScores[g_selectedAsteroidIndex];
+                // Asteroid gravity and prosperity already stored when asteroid was selected
                 
                 // Deduct half the fuel cost
                 G_Player.fuel -= requiredFuel;
@@ -2204,14 +2745,16 @@ void DrawAsteroidModal(GameState* state, int* menuSelection, Vector3* shipPos, V
                 
                 // Show GET READY splash screen
                 g_showGetReady = true;
-                g_getReadyTimer = 2.0f;  // Show for 2 seconds
+                g_getReadyTimer = 5.0f;  // Show for 5 seconds
                 
                 // Reset rocks (re-generate world for new asteroid?)
                 GenerateRocksAndCollision(); 
                 InitCollisionGrid();
             } else {
-                // Not enough fuel - show warning
+                // Not enough fuel - show separate warning modal
                 g_fuelCheckFailed = true;
+                g_showFuelWarningModal = true;
+                g_fuelWarningTimer = 3.0f;  // Show for 3 seconds
             }
         } else {
             // Exit - close modal
@@ -2257,16 +2800,7 @@ void DrawAsteroidModal(GameState* state, int* menuSelection, Vector3* shipPos, V
     int gravityW = MeasureText(gravityText, 24);
     DrawText(gravityText, modalX + (modalWidth - gravityW) / 2, modalY + 220, 24, (Color){0, 255, 255, 255});  // Cyan
     
-    // Draw warning if fuel check failed
-    if (g_fuelCheckFailed) {
-        char warningText[64] = "OUT OF FUEL WARNING";
-        int warningW = MeasureText(warningText, 28);
-        DrawText(warningText, modalX + (modalWidth - warningW) / 2, modalY + 260, 28, RED);
-        
-        char abortText[64] = "MINE ABORTED";
-        int abortW = MeasureText(abortText, 24);
-        DrawText(abortText, modalX + (modalWidth - abortW) / 2, modalY + 290, 24, YELLOW);
-    }
+    // Note: Fuel warning is now shown in a separate modal (drawn on top of everything)
     
     // Draw Launch and Exit buttons
     int buttonWidth = 200;
@@ -2287,18 +2821,75 @@ void DrawAsteroidModal(GameState* state, int* menuSelection, Vector3* shipPos, V
 // ------------------------------------------------------------
 // MODAL: SHIPYARD SHOP PURCHASE
 // ------------------------------------------------------------
+// Helper function to round percentage down to nearest 10%
+static int RoundDownToNearest10(float percent) {
+    return ((int)(percent / 10.0f)) * 10;
+}
+
 void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
-    // Shop item data
-    const char* shopItemNames[6] = {"[A] LASER", "[B] COLLECTOR", "[C] THRUSTER", "[D] EXO-PLATING", "[E] FUEL", "[F] REPAIRS"};
-    int shopItemPrices[6] = {200, 500, 500, 1000, 50, 100};
-    const char* shopItemDescriptions[6] = {
-        "Fits a laser allowing asteroids to be fired by pressing space",
-        "Enables lasered debris to enter the CARGO of the ship",
-        "Gives a boost to the ship's thruster by 20%",
-        "Decreases the hull vulnerability by 20%",
-        "Sells fuel in one barrel (1 barrel = 10 fuel)",
-        "Repairs 1 Hull point"
-    };
+    // Shop item data (location-specific)
+    const char* shopItemNames[6];
+    int shopItemPrices[6];
+    const char* shopItemDescriptions[6];
+    
+    if (g_currentLocation == 1) {  // Station
+        shopItemNames[0] = "[A] FUEL TANK UPGRADE";
+        shopItemNames[1] = "[B] CARGO BLACK HOLE";
+        shopItemNames[2] = "[C] FUEL";
+        shopItemNames[3] = "[D] RED SHIP";
+        shopItemNames[4] = "[E] GREEN SHIP";
+        shopItemNames[5] = "[F] PURPLE SHIP";
+        shopItemPrices[0] = 1500;
+        shopItemPrices[1] = 2000;
+        shopItemPrices[2] = 60;
+        shopItemPrices[3] = 5000;
+        shopItemPrices[4] = 8000;
+        shopItemPrices[5] = 10000;
+        shopItemDescriptions[0] = "Increases fuel capacity by 50%";
+        shopItemDescriptions[1] = "Micro-Black Hole increases cargo to 50";
+        shopItemDescriptions[2] = "Sells fuel in one barrel (1 barrel = 10 fuel)";
+        shopItemDescriptions[3] = "Red ship: 10% better everything";
+        shopItemDescriptions[4] = "Green ship: 20% better everything";
+        shopItemDescriptions[5] = "Purple ship: 30% better everything";
+    } else if (g_currentLocation == 2) {  // Halo
+        shopItemNames[0] = "[A] BETTER LASER";
+        shopItemNames[1] = "[B] BETTER COLLECTOR";
+        shopItemNames[2] = "[C] FUEL";
+        shopItemNames[3] = "[D] RED SHIP";
+        shopItemNames[4] = "[E] GREEN SHIP";
+        shopItemNames[5] = "[F] PURPLE SHIP";
+        shopItemPrices[0] = 300;
+        shopItemPrices[1] = 750;
+        shopItemPrices[2] = 60;
+        shopItemPrices[3] = 5000;
+        shopItemPrices[4] = 8000;
+        shopItemPrices[5] = 10000;
+        shopItemDescriptions[0] = "Advanced laser that blasts more rocks";
+        shopItemDescriptions[1] = "Improved collector with better efficiency";
+        shopItemDescriptions[2] = "Sells fuel in one barrel (1 barrel = 10 fuel)";
+        shopItemDescriptions[3] = "Red ship: 10% better everything";
+        shopItemDescriptions[4] = "Green ship: 20% better everything";
+        shopItemDescriptions[5] = "Purple ship: 30% better everything";
+    } else {  // Depot
+        shopItemNames[0] = "[A] LASER";
+        shopItemNames[1] = "[B] COLLECTOR";
+        shopItemNames[2] = "[C] THRUSTER";
+        shopItemNames[3] = "[D] EXO-PLATING";
+        shopItemNames[4] = "[E] FUEL";
+        shopItemNames[5] = "[F] REPAIRS";
+        shopItemPrices[0] = 200;
+        shopItemPrices[1] = 500;
+        shopItemPrices[2] = 500;
+        shopItemPrices[3] = 1000;
+        shopItemPrices[4] = 50;
+        shopItemPrices[5] = 100;
+        shopItemDescriptions[0] = "Fits a laser allowing asteroids to be fired by pressing space";
+        shopItemDescriptions[1] = "Enables lasered debris to enter the CARGO of the ship";
+        shopItemDescriptions[2] = "Gives a boost to the ship's thruster by 20%";
+        shopItemDescriptions[3] = "Decreases the hull vulnerability by 20%";
+        shopItemDescriptions[4] = "Sells fuel in one barrel (1 barrel = 10 fuel)";
+        shopItemDescriptions[5] = "Repairs 1 Hull point";
+    }
     
     // Handle ESC to close modal
     if (CustomIsKeyPressed(KEY_ESCAPE)) {
@@ -2317,34 +2908,165 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
     
     // Handle selection
     if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
+        PlayTerminalTypeSound();
         if (g_shopModalSelection == 0) {
             // Check conditions before purchase
             int price = shopItemPrices[g_selectedShopItemIndex];
             bool canPurchase = true;
             strncpy(g_purchaseFailReason, "INSUFFICIENT CREDITS", sizeof(g_purchaseFailReason));
             
+            // Check purchase conditions (location-specific)
             if (G_Player.credits < price) {
                 canPurchase = false;
                 strncpy(g_purchaseFailReason, "INSUFFICIENT CREDITS", sizeof(g_purchaseFailReason));
-            } else if (g_selectedShopItemIndex == 0 && G_Player.hasLaser) { // Laser - only one allowed
+            } else if (g_currentLocation == 1) {  // Station
+                if (g_selectedShopItemIndex == 0 && G_Player.hasFuelTankUpgrade) {
+                    canPurchase = false;
+                    strncpy(g_purchaseFailReason, "FUEL TANK ALREADY UPGRADED", sizeof(g_purchaseFailReason));
+                } else if (g_selectedShopItemIndex == 1 && G_Player.hasCargoBlackHole) {
+                    canPurchase = false;
+                    strncpy(g_purchaseFailReason, "CARGO BLACK HOLE ALREADY INSTALLED", sizeof(g_purchaseFailReason));
+                } else if (g_selectedShopItemIndex == 2 && G_Player.fuel >= G_Player.maxFuel) {
+                    canPurchase = false;
+                    strncpy(g_purchaseFailReason, "FUEL TANK FULL", sizeof(g_purchaseFailReason));
+                } else if (g_selectedShopItemIndex >= 3 && g_selectedShopItemIndex <= 5) {
+                    // Ships - can always purchase (replaces current ship)
+                }
+            } else if (g_currentLocation == 2) {  // Halo
+                if (g_selectedShopItemIndex == 0 && G_Player.hasBetterLaser) {
+                    canPurchase = false;
+                    strncpy(g_purchaseFailReason, "BETTER LASER ALREADY FITTED", sizeof(g_purchaseFailReason));
+                } else if (g_selectedShopItemIndex == 1 && G_Player.hasBetterCollector) {
+                    canPurchase = false;
+                    strncpy(g_purchaseFailReason, "BETTER COLLECTOR ALREADY FITTED", sizeof(g_purchaseFailReason));
+                } else if (g_selectedShopItemIndex == 2 && G_Player.fuel >= G_Player.maxFuel) {
+                    canPurchase = false;
+                    strncpy(g_purchaseFailReason, "FUEL TANK FULL", sizeof(g_purchaseFailReason));
+                } else if (g_selectedShopItemIndex >= 3 && g_selectedShopItemIndex <= 5) {
+                    // Ships - can always purchase
+                }
+            } else {  // Depot
+                if (g_selectedShopItemIndex == 0 && G_Player.hasLaser) {
                 canPurchase = false;
                 strncpy(g_purchaseFailReason, "LASER ALREADY FITTED", sizeof(g_purchaseFailReason));
-            } else if (g_selectedShopItemIndex == 1 && G_Player.hasCollector) { // Collector - only one allowed
+                } else if (g_selectedShopItemIndex == 1 && G_Player.hasCollector) {
                 canPurchase = false;
                 strncpy(g_purchaseFailReason, "COLLECTOR ALREADY FITTED", sizeof(g_purchaseFailReason));
-            } else if (g_selectedShopItemIndex == 5 && G_Player.hull >= G_Player.maxHull) { // Repairs
+                } else if (g_selectedShopItemIndex == 5 && G_Player.hull >= G_Player.maxHull) {
                 canPurchase = false;
                 strncpy(g_purchaseFailReason, "HULL IS FULLY REPAIRED", sizeof(g_purchaseFailReason));
-            } else if (g_selectedShopItemIndex == 4 && G_Player.fuel >= G_Player.maxFuel) { // Fuel
+                } else if (g_selectedShopItemIndex == 4 && G_Player.fuel >= G_Player.maxFuel) {
                 canPurchase = false;
                 strncpy(g_purchaseFailReason, "FUEL TANK FULL", sizeof(g_purchaseFailReason));
+                }
             }
             
             if (canPurchase) {
                 // Deduct credits
                 G_Player.credits -= price;
                 
-                // Apply upgrade based on item
+                // Apply upgrade based on item and location
+                if (g_currentLocation == 1) {  // Station
+                    switch (g_selectedShopItemIndex) {
+                        case 0:  // Fuel Tank Upgrade
+                            G_Player.hasFuelTankUpgrade = true;
+                            G_Player.maxFuel *= 1.5f;  // 50% increase
+                            G_Player.fuel = G_Player.maxFuel;  // Fill to new max
+                            break;
+                        case 1:  // Cargo Black Hole
+                            G_Player.hasCargoBlackHole = true;
+                            G_Player.cargoSpace = 50;  // Increase to 50
+                            break;
+                        case 2:  // Fuel
+                            G_Player.fuel += 10.0f;
+                            if (G_Player.fuel > G_Player.maxFuel) G_Player.fuel = G_Player.maxFuel;
+                            break;
+                        case 3:  // Red Ship (10% better)
+                            G_Player.shipColor = 1;
+                            // Apply 10% bonuses (rounded down to nearest 10% = 10%)
+                            G_Player.maxFuel *= 1.1f;
+                            G_Player.maxHull *= 1.1f;
+                            G_Player.maxPower *= 1.1f;
+                            G_Player.cargoSpace = (int)(G_Player.cargoSpace * 1.1f);
+                            G_Player.thrusterBoost *= 1.1f;
+                            G_Player.hullResistance *= 0.9f;  // 10% less damage
+                            G_Player.fuel = G_Player.maxFuel;
+                            G_Player.hull = G_Player.maxHull;
+                            break;
+                        case 4:  // Green Ship (20% better)
+                            G_Player.shipColor = 2;
+                            // Apply 20% bonuses
+                            G_Player.maxFuel *= 1.2f;
+                            G_Player.maxHull *= 1.2f;
+                            G_Player.maxPower *= 1.2f;
+                            G_Player.cargoSpace = (int)(G_Player.cargoSpace * 1.2f);
+                            G_Player.thrusterBoost *= 1.2f;
+                            G_Player.hullResistance *= 0.8f;  // 20% less damage
+                            G_Player.fuel = G_Player.maxFuel;
+                            G_Player.hull = G_Player.maxHull;
+                            break;
+                        case 5:  // Purple Ship (30% better)
+                            G_Player.shipColor = 3;
+                            // Apply 30% bonuses
+                            G_Player.maxFuel *= 1.3f;
+                            G_Player.maxHull *= 1.3f;
+                            G_Player.maxPower *= 1.3f;
+                            G_Player.cargoSpace = (int)(G_Player.cargoSpace * 1.3f);
+                            G_Player.thrusterBoost *= 1.3f;
+                            G_Player.hullResistance *= 0.7f;  // 30% less damage
+                            G_Player.fuel = G_Player.maxFuel;
+                            G_Player.hull = G_Player.maxHull;
+                            break;
+                    }
+                } else if (g_currentLocation == 2) {  // Halo
+                    switch (g_selectedShopItemIndex) {
+                        case 0:  // Better Laser
+                            G_Player.hasBetterLaser = true;
+                            G_Player.hasLaser = true;  // Also grants basic laser
+                            break;
+                        case 1:  // Better Collector
+                            G_Player.hasBetterCollector = true;
+                            G_Player.hasCollector = true;  // Also grants basic collector
+                            break;
+                        case 2:  // Fuel
+                            G_Player.fuel += 10.0f;
+                            if (G_Player.fuel > G_Player.maxFuel) G_Player.fuel = G_Player.maxFuel;
+                            break;
+                        case 3:  // Red Ship (10% better)
+                            G_Player.shipColor = 1;
+                            G_Player.maxFuel *= 1.1f;
+                            G_Player.maxHull *= 1.1f;
+                            G_Player.maxPower *= 1.1f;
+                            G_Player.cargoSpace = (int)(G_Player.cargoSpace * 1.1f);
+                            G_Player.thrusterBoost *= 1.1f;
+                            G_Player.hullResistance *= 0.9f;
+                            G_Player.fuel = G_Player.maxFuel;
+                            G_Player.hull = G_Player.maxHull;
+                            break;
+                        case 4:  // Green Ship (20% better)
+                            G_Player.shipColor = 2;
+                            G_Player.maxFuel *= 1.2f;
+                            G_Player.maxHull *= 1.2f;
+                            G_Player.maxPower *= 1.2f;
+                            G_Player.cargoSpace = (int)(G_Player.cargoSpace * 1.2f);
+                            G_Player.thrusterBoost *= 1.2f;
+                            G_Player.hullResistance *= 0.8f;
+                            G_Player.fuel = G_Player.maxFuel;
+                            G_Player.hull = G_Player.maxHull;
+                            break;
+                        case 5:  // Purple Ship (30% better)
+                            G_Player.shipColor = 3;
+                            G_Player.maxFuel *= 1.3f;
+                            G_Player.maxHull *= 1.3f;
+                            G_Player.maxPower *= 1.3f;
+                            G_Player.cargoSpace = (int)(G_Player.cargoSpace * 1.3f);
+                            G_Player.thrusterBoost *= 1.3f;
+                            G_Player.hullResistance *= 0.7f;  // 30% less damage
+                            G_Player.fuel = G_Player.maxFuel;
+                            G_Player.hull = G_Player.maxHull;
+                            break;
+                    }
+                } else {  // Depot
                 switch (g_selectedShopItemIndex) {
                     case 0:  // LASER
                         G_Player.hasLaser = true;
@@ -2353,19 +3075,20 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
                         G_Player.hasCollector = true;
                         break;
                     case 2:  // THRUSTER
-                        G_Player.thrusterBoost = 1.2f;  // 20% boost
+                            G_Player.thrusterBoost = 1.2f;
                         break;
                     case 3:  // EXO-PLATING
-                        G_Player.hullResistance = 0.8f;  // 20% less damage
+                            G_Player.hullResistance = 0.8f;
                         break;
                     case 4:  // FUEL
-                        G_Player.fuel += 10.0f;  // 1 barrel = 10 fuel
+                            G_Player.fuel += 10.0f;
                         if (G_Player.fuel > G_Player.maxFuel) G_Player.fuel = G_Player.maxFuel;
                         break;
                     case 5:  // REPAIRS
-                        G_Player.hull += 1.0f;  // Repair 1 hull
+                            G_Player.hull += 1.0f;
                         if (G_Player.hull > G_Player.maxHull) G_Player.hull = G_Player.maxHull;
                         break;
+                    }
                 }
                 
                 g_showShopModal = false;
@@ -2575,6 +3298,7 @@ void DrawBarModal(int modalX, int modalY, int modalWidth, int modalHeight) {
         DrawButton("OK", modalX + (modalWidth - 200)/2, modalY + 300, 200, 50, true);
         
         if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
+            PlayTerminalTypeSound();
             g_showBarRumorModal = false;
         }
     } else if (g_showBarGoldCardModal) {
@@ -2599,54 +3323,284 @@ void DrawBarModal(int modalX, int modalY, int modalWidth, int modalHeight) {
         DrawButton("AWESOME", modalX + (modalWidth - 200)/2, modalY + 320, 200, 50, true);
         
         if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
+            PlayTerminalTypeSound();
             g_showBarGoldCardModal = false;
         }
+    } else if (g_showBarGamblingModal) {
+        // Gambling Modal (Station only)
+        DrawRetroWindow("SPACE CASINO", modalX, modalY, modalWidth, modalHeight);
+        
+        // Word wrap gambling text
+        int fontSizeDesc = 20;
+        int maxDescWidth = modalWidth - 60;
+        const char* description = g_barGamblingText;
+        int descLen = strlen(description);
+        int currentY = modalY + 80;
+        int lineHeight = 25;
+        
+        char lineBuffer[128];
+        int lastSpace = -1;
+        int currentLineStart = 0;
+        
+        for (int i = 0; i <= descLen; i++) {
+            if (description[i] == ' ' || description[i] == '\0' || description[i] == '\n') {
+                bool isNewline = (description[i] == '\n');
+                int len = i - currentLineStart;
+                strncpy(lineBuffer, &description[currentLineStart], len);
+                lineBuffer[len] = '\0';
+                
+                if (MeasureText(lineBuffer, fontSizeDesc) > maxDescWidth || isNewline) {
+                    int printLen = isNewline ? len : (lastSpace - currentLineStart);
+                    if (!isNewline && printLen < 0) printLen = len;
+                    
+                    strncpy(lineBuffer, &description[currentLineStart], printLen);
+                    lineBuffer[printLen] = '\0';
+                    
+                    int lineW = MeasureText(lineBuffer, fontSizeDesc);
+                    DrawText(lineBuffer, modalX + (modalWidth - lineW) / 2, currentY, fontSizeDesc, WHITE);
+                    
+                    currentY += lineHeight;
+                    currentLineStart = isNewline ? (i + 1) : (lastSpace + 1);
+                    
+                    if (!isNewline) {
+                        i = lastSpace;
+                        lastSpace = -1;
+        }
     } else {
-        // Main Bar Menu
-        DrawRetroWindow("THE ASTRO BAR", modalX, modalY, modalWidth, modalHeight);
+                    lastSpace = i;
+                }
+            }
+        }
+        if (currentLineStart < descLen) {
+            strncpy(lineBuffer, &description[currentLineStart], descLen - currentLineStart);
+            lineBuffer[descLen - currentLineStart] = '\0';
+            int lineW = MeasureText(lineBuffer, fontSizeDesc);
+            DrawText(lineBuffer, modalX + (modalWidth - lineW) / 2, currentY, fontSizeDesc, WHITE);
+        }
+        
+        DrawButton("OK", modalX + (modalWidth - 200)/2, modalY + 300, 200, 50, true);
+        
+        if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
+            PlayTerminalTypeSound();
+            g_showBarGamblingModal = false;
+        }
+    } else if (g_showBarScientistModal) {
+        // Scientist Chat Modal (Station only)
+        DrawRetroWindow("SCIENTIST TIPS", modalX, modalY, modalWidth, modalHeight);
+        
+        // Word wrap scientist text
+        int fontSizeDesc = 20;
+        int maxDescWidth = modalWidth - 60;
+        const char* description = g_barScientistText;
+        int descLen = strlen(description);
+        int currentY = modalY + 80;
+        int lineHeight = 25;
+        
+        char lineBuffer[128];
+        int lastSpace = -1;
+        int currentLineStart = 0;
+        
+        for (int i = 0; i <= descLen; i++) {
+            if (description[i] == ' ' || description[i] == '\0' || description[i] == '\n') {
+                bool isNewline = (description[i] == '\n');
+                int len = i - currentLineStart;
+                strncpy(lineBuffer, &description[currentLineStart], len);
+                lineBuffer[len] = '\0';
+                
+                if (MeasureText(lineBuffer, fontSizeDesc) > maxDescWidth || isNewline) {
+                    int printLen = isNewline ? len : (lastSpace - currentLineStart);
+                    if (!isNewline && printLen < 0) printLen = len;
+                    
+                    strncpy(lineBuffer, &description[currentLineStart], printLen);
+                    lineBuffer[printLen] = '\0';
+                    
+                    int lineW = MeasureText(lineBuffer, fontSizeDesc);
+                    DrawText(lineBuffer, modalX + (modalWidth - lineW) / 2, currentY, fontSizeDesc, WHITE);
+                    
+                    currentY += lineHeight;
+                    currentLineStart = isNewline ? (i + 1) : (lastSpace + 1);
+                    
+                    if (!isNewline) {
+                        i = lastSpace;
+                        lastSpace = -1;
+                    }
+                } else {
+                    lastSpace = i;
+                }
+            }
+        }
+        if (currentLineStart < descLen) {
+            strncpy(lineBuffer, &description[currentLineStart], descLen - currentLineStart);
+            lineBuffer[descLen - currentLineStart] = '\0';
+            int lineW = MeasureText(lineBuffer, fontSizeDesc);
+            DrawText(lineBuffer, modalX + (modalWidth - lineW) / 2, currentY, fontSizeDesc, WHITE);
+        }
+        
+        DrawButton("OK", modalX + (modalWidth - 200)/2, modalY + 300, 200, 50, true);
+        
+        if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
+            PlayTerminalTypeSound();
+            g_showBarScientistModal = false;
+        }
+    } else {
+        // Main Bar Menu (location-specific)
+        const char* barTitle = (g_currentLocation == 1) ? "HIROHITO STATION BAR" : 
+                               (g_currentLocation == 2) ? "NAGAKO'S HALO BAR" : "THE ASTRO BAR";
+        DrawRetroWindow(barTitle, modalX, modalY, modalWidth, modalHeight);
         
         // Mood Text
-        DrawText(g_barMoods[g_barRandomMood], modalX + (modalWidth - MeasureText(g_barMoods[g_barRandomMood], 18))/2, modalY + 50, 18, LIGHTGRAY);
+        if (retroFont.texture.id > 0) {
+            Vector2 moodSize = MeasureTextEx(retroFont, g_barMoods[g_barRandomMood], 18.0f, 0);
+            DrawTextEx(retroFont, g_barMoods[g_barRandomMood],
+                (Vector2){(float)(modalX + (modalWidth - moodSize.x)/2), (float)(modalY + 50)},
+                18.0f, 0, LIGHTGRAY);
+        } else {
+            DrawText(g_barMoods[g_barRandomMood], modalX + (modalWidth - MeasureText(g_barMoods[g_barRandomMood], 18))/2, modalY + 50, 18, LIGHTGRAY);
+        }
         
-        // Menu Options
+        // Menu Options (location-specific)
         int startY = modalY + 100;
-        int spacing = 55;
+        int spacing = 50;
+        const char* options[6];
+        int numOptions = 4;
         
-        const char* options[] = {
-            "BUY ASTRO BREW (5 CR)",
-            "TAKE SPACE SHOT (10 CR)",
-            "DRINKS ARE ON ME! (1000 CR)",
-            "LEAVE BAR"
-        };
+        if (g_currentLocation == 1) {  // Station
+            options[0] = "BUY ASTRO BREW (5 CR)";
+            options[1] = "TAKE SPACE SHOT (10 CR)";
+            options[2] = "TRY YOUR LUCK (50 CR)";
+            options[3] = "CHAT WITH SCIENTIST (FREE)";
+            options[4] = "LEAVE BAR";
+            numOptions = 5;
+        } else if (g_currentLocation == 2) {  // Halo
+            options[0] = "BUY PREMIUM DRINK (15 CR)";
+            options[1] = "NETWORK WITH TRADERS (100 CR)";
+            options[2] = "LISTEN TO STORIES (FREE)";
+            options[3] = "LEAVE BAR";
+            numOptions = 4;
+        } else {  // Depot
+            options[0] = "BUY ASTRO BREW (5 CR)";
+            options[1] = "TAKE SPACE SHOT (10 CR)";
+            options[2] = "DRINKS ARE ON ME! (1000 CR)";
+            options[3] = "LEAVE BAR";
+            numOptions = 4;
+        }
         
-        for (int i = 0; i < 4; i++) {
+        g_barMaxMenuItems = numOptions;
+        
+        for (int i = 0; i < numOptions; i++) {
             bool selected = (g_barMenuSelection == i);
             int btnY = startY + i * spacing;
             DrawButton(options[i], modalX + 50, btnY, modalWidth - 100, 45, selected);
             
-            // Draw Gold Card icon/text if owned for that option
-            if (i == 2 && G_Player.hasGoldCard) {
-                DrawText("[OWNED]", modalX + modalWidth - 120, btnY + 12, 20, GREEN);
+            if (i == 2 && g_currentLocation == 0 && G_Player.hasGoldCard) {
+                if (retroFont.texture.id > 0) {
+                    DrawTextEx(retroFont, "[OWNED]",
+                        (Vector2){(float)(modalX + modalWidth - 120), (float)(btnY + 12)},
+                        20.0f, 0, GREEN);
+                } else {
+                    DrawText("[OWNED]", modalX + modalWidth - 120, btnY + 12, 20, GREEN);
+                }
             }
         }
         
-        // Status
+        // Status (moved down to avoid overlapping LEAVE BAR button)
         char status[64];
         snprintf(status, sizeof(status), "DRINKS: %d/5  CREDITS: %d", g_barDrinksPurchased, G_Player.credits);
-        DrawText(status, modalX + (modalWidth - MeasureText(status, 20))/2, modalY + 340, 20, YELLOW);
+        if (retroFont.texture.id > 0) {
+            Vector2 statusSize = MeasureTextEx(retroFont, status, 20.0f, 0);
+            DrawTextEx(retroFont, status,
+                (Vector2){(float)(modalX + (modalWidth - statusSize.x)/2), (float)(modalY + 380)},
+                20.0f, 0, YELLOW);
+        } else {
+            DrawText(status, modalX + (modalWidth - MeasureText(status, 20))/2, modalY + 380, 20, YELLOW);
+        }
         
         // Navigation
         if (CustomIsKeyPressed(KEY_UP)) {
             g_barMenuSelection--;
-            if (g_barMenuSelection < 0) g_barMenuSelection = 3;
+            if (g_barMenuSelection < 0) g_barMenuSelection = numOptions - 1;
         }
         if (CustomIsKeyPressed(KEY_DOWN)) {
             g_barMenuSelection++;
-            if (g_barMenuSelection > 3) g_barMenuSelection = 0;
+            if (g_barMenuSelection >= numOptions) g_barMenuSelection = 0;
         }
         
         // Selection
         if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
+            PlayTerminalTypeSound();
+            if (g_currentLocation == 1) {  // Station
+                if (g_barMenuSelection == 0) { // Beer
+                    if (G_Player.credits >= 5) {
+                        G_Player.credits -= 5;
+                        g_barDrinksPurchased++;
+                        CheckBarEvents();
+                    }
+                } else if (g_barMenuSelection == 1) { // Shot
+                    if (G_Player.credits >= 10) {
+                        G_Player.credits -= 10;
+                        g_barDrinksPurchased++;
+                        CheckBarEvents();
+                    }
+                } else if (g_barMenuSelection == 2) { // Gambling
+                    if (G_Player.credits >= 50) {
+                        G_Player.credits -= 50;
+                        int winAmount = GetRandomValue(0, 200);  // 0-200 credits
+                        G_Player.credits += winAmount;
+                        if (winAmount > 0) {
+                            snprintf(g_barGamblingText, sizeof(g_barGamblingText),
+                                "You place your bet and spin the wheel...\n\n"
+                                "LUCKY! You won %d credits!", winAmount);
+                        } else {
+                            snprintf(g_barGamblingText, sizeof(g_barGamblingText),
+                                "You place your bet and spin the wheel...\n\n"
+                                "Better luck next time! You lost 50 credits.");
+                        }
+                        g_showBarGamblingModal = true;
+                    }
+                } else if (g_barMenuSelection == 3) { // Scientist chat
+                    // 30% thruster boost, rounded down to nearest 10% = 20%
+                    float boost = G_Player.thrusterBoost * 1.2f;  // 20% boost
+                    if (boost > G_Player.thrusterBoost) {
+                        G_Player.thrusterBoost = boost;
+                        snprintf(g_barScientistText, sizeof(g_barScientistText),
+                            "You chat with a scientist on their way to a research station.\n\n"
+                            "They share some tips on improving your ship's thrusters.\n\n"
+                            "THRUSTER BOOST INCREASED BY 20%%!");
+                        g_showBarScientistModal = true;
+                    } else {
+                        snprintf(g_barScientistText, sizeof(g_barScientistText),
+                            "You chat with a scientist, but they have no new tips for you.");
+                        g_showBarScientistModal = true;
+                    }
+                } else if (g_barMenuSelection == 4) { // Leave
+                    g_showBarView = false;
+                    g_barDrinksPurchased = 0;
+                    g_depotHomePage = 1;
+                }
+            } else if (g_currentLocation == 2) {  // Halo
+                if (g_barMenuSelection == 0) { // Premium drink
+                    if (G_Player.credits >= 15) {
+                        G_Player.credits -= 15;
+                        g_barDrinksPurchased++;
+                        CheckBarEvents();
+                    }
+                } else if (g_barMenuSelection == 1) { // Network with traders
+                    if (G_Player.credits >= 100) {
+                        G_Player.credits -= 100;
+                        // Could add trader benefits here
+                        g_barDrinksPurchased++;
+                        CheckBarEvents();
+                    }
+                } else if (g_barMenuSelection == 2) { // Listen to stories
+                    // Free - just socialize
+                    g_barDrinksPurchased++;
+                    CheckBarEvents();
+                } else if (g_barMenuSelection == 3) { // Leave
+                    g_showBarView = false;
+                    g_barDrinksPurchased = 0;
+                    g_depotHomePage = 1;
+                }
+            } else {  // Depot
             if (g_barMenuSelection == 0) { // Beer
                 if (G_Player.credits >= 5) {
                     G_Player.credits -= 5;
@@ -2663,7 +3617,6 @@ void DrawBarModal(int modalX, int modalY, int modalWidth, int modalHeight) {
                 if (G_Player.credits >= 1000 && !G_Player.hasGoldCard) {
                     G_Player.credits -= 1000;
                     G_Player.hasGoldCard = true;
-                    // Reduce all gravities by 10%
                     for(int i=0; i<6; i++) {
                         g_gravityScores[i] = (int)(g_gravityScores[i] * 0.9f);
                     }
@@ -2672,7 +3625,8 @@ void DrawBarModal(int modalX, int modalY, int modalWidth, int modalHeight) {
             } else if (g_barMenuSelection == 3) { // Leave
                 g_showBarView = false;
                 g_barDrinksPurchased = 0;
-                g_depotHomePage = 1; // Back to prospect
+                    g_depotHomePage = 1;
+                }
             }
         }
     }
@@ -2757,9 +3711,53 @@ void DrawDepotStats(int statsYOffset) {
     char creditsText[32];
     snprintf(creditsText, sizeof(creditsText), "%d", G_Player.credits);
     if (retroFont.texture.id > 0) {
-        DrawTextEx(retroFont, creditsText, (Vector2){(float)pilotDataX, (float)pilotDataY + 60}, 24, 0, WHITE);
+        DrawTextEx(retroFont, creditsText, (Vector2){(float)pilotDataX, (float)pilotDataY + 30}, 24, 0, WHITE);  // Moved down 5px (from +25 to +30)
     } else {
-        DrawText(creditsText, pilotDataX, pilotDataY + 60, 24, WHITE);
+        DrawText(creditsText, pilotDataX, pilotDataY + 30, 24, WHITE);  // Moved down 5px (from +25 to +30)
+    }
+    
+    // CARGO DATA section (middle bottom) - Display collected commodities (no header, all caps)
+    int cargoDataX = VIRTUAL_WIDTH / 2 - 200 + 160;  // Moved right 10px (from 150 to 160)
+    int cargoDataY = VIRTUAL_HEIGHT - 120 + statsYOffset - 12;  // Moved down 3px (from -15 to -12)
+    int cargoLineHeight = 16;
+    int maxCargoLines = 6;  // Show up to 6 commodities
+    
+    // Display commodities that player has collected (all caps, no header)
+    int cargoLine = 0;
+    for (int i = 0; i < NUM_COMMODITIES && cargoLine < maxCargoLines; i++) {
+        if (G_Player.inventory[i] > 0) {
+            // Convert commodity name to uppercase
+            char commNameUpper[64];
+            const char* commName = g_commodityNames[i];
+            int j = 0;
+            while (commName[j] != '\0' && j < 63) {
+                commNameUpper[j] = (commName[j] >= 'a' && commName[j] <= 'z') ? (commName[j] - 32) : commName[j];
+                j++;
+            }
+            commNameUpper[j] = '\0';
+            
+            char cargoText[64];
+            snprintf(cargoText, sizeof(cargoText), "%s: %d", commNameUpper, G_Player.inventory[i]);
+            int yPos = cargoDataY + (cargoLine * cargoLineHeight);
+            
+            if (retroFont.texture.id > 0) {
+                DrawTextEx(retroFont, cargoText, (Vector2){(float)cargoDataX, (float)yPos}, 16, 0, (Color){200, 200, 255, 255});
+            } else {
+                DrawText(cargoText, cargoDataX, yPos, 16, (Color){200, 200, 255, 255});
+            }
+            cargoLine++;
+        }
+    }
+    
+    // If no cargo, show empty message
+    if (cargoLine == 0) {
+        const char* emptyText = "EMPTY";
+        int yPos = cargoDataY + 5;  // Moved down 5px
+        if (retroFont.texture.id > 0) {
+            DrawTextEx(retroFont, emptyText, (Vector2){(float)cargoDataX, (float)yPos}, 16, 0, GRAY);
+        } else {
+            DrawText(emptyText, cargoDataX, yPos, 16, GRAY);
+        }
     }
 }
 
@@ -2771,6 +3769,7 @@ void HandleDepotInput(GameState* state, int* menuSelection) {
         // Reset overlay states when changing pages
         g_showProspectAsteroids = false;
         g_showShipyardShop = false;
+        g_showCommoditiesMarket = false;
         g_showBarView = false;
     }
     if (CustomIsKeyPressed(KEY_UP)) {
@@ -2817,12 +3816,28 @@ Texture2D* GetDepotPageTexture() {
 }
 
 void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, Vector3* shipVel) {
+    // Simulate left arrow key press immediately when returning to depot/station/halo to exit previous page
+    static GameState lastState = STATE_SPLASH;
+    if ((lastState != STATE_DEPOT_HOME && *state == STATE_DEPOT_HOME) ||
+        (lastState != STATE_STATION_HOME && *state == STATE_STATION_HOME) ||
+        (lastState != STATE_HALO_HOME && *state == STATE_HALO_HOME)) {
+        // Just entered home state - simulate left arrow press immediately
+        if (KEY_LEFT >= 0 && KEY_LEFT < 512) {
+            g_inputState.keysPressed[KEY_LEFT] = true;
+        }
+    }
+    lastState = *state;
+    
     // 1. Clear Background
     ClearBackground(BLACK);
     
     // Handle ESC key - close modal/prospect view/shop view first, then go back
     if (CustomIsKeyPressed(KEY_ESCAPE)) {
-        if (g_showAsteroidModal) {
+        if (g_showNoCommodityModal) {
+            // Close no commodity modal first
+            g_showNoCommodityModal = false;
+            return;
+        } else if (g_showAsteroidModal) {
             g_showAsteroidModal = false;
             g_fuelCheckFailed = false;
             return;
@@ -2842,6 +3857,11 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
             g_shipyardPageOverlay = 0;
             g_depotHomePage = 1;
             return;
+        } else if (g_showCommoditiesMarket) {
+            // Close commodities market view and go back to Depot_Home page 1
+            g_showCommoditiesMarket = false;
+            g_depotHomePage = 1;
+            return;
         } else if (g_showBarView) {
             // Close bar view and go back to Depot_Home page 1
             if (!g_showBarRumorModal && !g_showBarGoldCardModal) {
@@ -2859,6 +3879,7 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
     
     // Handle Enter key on page 1 to toggle asteroid prospect view (disabled when modal is open)
     if (g_depotHomePage == 1 && !g_showAsteroidModal && CustomIsKeyPressed(KEY_ENTER)) {
+        PlayTerminalTypeSound();
         g_showProspectAsteroids = !g_showProspectAsteroids;
         if (g_showProspectAsteroids) {
             g_prospectPageOverlay = 0;  // Reset to base overlay when entering prospect view
@@ -2869,6 +3890,7 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
     
     // Handle Enter key on page 2 to toggle shipyard shop view (disabled when modal is open)
     if (g_depotHomePage == 2 && !g_showShopModal && CustomIsKeyPressed(KEY_ENTER)) {
+        PlayTerminalTypeSound();
         g_showShipyardShop = !g_showShipyardShop;
         if (g_showShipyardShop) {
             g_shipyardPageOverlay = 0;  // Reset to base overlay when entering shop view
@@ -2877,11 +3899,21 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
         }
     }
     
+    // Handle Enter key on page 3 to toggle commodities market view
+    if (g_depotHomePage == 3 && CustomIsKeyPressed(KEY_ENTER)) {
+        PlayTerminalTypeSound();
+        g_showCommoditiesMarket = !g_showCommoditiesMarket;
+        if (g_showCommoditiesMarket) {
+            g_commoditiesMarketSelection = 0;  // Reset selection when entering
+        }
+    }
+    
     // Handle Enter key on page 4 to toggle Bar view
     if (g_depotHomePage == 4 && CustomIsKeyPressed(KEY_ENTER)) {
+        PlayTerminalTypeSound();
         if (!g_showBarView) {
             g_showBarView = true;
-            g_barModalTimer = 0.0f; // Reset timer
+            g_barModalTimer = 0.0f; // Start fresh delay before showing options
             g_barDrinksPurchased = 0;
             g_barRandomMood = GetRandomValue(0, g_numBarMoods - 1);
         } else {
@@ -2894,51 +3926,81 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
     
     // Handle A-F key presses when showing asteroid prospects
     if (g_showProspectAsteroids && g_depotHomePage == 1 && !g_showAsteroidModal) {
+        // Get correct arrays based on location
+        int* prospectScores;
+        int* gravityScores;
+        int fuelMin, fuelMax;
+        if (g_currentLocation == 1) {  // Station
+            prospectScores = g_stationProspectScores;
+            gravityScores = g_stationGravityScores;
+            fuelMin = 40; fuelMax = 80;  // Higher fuel costs
+        } else if (g_currentLocation == 2) {  // Halo
+            prospectScores = g_haloProspectScores;
+            gravityScores = g_haloGravityScores;
+            fuelMin = 60; fuelMax = 100;  // Highest fuel costs
+        } else {  // Depot
+            prospectScores = g_prospectScores;
+            gravityScores = g_gravityScores;
+            fuelMin = 20; fuelMax = 50;  // Standard fuel costs
+        }
+        
         if (CustomIsKeyPressed(KEY_A)) {
+            PlayTerminalTypeSound();
             g_prospectPageOverlay = 1;  // A
             g_selectedAsteroidIndex = 0;  // A = index 0
-            g_selectedAsteroidFuelCost = GetRandomValue(20, 50);  // Random fuel cost
-            g_selectedAsteroidGravity = g_gravityScores[0];  // Store gravity
+            g_selectedAsteroidFuelCost = GetRandomValue(fuelMin, fuelMax);
+            g_selectedAsteroidGravity = gravityScores[0];
+            g_selectedAsteroidProspect = prospectScores[0];
             g_showAsteroidModal = true;
-            g_modalSelection = 0;  // Default to Launch
-            g_fuelCheckFailed = false;  // Reset fuel check
+            g_modalSelection = 0;
+            g_fuelCheckFailed = false;
         } else if (CustomIsKeyPressed(KEY_B)) {
+            PlayTerminalTypeSound();
             g_prospectPageOverlay = 2;  // B
-            g_selectedAsteroidIndex = 1;  // B = index 1
-            g_selectedAsteroidFuelCost = GetRandomValue(20, 50);
-            g_selectedAsteroidGravity = g_gravityScores[1];
+            g_selectedAsteroidIndex = 1;
+            g_selectedAsteroidFuelCost = GetRandomValue(fuelMin, fuelMax);
+            g_selectedAsteroidGravity = gravityScores[1];
+            g_selectedAsteroidProspect = prospectScores[1];
             g_showAsteroidModal = true;
             g_modalSelection = 0;
             g_fuelCheckFailed = false;
         } else if (CustomIsKeyPressed(KEY_C)) {
+            PlayTerminalTypeSound();
             g_prospectPageOverlay = 3;  // C
-            g_selectedAsteroidIndex = 2;  // C = index 2
-            g_selectedAsteroidFuelCost = GetRandomValue(20, 50);
-            g_selectedAsteroidGravity = g_gravityScores[2];
+            g_selectedAsteroidIndex = 2;
+            g_selectedAsteroidFuelCost = GetRandomValue(fuelMin, fuelMax);
+            g_selectedAsteroidGravity = gravityScores[2];
+            g_selectedAsteroidProspect = prospectScores[2];
             g_showAsteroidModal = true;
             g_modalSelection = 0;
             g_fuelCheckFailed = false;
         } else if (CustomIsKeyPressed(KEY_D)) {
+            PlayTerminalTypeSound();
             g_prospectPageOverlay = 4;  // D
-            g_selectedAsteroidIndex = 3;  // D = index 3
-            g_selectedAsteroidFuelCost = GetRandomValue(20, 50);
-            g_selectedAsteroidGravity = g_gravityScores[3];
+            g_selectedAsteroidIndex = 3;
+            g_selectedAsteroidFuelCost = GetRandomValue(fuelMin, fuelMax);
+            g_selectedAsteroidGravity = gravityScores[3];
+            g_selectedAsteroidProspect = prospectScores[3];
             g_showAsteroidModal = true;
             g_modalSelection = 0;
             g_fuelCheckFailed = false;
         } else if (CustomIsKeyPressed(KEY_E)) {
+            PlayTerminalTypeSound();
             g_prospectPageOverlay = 5;  // E
-            g_selectedAsteroidIndex = 4;  // E = index 4
-            g_selectedAsteroidFuelCost = GetRandomValue(20, 50);
-            g_selectedAsteroidGravity = g_gravityScores[4];
+            g_selectedAsteroidIndex = 4;
+            g_selectedAsteroidFuelCost = GetRandomValue(fuelMin, fuelMax);
+            g_selectedAsteroidGravity = gravityScores[4];
+            g_selectedAsteroidProspect = prospectScores[4];
             g_showAsteroidModal = true;
             g_modalSelection = 0;
             g_fuelCheckFailed = false;
         } else if (CustomIsKeyPressed(KEY_F)) {
+            PlayTerminalTypeSound();
             g_prospectPageOverlay = 6;  // F
-            g_selectedAsteroidIndex = 5;  // F = index 5
-            g_selectedAsteroidFuelCost = GetRandomValue(20, 50);
-            g_selectedAsteroidGravity = g_gravityScores[5];
+            g_selectedAsteroidIndex = 5;
+            g_selectedAsteroidFuelCost = GetRandomValue(fuelMin, fuelMax);
+            g_selectedAsteroidGravity = gravityScores[5];
+            g_selectedAsteroidProspect = prospectScores[5];
             g_showAsteroidModal = true;
             g_modalSelection = 0;
             g_fuelCheckFailed = false;
@@ -2948,36 +4010,42 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
     // Handle A-F key presses when showing shipyard shop
     if (g_showShipyardShop && g_depotHomePage == 2 && !g_showShopModal) {
         if (CustomIsKeyPressed(KEY_A)) {
+            PlayTerminalTypeSound();
             g_shipyardPageOverlay = 1;  // A
             g_selectedShopItemIndex = 0;  // A = LASER
             g_showShopModal = true;
             g_shopModalSelection = 0;  // Default to Purchase
             g_purchaseFailed = false;
         } else if (CustomIsKeyPressed(KEY_B)) {
+            PlayTerminalTypeSound();
             g_shipyardPageOverlay = 2;  // B
             g_selectedShopItemIndex = 1;  // B = COLLECTOR
             g_showShopModal = true;
             g_shopModalSelection = 0;
             g_purchaseFailed = false;
         } else if (CustomIsKeyPressed(KEY_C)) {
+            PlayTerminalTypeSound();
             g_shipyardPageOverlay = 3;  // C
             g_selectedShopItemIndex = 2;  // C = THRUSTER
             g_showShopModal = true;
             g_shopModalSelection = 0;
             g_purchaseFailed = false;
         } else if (CustomIsKeyPressed(KEY_D)) {
+            PlayTerminalTypeSound();
             g_shipyardPageOverlay = 4;  // D
             g_selectedShopItemIndex = 3;  // D = EXO-PLATING
             g_showShopModal = true;
             g_shopModalSelection = 0;
             g_purchaseFailed = false;
         } else if (CustomIsKeyPressed(KEY_E)) {
+            PlayTerminalTypeSound();
             g_shipyardPageOverlay = 5;  // E
             g_selectedShopItemIndex = 4;  // E = FUEL
             g_showShopModal = true;
             g_shopModalSelection = 0;
             g_purchaseFailed = false;
         } else if (CustomIsKeyPressed(KEY_F)) {
+            PlayTerminalTypeSound();
             g_shipyardPageOverlay = 6;  // F
             g_selectedShopItemIndex = 5;  // F = REPAIRS
             g_showShopModal = true;
@@ -2986,7 +4054,7 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
         }
     }
     
-    // 2. Draw background - either station viewport (torus) or asteroid prospects or shop
+    // 2. Draw background - either station viewport (torus) or asteroid prospects or shop or commodities market
     // Both use the texture rendered in UpdateFrame
     Texture2D viewTex;
     if (g_showProspectAsteroids && g_depotHomePage == 1) {
@@ -2995,6 +4063,9 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
     } else if (g_showShipyardShop && g_depotHomePage == 2) {
         // Use shipyard shop texture
         viewTex = g_shipyardShopViewport.texture;
+    } else if (g_showCommoditiesMarket && g_depotHomePage == 3) {
+        // Use commodities market texture
+        viewTex = g_commoditiesMarketViewport.texture;
     } else {
         // Use Station Viewport Texture
         viewTex = stationViewport.GetTexture();
@@ -3005,8 +4076,47 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
     Rectangle destRect = { 0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT }; // Full virtual screen
     DrawTexturePro(viewTex, srcRect, destRect, (Vector2){0,0}, 0.0f, WHITE);
     
+    // Handle commodities market navigation when market view is active
+    if (g_showCommoditiesMarket && g_depotHomePage == 3) {
+        int numOpt = NUM_COMMODITIES + 1;  // Commodities + back
+        if (CustomIsKeyPressed(KEY_DOWN)) {
+            g_commoditiesMarketSelection = (g_commoditiesMarketSelection + 1) % numOpt;
+            PlayTerminalTypeSound();
+        }
+        if (CustomIsKeyPressed(KEY_UP)) {
+            g_commoditiesMarketSelection = (g_commoditiesMarketSelection - 1 + numOpt) % numOpt;
+            PlayTerminalTypeSound();
+        }
+        // Handle [S] key for selling (changed from ENTER)
+        if (CustomIsKeyPressed(KEY_S)) {
+            PlayTerminalTypeSound();
+            // Sell selected commodity
+            if (g_commoditiesMarketSelection < NUM_COMMODITIES) {
+                // Sell commodity
+                int* buyPrices = g_stationBuyPrices[g_currentLocation];
+                if (G_Player.inventory[g_commoditiesMarketSelection] > 0) {
+                    G_Player.inventory[g_commoditiesMarketSelection]--;
+                    G_Player.credits += buyPrices[g_commoditiesMarketSelection];
+                    G_Player.cargoFilled--;
+                } else {
+                    // Show modal: "YOU HAVE NO X TO SELL"
+                    snprintf(g_noCommodityName, sizeof(g_noCommodityName), "%s", g_commodityNames[g_commoditiesMarketSelection]);
+                    g_showNoCommodityModal = true;
+                }
+            }
+        }
+        // Handle ENTER for back/exit only
+        if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
+            PlayTerminalTypeSound();
+            if (g_commoditiesMarketSelection == NUM_COMMODITIES) {
+                // Back - close market view
+                g_showCommoditiesMarket = false;
+            }
+        }
+    }
+    
     // 3. Handle page navigation with up/down arrows (pages 1-4) - disabled when modal is open or in sub-views
-    if (!g_showAsteroidModal && !g_showShopModal && !g_showBarView) {
+    if (!g_showAsteroidModal && !g_showShopModal && !g_showBarView && !g_showCommoditiesMarket) {
         if (CustomIsKeyPressed(KEY_DOWN)) {
             if (g_depotHomePage < 4) {
                 g_depotHomePage++;
@@ -3014,6 +4124,7 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
                 g_showAsteroidModal = false;  // Close modal when changing pages
                 g_showShipyardShop = false;  // Reset shop view when changing pages
                 g_showShopModal = false;  // Close shop modal when changing pages
+                g_showCommoditiesMarket = false;  // Reset commodities market when changing pages
             }
         }
         if (CustomIsKeyPressed(KEY_UP)) {
@@ -3023,6 +4134,7 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
                 g_showAsteroidModal = false;  // Close modal when changing pages
                 g_showShipyardShop = false;  // Reset shop view when changing pages
                 g_showShopModal = false;  // Close shop modal when changing pages
+                g_showCommoditiesMarket = false;  // Reset commodities market when changing pages
             }
         }
     }
@@ -3086,6 +4198,9 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
                 currentGuiTx = &shipyardPageTx;  // Fallback to base shipyard_page.png
                 break;
         }
+    } else if (g_showCommoditiesMarket && g_depotHomePage == 3) {
+        // Commodities market uses base commodities_gui.png (no letter overlays needed)
+        currentGuiTx = &commoditiesGuiTx;
     } else if (g_showBarView && g_depotHomePage == 4) {
         currentGuiTx = &barPageTx;  // Bar page overlay
     } else {
@@ -3116,8 +4231,12 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
         DrawTexturePro(*currentGuiTx, srcRectGui, destRectGui, (Vector2){0, 0}, 0.0f, WHITE);
     }
     
-    // Draw Location Overlay (Hirohito/Nagako) if applicable
-    if (g_currentLocation == 1 && hirohitoOverlayTx.id > 0) { // Station
+    // Draw Location Overlay (Shinjuku/Hirohito/Nagako) if applicable
+    if (g_currentLocation == 0 && shinjukuOverlayTx.id > 0) { // Depot
+        Rectangle srcRectGui = { 0, 0, (float)shinjukuOverlayTx.width, (float)shinjukuOverlayTx.height };
+        Rectangle destRectGui = { 0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT };
+        DrawTexturePro(shinjukuOverlayTx, srcRectGui, destRectGui, (Vector2){0, 0}, 0.0f, WHITE);
+    } else if (g_currentLocation == 1 && hirohitoOverlayTx.id > 0) { // Station
         Rectangle srcRectGui = { 0, 0, (float)hirohitoOverlayTx.width, (float)hirohitoOverlayTx.height };
         Rectangle destRectGui = { 0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT };
         DrawTexturePro(hirohitoOverlayTx, srcRectGui, destRectGui, (Vector2){0, 0}, 0.0f, WHITE);
@@ -3127,101 +4246,10 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
         DrawTexturePro(nagakoOverlayTx, srcRectGui, destRectGui, (Vector2){0, 0}, 0.0f, WHITE);
     }
     
-    // 5. Draw Stats Overlay (on top of PNG) - SHIP DATA and PILOT DATA
-    // Coral color for progress bars: RGB(255, 127, 80) or similar coral shade
-    Color coralColor = (Color){255, 127, 80, 255};
-    
-    // SHIP DATA section (left bottom) - Progress bars
-    // Position bars next to the "HULL:", "POWER:", "FUEL:" labels in the PNG
-    // These labels are likely around x=50-100, y=680-750 area (bottom left)
-    int shipDataX = 335;   // Base X position
-    int shipDataY = VIRTUAL_HEIGHT - 120;  // Base Y position
-    int rectWidth = 9;     // Width of each rectangle (reduced by 1px from 10)
-    int rectHeight = 11;   // Height of each rectangle (reduced by 1px from 12)
-    int rectSpacing = 2;   // Spacing between rectangles (doubled)
-    int maxRects = 10;     // Maximum rectangles (100 points / 10 = 10 rectangles)
-    
-    // Individual positions for each bar - Hull aligned horizontally with Power and Fuel
-    int hullX = shipDataX + 9;    // HULL aligned horizontally with Power and Fuel
-    int hullY = shipDataY + 5;    // HULL original Y position
-    int powerX = shipDataX + 9;   // POWER right 4px (from shipDataX + 5 to shipDataX + 9)
-    int powerY = shipDataY + 35;  // POWER up 3px (from shipDataY + 38 to shipDataY + 35)
-    int fuelX = shipDataX + 9;    // FUEL right 4px (from shipDataX + 5 to shipDataX + 9)
-    int fuelY = shipDataY + 63;   // FUEL up 4px (from shipDataY + 67 to shipDataY + 63)
-    
-    // HULL progress bars - Green rectangles (one per 10 points)
-    int hullRects = (int)(G_Player.hull / 10.0f);  // Number of rectangles to draw
-    for (int i = 0; i < maxRects; i++) {
-        int rectX = hullX + i * (rectWidth + rectSpacing);
-        if (i < hullRects) {
-            DrawRectangle(rectX, hullY, rectWidth, rectHeight, GREEN);  // Filled rectangle
-        } else {
-            DrawRectangle(rectX, hullY, rectWidth, rectHeight, DARKGRAY);  // Empty rectangle
-        }
-    }
-    
-    // POWER progress bars - Red rectangles (one per 10 points)
-    int powerRects = (int)(G_Player.power / 10.0f);  // Number of rectangles to draw
-    for (int i = 0; i < maxRects; i++) {
-        int rectX = powerX + i * (rectWidth + rectSpacing);
-        if (i < powerRects) {
-            DrawRectangle(rectX, powerY, rectWidth, rectHeight, RED);  // Filled rectangle
-        } else {
-            DrawRectangle(rectX, powerY, rectWidth, rectHeight, DARKGRAY);  // Empty rectangle
-        }
-    }
-    
-    // FUEL progress bars - Cyan rectangles (one per 10 points)
-    int fuelRects = (int)(G_Player.fuel / 10.0f);  // Number of rectangles to draw
-    Color cyanColor = (Color){0, 255, 255, 255};  // Cyan color
-    for (int i = 0; i < maxRects; i++) {
-        int rectX = fuelX + i * (rectWidth + rectSpacing);
-        if (i < fuelRects) {
-            DrawRectangle(rectX, fuelY, rectWidth, rectHeight, cyanColor);  // Filled rectangle
-        } else {
-            DrawRectangle(rectX, fuelY, rectWidth, rectHeight, DARKGRAY);  // Empty rectangle
-        }
-    }
-    
-    // PILOT DATA section (right bottom) - Rank and Credits
-    // Position text next to "RANK:" and "CREDITS:" labels in the PNG
-    int pilotDataX = VIRTUAL_WIDTH - 180;  // Right side, after "RANK:" label (moved 10px more left)
-    int pilotDataY = VIRTUAL_HEIGHT - 125;  // Near bottom (moved up 10px)
-    
-    // Convert rank name to uppercase for retro style
-    const char* rankName = GetRankName(G_Player.rank);
-    char rankUpper[64];
-    int i = 0;
-    while (rankName[i] != '\0' && i < 63) {
-        rankUpper[i] = (rankName[i] >= 'a' && rankName[i] <= 'z') ? (rankName[i] - 32) : rankName[i];
-        i++;
-    }
-    rankUpper[i] = '\0';
-    
-    // RANK text (next to "RANK:" label) - retro style, all caps, font size 24
-    if (retroFont.texture.id > 0) {
-        DrawTextEx(retroFont, rankUpper, (Vector2){(float)pilotDataX, (float)pilotDataY}, 24, 0, WHITE);
-    } else {
-        DrawText(rankUpper, pilotDataX, pilotDataY, 24, WHITE);  // Fallback to default font
-    }
-    
-    // CREDITS text (next to "CREDITS:" label, below rank) - all caps, font size 24
-    char creditsText[32];
-    snprintf(creditsText, sizeof(creditsText), "%d", G_Player.credits);
-    // Convert credits text to uppercase (though numbers stay the same)
-    for (int j = 0; creditsText[j] != '\0'; j++) {
-        if (creditsText[j] >= 'a' && creditsText[j] <= 'z') {
-            creditsText[j] = creditsText[j] - 32;
-        }
-    }
-    if (retroFont.texture.id > 0) {
-        DrawTextEx(retroFont, creditsText, (Vector2){(float)pilotDataX, (float)(pilotDataY + 30)}, 24, 0, WHITE);
-    } else {
-        DrawText(creditsText, pilotDataX, pilotDataY + 30, 24, WHITE);  // Fallback to default font
-    }
-    
-    // Refuel player when in depot
-    G_Player.fuel = G_Player.maxFuel;
+    // 5. Draw Stats Overlay (on top of PNG) - SHIP DATA, PILOT DATA, and CARGO DATA
+    // Note: Fuel is NOT automatically refueled here - it persists between screens
+    // Fuel is only refueled when purchasing at shop or starting new game
+    DrawDepotStats(0);
     
     // Draw asteroid launch modal if open (on top of everything)
     if (g_showAsteroidModal && g_showProspectAsteroids && g_depotHomePage == 1) {
@@ -3236,13 +4264,77 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
     // Draw Bar modal/interface if open (after delay)
     if (g_showBarView && g_depotHomePage == 4) {
         g_barModalTimer += GetFrameTime();
-        if (g_barModalTimer > 0.5f) { // 0.5 second delay
+        // Keep a tiny delay to avoid instant pop, but never hang
+        if (g_barModalTimer >= 0.15f) {
             // Center modal on screen
             int modalWidth = 600;
             int modalHeight = 450;
             int modalX = (VIRTUAL_WIDTH - modalWidth) / 2;
             int modalY = (VIRTUAL_HEIGHT - modalHeight) / 2;
             DrawBarModal(modalX, modalY, modalWidth, modalHeight);
+        }
+    }
+    
+    // Draw Fuel Warning Modal (on top of everything, no buttons, auto-closes after 3 seconds)
+    if (g_showFuelWarningModal) {
+        float dt = GetFrameTime();
+        g_fuelWarningTimer -= dt;
+        
+        if (g_fuelWarningTimer <= 0.0f) {
+            g_showFuelWarningModal = false;
+            g_fuelCheckFailed = false;
+        } else {
+            // Draw modal on top of everything
+            int modalWidth = 700;
+            int modalHeight = 300;
+            int modalX = (VIRTUAL_WIDTH - modalWidth) / 2;
+            int modalY = (VIRTUAL_HEIGHT - modalHeight) / 2;
+            
+            // Dark background with border
+            DrawRectangle(modalX, modalY, modalWidth, modalHeight, (Color){20, 5, 5, 240});
+            DrawRectangleLines(modalX, modalY, modalWidth, modalHeight, RED);
+            DrawRectangleLines(modalX + 1, modalY + 1, modalWidth - 2, modalHeight - 2, (Color){255, 100, 100, 255});
+            
+            // Warning text
+            const char* warningText = "OUT OF FUEL WARNING";
+            int warningW = MeasureText(warningText, 36);
+            DrawText(warningText, modalX + (modalWidth - warningW) / 2, modalY + 60, 36, RED);
+            
+            // Abort text
+            const char* abortText = "MINE ABORTED";
+            int abortW = MeasureText(abortText, 28);
+            DrawText(abortText, modalX + (modalWidth - abortW) / 2, modalY + 120, 28, YELLOW);
+        }
+    }
+    
+    // Draw No Commodity Modal (when trying to sell commodity you don't have)
+    if (g_showNoCommodityModal) {
+        // Handle ESC or ENTER to close modal
+        if (CustomIsKeyPressed(KEY_ESCAPE) || CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
+            PlayTerminalTypeSound();
+            g_showNoCommodityModal = false;
+        } else {
+            // Draw modal on top of everything
+            int modalWidth = 700;
+            int modalHeight = 250;
+            int modalX = (VIRTUAL_WIDTH - modalWidth) / 2;
+            int modalY = (VIRTUAL_HEIGHT - modalHeight) / 2;
+            
+            // Dark background with border
+            DrawRectangle(modalX, modalY, modalWidth, modalHeight, (Color){20, 20, 5, 240});
+            DrawRectangleLines(modalX, modalY, modalWidth, modalHeight, YELLOW);
+            DrawRectangleLines(modalX + 1, modalY + 1, modalWidth - 2, modalHeight - 2, (Color){255, 255, 100, 255});
+            
+            // Message text: "YOU HAVE NO X TO SELL"
+            char messageText[128];
+            snprintf(messageText, sizeof(messageText), "YOU HAVE NO %s TO SELL", g_noCommodityName);
+            int messageW = MeasureText(messageText, 32);
+            DrawText(messageText, modalX + (modalWidth - messageW) / 2, modalY + 80, 32, YELLOW);
+            
+            // Instruction text
+            const char* instructionText = "PRESS ENTER OR ESC TO CLOSE";
+            int instructionW = MeasureText(instructionText, 20);
+            DrawText(instructionText, modalX + (modalWidth - instructionW) / 2, modalY + 150, 20, WHITE);
         }
     }
 }
@@ -3256,7 +4348,7 @@ void DrawPageDebris(GameState* state, int* menuSelection) {
     DrawText("Collecting Debris...", 450, 300, 20, GREEN);
     
     if (DrawButton("FINISH", 500, 500, 200, 40, true)) {
-        G_Player.gold += 1;
+        // Old debris collection - now handled by ConvertDebrisToCommodity()
         G_Player.cargoFilled++;
         ResetState(state, menuSelection, STATE_LANDER);
     }
@@ -3297,10 +4389,8 @@ void DrawPageDepotSelect(GameState* state, int* menuSelection) {
 // PAGE: STATION HOME (Hirohito Station)
 // ------------------------------------------------------------
 void DrawPageStationHome(GameState* state, int* menuSelection, Vector3* shipPos, Vector3* shipVel) {
-    // Refuel player when at station
-    G_Player.fuel = G_Player.maxFuel;
-    
     // Reuse Depot Home logic (including input, stats, and overlays)
+    // Note: Refueling is handled in DrawPageDepotHome before drawing fuel bar
     // The UpdateFrame function sets the correct 3D Viewport (Icosahedron)
     // The DrawPageDepotHome function now handles the extra Hirohito overlay based on g_currentLocation
     DrawPageDepotHome(state, menuSelection, shipPos, shipVel);
@@ -3310,10 +4400,8 @@ void DrawPageStationHome(GameState* state, int* menuSelection, Vector3* shipPos,
 // PAGE: HALO HOME (Nagako's Halo)
 // ------------------------------------------------------------
 void DrawPageHaloHome(GameState* state, int* menuSelection, Vector3* shipPos, Vector3* shipVel) {
-    // Refuel player when at halo
-    G_Player.fuel = G_Player.maxFuel;
-    
     // Reuse Depot Home logic
+    // Note: Refueling is handled in DrawPageDepotHome before drawing fuel bar
     DrawPageDepotHome(state, menuSelection, shipPos, shipVel);
 }
 
@@ -3386,14 +4474,64 @@ void DrawPageGetReady(GameState* state, int* menuSelection) {
     
     if (flashOn) {
         // Draw with outline for visibility (same style as game over)
-        DrawText(getReadyText, centerX - textWidth/2 + 3, centerY - 40 + 3, 80, BLACK);
-        DrawText(getReadyText, centerX - textWidth/2, centerY - 40, 80, (Color){0, 255, 255, 255}); // Cyan color
+        DrawText(getReadyText, centerX - textWidth/2 + 3, centerY - 200 + 3, 80, BLACK);
+        DrawText(getReadyText, centerX - textWidth/2, centerY - 200, 80, (Color){0, 255, 255, 255}); // Cyan color
     }
     
-    // Update timer and transition to lander when timer expires
+    // Controls and Guide (below GET READY text) - Larger text
+    int startY = centerY - 60;
+    int lineHeight = 35;
+    int fontSize = 28;  // Larger font size
+    
+    // Controls Section - All on one line in red
+    const char* controlsLine = "LMB = THRUST .. MOUSE = MOVE .. RMB = YAW";
+    int controlsW = MeasureText(controlsLine, fontSize);
+    DrawText(controlsLine, centerX - controlsW/2, startY, fontSize, RED);
+    
+    // SPACE = FIRE LASER in cyan below controls
+    int laserY = startY + lineHeight;
+    if (G_Player.hasLaser) {
+        const char* laserText = "SPACE = FIRE LASER";
+        int laserW = MeasureText(laserText, fontSize);
+        DrawText(laserText, centerX - laserW/2, laserY, fontSize, (Color){0, 255, 255, 255}); // Cyan
+    } else {
+        const char* laserText = "SPACE = FIRE LASER (LASER REQ)";
+        int laserW = MeasureText(laserText, fontSize);
+        DrawText(laserText, centerX - laserW/2, laserY, fontSize, (Color){0, 255, 255, 255}); // Cyan
+    }
+    
+    // Guide Section
+    int guideY = laserY + lineHeight * 2;
+    const char* guideLabel = "GUIDE";
+    int guideW = MeasureText(guideLabel, fontSize);
+    DrawText(guideLabel, centerX - guideW/2, guideY, fontSize, YELLOW);
+    
+    // EXIT text in red
+    int exitY = guideY + lineHeight;
+    const char* exitText = "EXIT: Red Reverse Gravity Tunnel to exit";
+    int exitW = MeasureText(exitText, fontSize);
+    DrawText(exitText, centerX - exitW/2, exitY, fontSize, RED);
+    
+    // COLLECT text in cyan
+    int collectY = exitY + lineHeight;
+    if (G_Player.hasCollector) {
+        const char* collectText = "COLLECT: Fly close slowly to collect it";
+        int collectW = MeasureText(collectText, fontSize);
+        DrawText(collectText, centerX - collectW/2, collectY, fontSize, (Color){0, 255, 255, 255}); // Cyan
+    } else {
+        const char* collectText = "COLLECT: Fly close slowly to collect it (COLLECTOR REQ)";
+        int collectW = MeasureText(collectText, fontSize);
+        DrawText(collectText, centerX - collectW/2, collectY, fontSize, (Color){0, 255, 255, 255}); // Cyan
+    }
+    
+    // Update timer and transition to lander when timer expires OR left mouse button is pressed
     float dt = GetFrameTime();
     g_getReadyTimer -= dt;
-    if (g_getReadyTimer <= 0.0f) {
+    
+    // Check for left mouse button press to skip the wait
+    bool skipReady = CustomIsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+    
+    if (g_getReadyTimer <= 0.0f || skipReady) {
         g_showGetReady = false;
         *state = STATE_LANDER;
         *menuSelection = 0;
@@ -3432,24 +4570,75 @@ void DrawPageShipyard(GameState* state, int* menuSelection) {
 
 void DrawPageMarket(GameState* state, int* menuSelection) {
     ClearBackground(BLACK);
-    DrawRetroWindow("COMMODITIES MARKET", 200, 100, 800, 600);
     
-    int numOpt = 3;
-    if (CustomIsKeyPressed(KEY_DOWN)) *menuSelection = (*menuSelection + 1) % numOpt;
-    if (CustomIsKeyPressed(KEY_UP)) *menuSelection = (*menuSelection - 1 + numOpt) % numOpt;
-
+    const char* marketTitle = (g_currentLocation == 1) ? "HIROHITO STATION MARKET" : 
+                              (g_currentLocation == 2) ? "NAGAKO'S HALO MARKET" : 
+                              "SHINJUKU DEPOT MARKET";
+    DrawRetroWindow(marketTitle, 200, 100, 800, 600);
+    
+    // Get current station's buy prices
+    int* buyPrices = g_stationBuyPrices[g_currentLocation];
+    
+    // Calculate total number of options (commodities + back button)
+    int numOpt = NUM_COMMODITIES + 1;
+    
+    // Navigation
+    if (CustomIsKeyPressed(KEY_DOWN)) {
+        *menuSelection = (*menuSelection + 1) % numOpt;
+    }
+    if (CustomIsKeyPressed(KEY_UP)) {
+        *menuSelection = (*menuSelection - 1 + numOpt) % numOpt;
+    }
+    
+    // Header
     DrawText(TextFormat("CREDITS: %d", G_Player.credits), 250, 160, 30, GREEN);
-    DrawText(TextFormat("IRON ORE: %d", G_Player.iron), 250, 220, 20, WHITE);
-    if (DrawButton("SELL IRON (50cr)", 500, 210, 200, 30, *menuSelection == 0)) {
-        if (G_Player.iron > 0) { G_Player.iron--; G_Player.credits += 50; G_Player.cargoFilled--; }
+    DrawText(TextFormat("CARGO: %d/%d", G_Player.cargoFilled, G_Player.cargoSpace), 250, 200, 20, YELLOW);
+    
+    // Draw commodities list (scrollable if needed)
+    int startY = 240;
+    int lineHeight = 35;
+    int maxVisible = 10; // Show up to 10 commodities at once
+    
+    // Calculate scroll offset if needed
+    int scrollOffset = 0;
+    if (*menuSelection >= maxVisible) {
+        scrollOffset = *menuSelection - maxVisible + 1;
     }
     
-    DrawText(TextFormat("GOLD ORE: %d", G_Player.gold), 250, 270, 20, WHITE);
-    if (DrawButton("SELL GOLD (100cr)", 500, 260, 200, 30, *menuSelection == 1)) {
-        if (G_Player.gold > 0) { G_Player.gold--; G_Player.credits += 100; G_Player.cargoFilled--; }
+    for (int i = 0; i < NUM_COMMODITIES && i < maxVisible; i++) {
+        int commIdx = i + scrollOffset;
+        if (commIdx >= NUM_COMMODITIES) break;
+        
+        int yPos = startY + (i * lineHeight);
+        bool selected = (*menuSelection == commIdx);
+        
+        // Commodity name and quantity
+        char commText[128];
+        snprintf(commText, sizeof(commText), "%s: %d", g_commodityNames[commIdx], G_Player.inventory[commIdx]);
+        DrawText(commText, 250, yPos, 20, WHITE);
+        
+        // Sell button with price
+        char sellText[64];
+        snprintf(sellText, sizeof(sellText), "SELL (%dcr)", buyPrices[commIdx]);
+        if (DrawButton(sellText, 600, yPos - 5, 150, 30, selected)) {
+            if (G_Player.inventory[commIdx] > 0) {
+                G_Player.inventory[commIdx]--;
+                G_Player.credits += buyPrices[commIdx];
+                G_Player.cargoFilled--;
+            }
+        }
+        
+        // Highlight selected item
+        if (selected) {
+            DrawRectangleLines(245, yPos - 2, 510, 28, YELLOW);
+        }
     }
-
-    if (DrawButton("BACK", 500, 600, 200, 40, *menuSelection == 2)) ResetState(state, menuSelection, STATE_DEPOT_HOME);
+    
+    // Back button
+    int backY = startY + (maxVisible * lineHeight) + 20;
+    if (DrawButton("BACK", 500, backY, 200, 40, *menuSelection == NUM_COMMODITIES)) {
+        ResetState(state, menuSelection, STATE_DEPOT_HOME);
+    }
 }
 
 void DrawPageLodgings(GameState* state, int* menuSelection) {
@@ -3629,25 +4818,39 @@ void UpdateRocksAndDebris(float dt, Vector3 shipPos) {
         }
         
         // Collector Vacuum Logic - only attracts colored debris (not gray)
-        if (G_Player.hasCollector && G_Player.cargoFilled < 25) {
+        // Prospecting score determines rejection rate: 10% prospect = 90% rejection rate
+        if (G_Player.hasCollector && G_Player.cargoFilled < G_Player.cargoSpace) {
             // Check if debris is colored (not gray) - only colored debris is collectible
             Color debrisColor = g_debris[i].color;
             bool isColored = !(debrisColor.r == 128 && debrisColor.g == 128 && debrisColor.b == 128); // Not GRAY
             
             if (isColored) {
-                float dist = Vector3Distance(g_debris[i].position, shipPos);
-                if (dist < 20.0f) { // Vacuum Range
-                    Vector3 dir = Vector3Normalize(Vector3Subtract(shipPos, g_debris[i].position));
-                    float speed = 30.0f * (1.0f - dist/20.0f) + 10.0f; // Faster when closer
+            float dist = Vector3Distance(g_debris[i].position, shipPos);
+            if (dist < 20.0f) { // Vacuum Range
+                    // Calculate rejection rate based on prospecting score
+                    // 10% prospect = 90% rejection, 70% prospect = 30% rejection
+                    float prospectPercent = (float)g_selectedAsteroidProspect / 100.0f; // 0.1 to 0.7
+                    float rejectionRate = 1.0f - prospectPercent; // 0.9 to 0.3 (inverse)
                     
-                    // Move towards ship
-                    g_debris[i].position = Vector3Add(g_debris[i].position, Vector3Scale(dir, speed * dt));
-                    
-                    // Collection
-                    if (dist < 3.0f) { // Close enough to collect
-                        g_debris[i].active = false;
-                        G_Player.cargoFilled++;
-                        // Spawn simple spark or effect?
+                    // Roll for rejection - if rejected, don't collect this frame
+                    float roll = (float)GetRandomValue(0, 1000) / 1000.0f;
+                    if (roll >= rejectionRate) { // Only proceed if NOT rejected
+                Vector3 dir = Vector3Normalize(Vector3Subtract(shipPos, g_debris[i].position));
+                float speed = 30.0f * (1.0f - dist/20.0f) + 10.0f; // Faster when closer
+                
+                // Move towards ship
+                g_debris[i].position = Vector3Add(g_debris[i].position, Vector3Scale(dir, speed * dt));
+                
+                // Collection
+                if (dist < 3.0f) { // Close enough to collect
+                    g_debris[i].active = false;
+                            
+                            // Convert debris to commodity based on asteroid's distribution
+                            ConvertDebrisToCommodity();
+                            
+                    G_Player.cargoFilled++;
+                    // Spawn simple spark or effect?
+                        }
                     }
                 }
             }
@@ -3877,9 +5080,9 @@ void RenderNavScreen() {
         }
     }
     
-    // Setup camera - looking down slightly upon 3D objects
+    // Setup camera - looking down slightly upon 3D objects at a different angle
     Camera3D navCamera = {0};
-    navCamera.position = (Vector3){0, 3, 15};  // Camera slightly above, looking down
+    navCamera.position = (Vector3){2.0f, 4.0f, 14.0f};  // Camera at a different angle, slightly offset
     navCamera.target = (Vector3){0, -1, 0};   // Target slightly below center
     navCamera.up = (Vector3){0, 1, 0};
     navCamera.fovy = 45.0f;
@@ -3964,23 +5167,26 @@ void RenderNavScreen() {
     
     // Rearranged layout: Hirohito Station (Icosahedron) in center, two toruses on either side
     // Scale down models 60% smaller (0.15 * 0.4 = 0.06)
-    float shapeScale = 0.06f;  // 60% smaller than before (was 0.15f)
+    float shapeScale = 0.06f;  // Base scale for icosahedron
+    float icosahedronScale = 0.075f;  // Icosahedron increased by 25% (0.06 * 1.25 = 0.075)
+    float leftTorusScale = 0.108f;  // Left torus increased by 50% (0.072 * 1.5 = 0.108)
+    float rightTorusScale = 0.1044f;  // Right torus increased by 45% (0.072 * 1.45 = 0.1044)
     Vector3 rotationAxis = {0, 1, 0};
     
-    // B: Icosahedron (Center) - HIROHITO STATION
+    // B: Icosahedron (Center) - HIROHITO STATION - increased by 25%
     Vector3 posB = {0.0f, 0.0f, 0.0f};
     DrawModelEx(g_navIcoB, posB, rotationAxis, g_navRotation * DEG2RAD, 
-               (Vector3){shapeScale, shapeScale, shapeScale}, WHITE);
+               (Vector3){icosahedronScale, icosahedronScale, icosahedronScale}, WHITE);
     
-    // A: Torus (Left) - SHINJUKU DEPOT
-    Vector3 posA = {-8.0f, 0.0f, 0.0f};
+    // A: Torus (Left) - SHINJUKU DEPOT - moved down 10px and increased by 50%
+    Vector3 posA = {-6.4f, -0.05f, 0.0f};  // Moved down 10px (approximately -0.05 units in 3D space)
     DrawModelEx(g_navTorusA, posA, rotationAxis, g_navRotation * DEG2RAD, 
-               (Vector3){shapeScale, shapeScale, shapeScale}, WHITE);
+               (Vector3){leftTorusScale, leftTorusScale, leftTorusScale}, WHITE);
     
-    // C: Torus (Right) - NAGAKO'S HALO
-    Vector3 posC = {8.0f, 0.0f, 0.0f};
+    // C: Torus (Right) - NAGAKO'S HALO - increased by 45%
+    Vector3 posC = {6.4f, 0.0f, 0.0f};
     DrawModelEx(g_navTorusC, posC, rotationAxis, g_navRotation * DEG2RAD, 
-               (Vector3){shapeScale, shapeScale, shapeScale}, WHITE);
+               (Vector3){rightTorusScale, rightTorusScale, rightTorusScale}, WHITE);
     
     EndShaderMode();
     rlEnableBackfaceCulling();
@@ -4062,9 +5268,9 @@ void DrawNavScreen(GameState* state, int* selection) {
     
     // Input handling
     if (!g_showNavModal) {
-        if (CustomIsKeyPressed(KEY_A)) { g_navTarget = 1; g_showNavModal = true; g_navSelection = 0; }
-        if (CustomIsKeyPressed(KEY_B)) { g_navTarget = 2; g_showNavModal = true; g_navSelection = 0; }
-        if (CustomIsKeyPressed(KEY_C)) { g_navTarget = 3; g_showNavModal = true; g_navSelection = 0; }
+        if (CustomIsKeyPressed(KEY_A)) { PlayTerminalTypeSound(); g_navTarget = 1; g_showNavModal = true; g_navSelection = 0; }
+        if (CustomIsKeyPressed(KEY_B)) { PlayTerminalTypeSound(); g_navTarget = 2; g_showNavModal = true; g_navSelection = 0; }
+        if (CustomIsKeyPressed(KEY_C)) { PlayTerminalTypeSound(); g_navTarget = 3; g_showNavModal = true; g_navSelection = 0; }
         if (CustomIsKeyPressed(KEY_ESCAPE)) { ResetState(state, selection, STATE_LANDER); }
     } else {
         // MODAL
@@ -4095,6 +5301,7 @@ void DrawNavScreen(GameState* state, int* selection) {
         if (CustomIsKeyPressed(KEY_LEFT) || CustomIsKeyPressed(KEY_RIGHT)) g_navSelection = !g_navSelection;
         
         if (CustomIsKeyPressed(KEY_ENTER)) {
+            PlayTerminalTypeSound();
             if (g_navSelection == 1) { // Exit
                 g_showNavModal = false;
             } else if (canGo) {
@@ -4142,6 +5349,53 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             printf("[UpdateFrame] WARNING: Invalid dt, clamped to %.4f\n", dt);
         }
     }
+    
+    // Update background music stream and handle track switching with crossfading
+    Music* currentMusic = (g_currentTrack == 0) ? &g_backgroundMusic : &g_backgroundMusic2;
+    Music* nextMusic = (g_currentTrack == 0) ? &g_backgroundMusic2 : &g_backgroundMusic;
+    
+    if (currentMusic->frameCount > 0) {
+        UpdateMusicStream(*currentMusic);
+        
+        // Handle Fading
+        float length = GetMusicTimeLength(*currentMusic);
+        float played = GetMusicTimePlayed(*currentMusic);
+        float targetVol = 0.7f;
+        float fadeTime = 2.0f; // 2 seconds fade
+        
+        // Fade In
+        if (played < fadeTime) {
+            SetMusicVolume(*currentMusic, targetVol * (played / fadeTime));
+        }
+        // Fade Out
+        else if (played > length - fadeTime) {
+            float fadeVal = (length - played) / fadeTime;
+            if (fadeVal < 0.0f) fadeVal = 0.0f;
+            SetMusicVolume(*currentMusic, targetVol * fadeVal);
+        }
+        // Normal Volume
+        else {
+            SetMusicVolume(*currentMusic, targetVol);
+        }
+
+        // Check if finished
+        if (!IsMusicStreamPlaying(*currentMusic) || played >= length) {
+            // Track ended, switch
+            if (nextMusic->frameCount > 0) {
+                StopMusicStream(*currentMusic); // Ensure stopped
+                SeekMusicStream(*nextMusic, 0.0f);
+                PlayMusicStream(*nextMusic);
+                SetMusicVolume(*nextMusic, 0.0f); // Start silent for fade in
+                g_currentTrack = (g_currentTrack == 0) ? 1 : 0;
+            } else {
+                // If next track failed to load, loop current
+                StopMusicStream(*currentMusic);
+                SeekMusicStream(*currentMusic, 0.0f);
+                PlayMusicStream(*currentMusic);
+                SetMusicVolume(*currentMusic, 0.0f);
+            }
+        }
+    }
 
     // Update Station Viewport (Animation)
     stationViewport.Update(dt);
@@ -4165,8 +5419,19 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
     }
     
     // Render shipyard shop 3D items
-    if (g_currentState == STATE_DEPOT_HOME && g_showShipyardShop && g_depotHomePage == 2) {
+    bool isShopActive = (g_currentState == STATE_DEPOT_HOME || g_currentState == STATE_STATION_HOME || g_currentState == STATE_HALO_HOME) && 
+                        g_showShipyardShop && g_depotHomePage == 2;
+                        
+    if (isShopActive) {
         RenderShipyardShop();
+    }
+    
+    // Render commodities market
+    bool isMarketActive = (g_currentState == STATE_DEPOT_HOME || g_currentState == STATE_STATION_HOME || g_currentState == STATE_HALO_HOME) && 
+                          g_showCommoditiesMarket && g_depotHomePage == 3;
+                          
+    if (isMarketActive) {
+        RenderCommoditiesMarket();
     }
     
     // Render navigation screen viewport
@@ -4349,7 +5614,7 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             float targetCylTop = targetCylTerrainH + 300.0f;
             float distToCylXZ = sqrtf(powf(g_shipPos.x - targetCylPos.x, 2) + powf(g_shipPos.z - targetCylPos.z, 2));
             bool insideTargetCyl = (distToCylXZ < targetCylRadius && g_shipPos.y >= targetCylTerrainH && g_shipPos.y <= targetCylTop);
-            
+
             // Calculate dynamic gravity based on asteroid gravity + cargo effect
             float asteroidGravityFactor = (float)g_selectedAsteroidGravity / 100.0f;
             float cargoGravityFactor = (float)G_Player.cargoFilled / 25.0f;  // Max 25
@@ -4358,7 +5623,7 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             float maxGravity = -18.0f;
             
             float asteroidGravity = Lerp(minGravity, maxGravity, asteroidGravityFactor);
-            float cargoGravityBonus = cargoGravityFactor * -4.0f; 
+            float cargoGravityBonus = cargoGravityFactor * -1.0f; // Max -1.0 at full cargo (was -4.0)
             float dynamicGravity = asteroidGravity + cargoGravityBonus;
             
             // Zero gravity inside target cylinder + auto-thrust and stabilization
@@ -4387,10 +5652,10 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             bool isThrusting = CustomIsMouseButtonDown(MOUSE_LEFT_BUTTON) || CustomIsKeyDown(KEY_W) || autoThrusting;
             // Only allow thrusting if fuel is available
             if (isThrusting && G_Player.fuel > 0.0f && !explosionTriggered) {
-                // Apply thruster boost and cargo penalty (-5% per debris)
-                float cargoPenalty = G_Player.cargoFilled * 0.05f;
+                // Apply thruster boost and cargo penalty (-5% per cargo unit)
+                float cargoPenalty = G_Player.cargoFilled * 0.05f; // 5% per cargo unit
                 float thrustMultiplier = (1.0f - cargoPenalty);
-                if (thrustMultiplier < 0.1f) thrustMultiplier = 0.1f; // Minimum 10% thrust
+                if (thrustMultiplier < 0.65f) thrustMultiplier = 0.65f; // Minimum 65% thrust
                 
                 float effectiveThrustPower = SHIP_THRUST_POWER * G_Player.thrusterBoost * thrustMultiplier;
                 
@@ -4429,18 +5694,11 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             }
             
             // Always ensure ship is above terrain - prevent embedding
-            // Use a larger clearance to account for shadow and prevent getting stuck
-            float minTerrainHeight = worldH + 1.2f; // Increased clearance to prevent shadow/terrain sticking
+            // Use a larger clearance to account for shadow (at +0.15f) and prevent getting stuck
+            float minTerrainHeight = worldH + 1.8f; // Increased clearance to prevent shadow/terrain sticking
             if (nextPos.y < minTerrainHeight && !explosionTriggered) {
-                // Force ship above terrain immediately - use lerp to smooth but ensure it's always above
-                float targetY = minTerrainHeight;
-                if (nextPos.y < targetY - 0.1f) {
-                    // Ship is significantly below - snap it up immediately
-                    nextPos.y = targetY;
-                } else {
-                    // Ship is close - lerp it up smoothly
-                    nextPos.y = Lerp(nextPos.y, targetY, 10.0f * dt);
-                }
+                // Force ship above terrain immediately - always snap, no lerp to prevent sticking
+                nextPos.y = minTerrainHeight;
                 
                 bool isNewCollision = !wasColliding;
                 wasColliding = true;
@@ -4451,9 +5709,9 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                     float highVelocityThreshold = 15.0f;
                     
                     if (isNewCollision) {
-                        Vector3 collisionNormal = {0, 1, 0};
-                        SpawnCollisionParticles(nextPos, collisionNormal);
-                        SpawnAsteroidDebris(nextPos);
+                    Vector3 collisionNormal = {0, 1, 0};
+                    SpawnCollisionParticles(nextPos, collisionNormal);
+                    SpawnAsteroidDebris(nextPos);
                     }
                     
                     if (collisionVelocity > highVelocityThreshold) {
@@ -4476,12 +5734,12 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                     }
                 }
                 
-                // Strong upward push to prevent sticking - ensure minimum upward velocity
-                if (g_shipVel.y < 2.0f) g_shipVel.y = 2.0f; // Minimum upward velocity
-                g_shipVel.y += 5.0f * dt; // Add upward acceleration
-                // Don't dampen Y velocity as much - allow ship to escape
-                g_shipVel.x = Vector3Scale((Vector3){g_shipVel.x, 0, 0}, 0.7f).x;
-                g_shipVel.z = Vector3Scale((Vector3){0, 0, g_shipVel.z}, 0.7f).z;
+                // Strong upward push to prevent sticking - ensure escape velocity
+                if (g_shipVel.y < 4.0f) g_shipVel.y = 4.0f; // Higher minimum upward velocity
+                g_shipVel.y += 10.0f * dt; // Stronger upward acceleration
+                // Dampen horizontal velocity more to help vertical escape
+                g_shipVel.x *= 0.5f;
+                g_shipVel.z *= 0.5f;
             } else {
                 wasColliding = false;
             }
@@ -4500,65 +5758,108 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             }
             
             // --- Rock Collision ---
-            // Always check and push ship out of rocks - prevent embedding
+            // Multiple pass collision resolution to prevent getting stuck
             float rockCollisionRadius = 0.8f;
             bool hitAnyRock = false;
+            const int MAX_ROCK_PASSES = 3;
+            
+            for (int pass = 0; pass < MAX_ROCK_PASSES; pass++) {
+                bool collisionThisPass = false;
+                
             for (int i = 0; i < NUM_ROCKS && G_Player.hull > 0 && !explosionTriggered; i++) {
                 if (!G_Rocks[i].active) continue; // Skip inactive rocks
                 
                 float rockRadius = G_Rocks[i].scale * 0.5f;
                 float distance = Vector3Distance(nextPos, G_Rocks[i].position);
-                float minDistance = rockCollisionRadius + rockRadius;
+                    float minDistance = rockCollisionRadius + rockRadius + 0.4f; // Extra clearance buffer
+                    
+                    // If ship is inside or touching the rock, push it out and apply damage
+                    if (distance < minDistance) {
+                        collisionThisPass = true;
+                        hitAnyRock = true;
+                        
+                        // Calculate push direction (from rock center to ship)
+                        Vector3 pushDir;
+                        if (distance < 0.01f) {
+                            // Ship is exactly at rock center - push upward and away from previous position
+                            Vector3 escapeDir = Vector3Normalize(Vector3Subtract(nextPos, prevShipPos));
+                            if (Vector3Length(escapeDir) < 0.01f) {
+                                escapeDir = (Vector3){0.0f, 1.0f, 0.0f}; // Default to up
+                            }
+                            pushDir = Vector3Normalize(Vector3Add((Vector3){0.0f, 0.7f, 0.0f}, Vector3Scale(escapeDir, 0.3f)));
+                        } else {
+                            pushDir = Vector3Normalize(Vector3Subtract(nextPos, G_Rocks[i].position));
+                        }
+                        
+                        // Always push ship outside the rock with generous clearance to prevent re-embedding
+                        float pushDistance = minDistance + 1.0f; // Large clearance
+                        nextPos = Vector3Add(G_Rocks[i].position, Vector3Scale(pushDir, pushDistance));
+                        
+                        // Apply damage every frame while colliding
+                        float collisionVelocity = Vector3Length(g_shipVel);
+                        if (collisionVelocity > 15.0f) {
+                            G_Player.hull = 0; // Instant destruction at high speed
+                        } else {
+                            // Continuous damage while embedded
+                            float damageAmount = 2.0f * G_Player.hullResistance * dt; // Damage per second
+                            G_Player.hull -= damageAmount;
+                             if (G_Player.hull < 0) G_Player.hull = 0;
+                         }
+                        
+                        // Spawn collision particles
+                        Vector3 negPushDir = Vector3Scale(pushDir, -1.0f);
+                        SpawnCollisionParticles(nextPos, negPushDir);
+                        
+                        // Strong bounce velocity - push ship away from rock
+                        float bounceStrength = 15.0f; // Very strong push to escape
+                        g_shipVel = Vector3Add(g_shipVel, Vector3Scale(pushDir, bounceStrength));
+                        // Less dampening to allow ship to escape
+                        g_shipVel = Vector3Scale(g_shipVel, 0.6f);
+                        
+                        // Ensure minimum escape velocity
+                        if (Vector3Length(g_shipVel) < 3.0f) {
+                            g_shipVel = Vector3Scale(Vector3Normalize(pushDir), 3.0f);
+                        }
+                        
+                        // Check for destruction
+                        if (G_Player.hull <= 0 && !explosionTriggered) {
+                            explosionPos = nextPos;
+                            SpawnExplosionParticles(nextPos);
+                            explosionTriggered = true;
+                            frozenCameraPos = g_camera.position;
+                            float worldH = GetWorldHeight(frozenCameraPos.x, frozenCameraPos.z);
+                            if (frozenCameraPos.y < worldH + 10.0f) frozenCameraPos.y = worldH + 10.0f;
+                            cameraFrozen = true;
+                            break;
+                        }
+                    }
+                }
                 
-                // If ship is inside or touching the rock, push it out and apply damage
+                // If no collisions this pass, we're done
+                if (!collisionThisPass) break;
+            }
+            
+            // Final safety check - ensure ship is never stuck in terrain or objects
+            float finalWorldH = GetWorldHeight(nextPos.x, nextPos.z);
+            float finalMinHeight = finalWorldH + 1.8f;
+            if (nextPos.y < finalMinHeight && !explosionTriggered) {
+                // Emergency push out - ship should never be here after collision resolution
+                nextPos.y = finalMinHeight;
+                if (g_shipVel.y < 5.0f) g_shipVel.y = 5.0f; // Force escape velocity
+            }
+            
+            // Check for any remaining rock collisions (safety net)
+            for (int i = 0; i < NUM_ROCKS && !explosionTriggered; i++) {
+                if (!G_Rocks[i].active) continue;
+                float rockRadius = G_Rocks[i].scale * 0.5f;
+                float distance = Vector3Distance(nextPos, G_Rocks[i].position);
+                float minDistance = 0.8f + rockRadius + 0.4f;
                 if (distance < minDistance) {
-                    hitAnyRock = true;
-                    
-                    // Calculate push direction (from rock center to ship)
-                    Vector3 pushDir;
-                    if (distance < 0.01f) {
-                        // Ship is exactly at rock center - use upward direction
-                        pushDir = (Vector3){0.0f, 1.0f, 0.0f};
-                    } else {
-                        pushDir = Vector3Normalize(Vector3Subtract(nextPos, G_Rocks[i].position));
-                    }
-                    
-                    // Always push ship outside the rock with extra clearance to prevent re-embedding
-                    float pushDistance = minDistance + 0.5f; // Increased from 0.2f for better clearance
-                    nextPos = Vector3Add(G_Rocks[i].position, Vector3Scale(pushDir, pushDistance));
-                    
-                    // Apply damage every frame while colliding
-                    float collisionVelocity = Vector3Length(g_shipVel);
-                    if (collisionVelocity > 15.0f) {
-                        G_Player.hull = 0; // Instant destruction at high speed
-                    } else {
-                        // Continuous damage while embedded
-                        float damageAmount = 2.0f * G_Player.hullResistance * dt; // Damage per second
-                        G_Player.hull -= damageAmount;
-                        if (G_Player.hull < 0) G_Player.hull = 0;
-                    }
-                    
-                    // Spawn collision particles
-                    Vector3 negPushDir = Vector3Scale(pushDir, -1.0f);
-                    SpawnCollisionParticles(nextPos, negPushDir);
-                    
-                    // Strong bounce velocity - push ship away from rock
-                    float bounceStrength = 8.0f; // Increased from 5.0f for stronger push
-                    g_shipVel = Vector3Add(g_shipVel, Vector3Scale(pushDir, bounceStrength));
-                    // Less dampening to allow ship to escape
-                    g_shipVel = Vector3Scale(g_shipVel, 0.7f); // Increased from 0.5f
-                    
-                    // Check for destruction
-                    if (G_Player.hull <= 0 && !explosionTriggered) {
-                        explosionPos = nextPos;
-                        SpawnExplosionParticles(nextPos);
-                        explosionTriggered = true;
-                        frozenCameraPos = g_camera.position;
-                        float worldH = GetWorldHeight(frozenCameraPos.x, frozenCameraPos.z);
-                        if (frozenCameraPos.y < worldH + 10.0f) frozenCameraPos.y = worldH + 10.0f;
-                        cameraFrozen = true;
-                        break;
-                    }
+                    // Emergency push out
+                    Vector3 pushDir = (distance < 0.01f) ? (Vector3){0.0f, 1.0f, 0.0f} : 
+                                     Vector3Normalize(Vector3Subtract(nextPos, G_Rocks[i].position));
+                    nextPos = Vector3Add(G_Rocks[i].position, Vector3Scale(pushDir, minDistance + 1.0f));
+                    g_shipVel = Vector3Add(g_shipVel, Vector3Scale(pushDir, 10.0f));
                 }
             }
             
@@ -4627,11 +5928,11 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                     Vector3 targetDrawPos = {0.0f, targetTerrainH, 0.0f};
                     
                     // Draw tall red cylinder (no wireframe)
-                    rlDrawRenderBatchActive();
-                    BeginBlendMode(BLEND_ALPHA);
+                rlDrawRenderBatchActive();
+                BeginBlendMode(BLEND_ALPHA);
                     // 60% opacity = alpha 153 (255 * 0.6 = 153)
                     DrawCylinder(targetDrawPos, targetRadius, targetRadius, targetHeight, 32, (Color){255, 0, 0, 153}); // Red, 60% transparent
-                    EndBlendMode();
+                EndBlendMode();
                 }
                 
                 // Laser Visuals
@@ -4871,10 +6172,95 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
         SetConfigFlags(FLAG_WINDOW_UNDECORATED | FLAG_WINDOW_HIDDEN);
         InitWindow(VIRTUAL_WIDTH, VIRTUAL_HEIGHT, "AstroMiner_Embedded");
         DisableCursor();
+        // Embedded mode: Python manages the loop timing, so we don't want Raylib to wait/sleep
+        SetTargetFPS(0); // Unlimited FPS (no waiting)
+    } else {
+        // Standalone mode: We need to limit FPS
+        SetTargetFPS(60);
     }
-    // else: window was created by main() for standalone mode, keep it visible
     
-    SetTargetFPS(60);
+    // Initialize audio device
+    // Increase buffer size to prevent popping/crackling (4096 is default, 16384 provides more headroom)
+    SetAudioStreamBufferSizeDefault(16384);
+    InitAudioDevice();
+    
+    // Load terminal type sound with multiple fallbacks
+    const char* terminalTypePaths[] = {
+        "terminal_type.wav",
+        "Data/games/AstroMiner/terminal_type.wav",
+        "Data/Audio/terminal_type.wav",          // legacy location
+        "../../games/AstroMiner/terminal_type.wav"
+    };
+    bool terminalTypeLoaded = false;
+    for (int j = 0; j < 4; j++) {
+        printf("[InitializeGame] Trying to load terminal_type.wav from: %s\n", terminalTypePaths[j]);
+        g_terminalTypeSound = LoadSound(terminalTypePaths[j]);
+        if (g_terminalTypeSound.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded terminal_type.wav from: %s\n", terminalTypePaths[j]);
+            terminalTypeLoaded = true;
+            break;
+        }
+    }
+    if (!terminalTypeLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load terminal_type.wav from all paths!\n");
+    }
+    
+    // Load background music (AstroMiner.mp3) with multiple fallbacks
+    const char* musicPaths[] = {
+        "AstroMiner.mp3",
+        "Data/games/AstroMiner/AstroMiner.mp3",
+        "../../games/AstroMiner/AstroMiner.mp3"
+    };
+    bool musicLoaded = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load AstroMiner.mp3 from: %s\n", musicPaths[j]);
+        g_backgroundMusic = LoadMusicStream(musicPaths[j]);
+        if (g_backgroundMusic.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded AstroMiner.mp3 from: %s\n", musicPaths[j]);
+            musicLoaded = true;
+            // Set volume to 70% (0.7)
+            SetMusicVolume(g_backgroundMusic, 0.7f);
+            g_backgroundMusic.looping = false; // Disable looping for manual transition
+            break;
+        }
+    }
+    if (!musicLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load AstroMiner.mp3 from all paths!\n");
+    }
+    
+    // Load background music 2 (AstroMiner2.mp3) with multiple fallbacks
+    const char* musicPaths2[] = {
+        "AstroMiner2.mp3",
+        "Data/games/AstroMiner/AstroMiner2.mp3",
+        "../../games/AstroMiner/AstroMiner2.mp3"
+    };
+    bool musicLoaded2 = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load AstroMiner2.mp3 from: %s\n", musicPaths2[j]);
+        g_backgroundMusic2 = LoadMusicStream(musicPaths2[j]);
+        if (g_backgroundMusic2.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded AstroMiner2.mp3 from: %s\n", musicPaths2[j]);
+            musicLoaded2 = true;
+            // Set volume to 70% (0.7)
+            SetMusicVolume(g_backgroundMusic2, 0.7f);
+            g_backgroundMusic2.looping = false; // Disable looping for manual transition
+            break;
+        }
+    }
+    if (!musicLoaded2) {
+        printf("[InitializeGame] ERROR: Failed to load AstroMiner2.mp3 from all paths!\n");
+    }
+
+    // Start playing the first track
+    if (musicLoaded) {
+        PlayMusicStream(g_backgroundMusic);
+        g_currentTrack = 0;
+        printf("[InitializeGame] Background music 1 started playing (70%% volume)\n");
+    } else if (musicLoaded2) {
+        PlayMusicStream(g_backgroundMusic2);
+        g_currentTrack = 1;
+        printf("[InitializeGame] Background music 2 started playing (70%% volume)\n");
+    }
     
     // Create offscreen render texture (Low Res)
     g_framebuffer = LoadRenderTexture(RENDER_WIDTH, RENDER_HEIGHT);
@@ -4924,6 +6310,27 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
     
     Mesh repairsMesh = CreateRepairsMesh();
     g_shopItemModels[5] = LoadModelFromMesh(repairsMesh);
+    
+    // Initialize Station shop models
+    Mesh fuelTankUpgradeMesh = CreateFuelTankUpgradeMesh();
+    g_stationShopModels[0] = LoadModelFromMesh(fuelTankUpgradeMesh);
+    Mesh cargoBlackHoleMesh = CreateCargoBlackHoleMesh();
+    g_stationShopModels[1] = LoadModelFromMesh(cargoBlackHoleMesh);
+    g_stationShopModels[2] = g_shopItemModels[4];  // Fuel (reuse)
+    Mesh redShipMesh = CreateColoredShipMesh(0);
+    g_stationShopModels[3] = LoadModelFromMesh(redShipMesh);
+    Mesh greenShipMesh = CreateColoredShipMesh(1);
+    g_stationShopModels[4] = LoadModelFromMesh(greenShipMesh);
+    Mesh purpleShipMesh = CreateColoredShipMesh(2);
+    g_stationShopModels[5] = LoadModelFromMesh(purpleShipMesh);
+    
+    // Initialize Halo shop models
+    g_haloShopModels[0] = g_shopItemModels[0];  // Better Laser (reuse laser mesh)
+    g_haloShopModels[1] = g_shopItemModels[1];  // Better Collector (reuse collector mesh)
+    g_haloShopModels[2] = g_shopItemModels[4];  // Fuel (reuse)
+    g_haloShopModels[3] = g_stationShopModels[3];  // Red Ship (reuse)
+    g_haloShopModels[4] = g_stationShopModels[4];  // Green Ship (reuse)
+    g_haloShopModels[5] = g_stationShopModels[5];  // Purple Ship (reuse)
     
     // Load bar page overlay
     printf("[InitializeGame] Loading bar page texture...\n");
@@ -5035,18 +6442,71 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
             printf("[InitializeGame] ERROR: Failed to load depot GUI texture %d (%s) from all paths!\n", i, depotGuiNames[i]);
         }
     }
+
+    // Load Astriod_Prospects.png background
+    const char* asteroidBgPaths[] = {
+        "Astriod_Prospects.png",
+        "Data/games/AstroMiner/Astriod_Prospects.png",
+        "../../games/AstroMiner/Astriod_Prospects.png"
+    };
+    bool asteroidBgLoaded = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load Astriod_Prospects.png from: %s\n", asteroidBgPaths[j]);
+        asteroidProspectsBgTx = LoadTexture(asteroidBgPaths[j]);
+        if (asteroidProspectsBgTx.id > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded Astriod_Prospects.png from: %s (size: %dx%d)\n", 
+                   asteroidBgPaths[j], asteroidProspectsBgTx.width, asteroidProspectsBgTx.height);
+            asteroidBgLoaded = true;
+            break;
+        }
+    }
+    if (!asteroidBgLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load Astriod_Prospects.png from all paths!\n");
+    }
+
+    // Load Shipyard upgrade PNGs (location-specific)
+    const char* upgradePaths[][3] = {
+        {"upgrades_shijuku.png", "Data/games/AstroMiner/upgrades_shijuku.png", "../../games/AstroMiner/upgrades_shijuku.png"},
+        {"upgrades_hirohito.png", "Data/games/AstroMiner/upgrades_hirohito.png", "../../games/AstroMiner/upgrades_hirohito.png"},
+        {"upgrades_nagako.png", "Data/games/AstroMiner/upgrades_nagako.png", "../../games/AstroMiner/upgrades_nagako.png"}
+    };
     
-    // Load Station and Halo overlay textures
+    const char* upgradeNames[] = {"upgrades_shijuku", "upgrades_hirohito", "upgrades_nagako"};
+    Texture2D* upgradeTextures[] = {&upgradesShinjukuTx, &upgradesHirohitoTx, &upgradesNagakoTx};
+    
+    printf("[InitializeGame] Loading shipyard upgrade textures...\n");
+    for (int i = 0; i < 3; i++) {
+        bool loaded = false;
+        for (int j = 0; j < 3; j++) {
+            printf("[InitializeGame] Trying to load %s from: %s\n", upgradeNames[i], upgradePaths[i][j]);
+            *upgradeTextures[i] = LoadTexture(upgradePaths[i][j]);
+            if (upgradeTextures[i]->id > 0) {
+                printf("[InitializeGame] SUCCESS: Loaded upgrade texture %d (%s) from: %s (size: %dx%d)\n", 
+                       i, upgradeNames[i], upgradePaths[i][j], 
+                       upgradeTextures[i]->width, upgradeTextures[i]->height);
+                loaded = true;
+                break;
+            } else {
+                printf("[InitializeGame] Failed to load from: %s\n", upgradePaths[i][j]);
+            }
+        }
+        if (!loaded) {
+            printf("[InitializeGame] ERROR: Failed to load upgrade texture %d (%s) from all paths!\n", i, upgradeNames[i]);
+        }
+    }
+    
+    // Load Depot, Station, and Halo overlay textures
     const char* overlayPaths[][3] = {
+        {"Shinjuku_overlay.png", "Data/games/AstroMiner/Shinjuku_overlay.png", "../../games/AstroMiner/Shinjuku_overlay.png"},
         {"Hirohito_overlay.png", "Data/games/AstroMiner/Hirohito_overlay.png", "../../games/AstroMiner/Hirohito_overlay.png"},
         {"Nagako_overlay.png", "Data/games/AstroMiner/Nagako_overlay.png", "../../games/AstroMiner/Nagako_overlay.png"}
     };
     
-    const char* overlayNames[] = {"Hirohito_overlay", "Nagako_overlay"};
-    Texture2D* overlayTextures[] = {&hirohitoOverlayTx, &nagakoOverlayTx};
+    const char* overlayNames[] = {"Shinjuku_overlay", "Hirohito_overlay", "Nagako_overlay"};
+    Texture2D* overlayTextures[] = {&shinjukuOverlayTx, &hirohitoOverlayTx, &nagakoOverlayTx};
     
-    printf("[InitializeGame] Loading station/halo overlay textures...\n");
-    for (int i = 0; i < 2; i++) {
+    printf("[InitializeGame] Loading depot/station/halo overlay textures...\n");
+    for (int i = 0; i < 3; i++) {
         bool loaded = false;
         for (int j = 0; j < 3; j++) {
             printf("[InitializeGame] Trying to load %s from: %s\n", overlayNames[i], overlayPaths[i][j]);
@@ -5200,6 +6660,9 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
     g_exit_requested = false;
     
     printf("[InitializeGame] Starting in STATE_SPLASH, splashIndex=%d\n", g_splashIndex);
+    
+    // Calculate station-specific commodity prices
+    CalculateStationPrices();
     
     g_game_initialized = true;
     
