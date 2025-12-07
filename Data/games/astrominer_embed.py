@@ -13,19 +13,37 @@ _PRESET_MAP = {"low": 0, "medium": 1, "high": 2}
 _render_preset: Optional[int] = None
 _requested_resolution: Optional[Tuple[int, int]] = None
 
+print(f"DEBUG: Loaded astrominer_embed module from {__file__}")
+
 def _find_dll() -> Optional[str]:
     """Find the astrominer DLL."""
     # Check in the AstroMiner directory
-    base_path = os.path.dirname(__file__)
+    try:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        base_path = os.getcwd()
+    
+    # HARDCODED PATH CHECK FOR DEBUGGING
+    hardcoded_path = r"E:\Dev\Glyphis_IO BBS The Proxy Tapes\Data\games\AstroMiner\astrominer.dll"
+    if os.path.exists(hardcoded_path):
+        print(f"DEBUG: Found DLL at hardcoded path: {hardcoded_path}")
+        return hardcoded_path
+
     dll_paths = [
         os.path.join(base_path, "AstroMiner", "astrominer.dll"),
-        os.path.join(os.path.dirname(base_path), "AstroMiner", "astrominer.dll"),
+        os.path.join(os.path.dirname(base_path), "games", "AstroMiner", "astrominer.dll"), # In case of wrong base
+        os.path.join("Data", "games", "AstroMiner", "astrominer.dll"), # Relative to root
         "astrominer.dll",  # Current directory
     ]
     
+    print(f"DEBUG: Searching for DLL in paths: {dll_paths}")
     for path in dll_paths:
-        if os.path.exists(path):
+        exists = os.path.exists(path)
+        print(f"DEBUG: Checking {path} -> {exists}")
+        if exists:
             return os.path.abspath(path)
+    
+    print("DEBUG: DLL NOT FOUND IN ANY PATH")
     return None
 
 def _get_requested_preset() -> int:
@@ -85,6 +103,14 @@ def initialize() -> bool:
         print("ERROR: astrominer.dll not found")
         return False
     
+    print(f"DEBUG: Found astrominer.dll at: {_dll_path}")
+    try:
+        import time
+        mtime = os.path.getmtime(_dll_path)
+        print(f"DEBUG: DLL Modification Time: {time.ctime(mtime)}")
+    except Exception as e:
+        print(f"DEBUG: Could not get DLL timestamp: {e}")
+
     dll_dir = os.path.dirname(_dll_path)
     
     # Python 3.8+ DLL loading security

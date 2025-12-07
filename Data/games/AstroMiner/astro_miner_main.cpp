@@ -192,10 +192,10 @@ typedef enum {
 } CommodityType;
 
 const char* g_commodityNames[NUM_COMMODITIES] = {
-    "Water Ice", "Lunar Regolith", "Hydrocarbons", 
-    "Cryogenic Fluids", "Helium-4 Isotopes", "Hydrogen Isotopes",
-    "Arcanite", "Pyrothite Geodes", "Chronite",
-    "Xenon Crystals", "Plasmatic Diamonds"
+    "WATER ICE", "LUNAR REGOLITH", "HYDROCARBONS", 
+    "CRYOGENIC FLUIDS", "HELIUM-4 ISOTOPES", "HYDROGEN ISOTOPES",
+    "ARCANITE", "PYROTHITE GEODES", "CHRONITE",
+    "XENON CRYSTALS", "PLASMATIC DIAMONDS"
 };
 
 // Base prices for commodities (in credits per unit)
@@ -280,6 +280,7 @@ PlayerData G_Player = {
 // Global game state variables (declared after types/constants)
 GameState g_currentState = STATE_SPLASH;  // Start with splash screens
 GameState g_previousState = STATE_SPLASH;  // Track previous state for ESC navigation
+bool g_isPaused = false;  // Pause state for 3D environment
 int g_menuSelection = 0;
 Vector3 g_shipPos = {0, 60, 0};  // Will be initialized properly in InitializeGame()
 Vector3 g_shipVel = {0, 0, 10};
@@ -331,6 +332,7 @@ bool g_fuelCheckFailed = false;  // Flag for fuel check failure
 bool g_showFuelWarningModal = false;  // Show separate fuel warning modal
 float g_fuelWarningTimer = 0.0f;  // Timer for fuel warning modal (3 seconds)
 bool g_missionInProgress = false;  // Track if player is on a mission (for return fuel deduction)
+bool g_wasInsideCylinder = false;  // Track if ship was inside exit cylinder to play beam-up sound once
 float g_asteroidRotation = 0.0f;  // Rotation angle for spinning asteroids
 bool g_showGetReady = false;  // Show "GET READY" splash screen before lander
 float g_getReadyTimer = 0.0f;  // Timer for GET READY screen (2 seconds)
@@ -341,9 +343,25 @@ bool g_asteroidViewportInitialized = false;
 
 // Audio
 Sound g_terminalTypeSound = {0};  // Sound for terminal typing
+Sound g_laserSound = {0};         // Sound for laser firing
+Sound g_thrusterSound = {0};      // Sound for thrusters firing
+Sound g_saleSound = {0};          // Sound for selling commodities
+Sound g_noSound = {0};            // Sound for when trying to sell commodities you don't have
+Sound g_crashSound = {0};         // Sound for when hull point is lost
+Sound g_explodeSound = {0};       // Sound for when ship is destroyed
+Sound g_enteringStationSound = {0}; // Sound for entering station/halo/depot
+Sound g_beamUpSound = {0};        // Sound for beam-up when entering red cylinder
+Sound g_launchSequenceSound = {0}; // Sound for launch sequence when entering 3D environment
+Sound g_collectSound = {0};       // Sound for when cargo is collected
+Sound g_rockSound = {0};          // Sound for when rock is destroyed and debris is released
+Sound g_fixingOnSound = {0};      // Sound for when upgrade is purchased
 Music g_backgroundMusic = {0};  // Background music (AstroMiner.mp3)
 Music g_backgroundMusic2 = {0}; // Background music 2 (AstroMiner2.mp3)
+Music g_splashMusic = {0};       // Background music for splash screen (bostonpump.wav)
 int g_currentTrack = 0; // 0=AstroMiner, 1=AstroMiner2
+bool g_splashMusicFadingOut = false; // Flag to track if splash music is fading out
+float g_splashMusicFadeOutTime = 0.0f; // Time elapsed during fade out
+float g_splashMusicFadeOutDuration = 1.0f; // Duration of fade out in seconds
 
 // Shipyard shop system
 bool g_showShipyardShop = false;  // Show shipyard shop when Enter pressed on page 2
@@ -367,6 +385,8 @@ bool g_commoditiesMarketViewportInitialized = false;
 // Depot asteroids (lower prosperity, lower fuel)
 int g_prospectScores[6] = {10, 22, 34, 46, 58, 70};
 int g_gravityScores[6] = {25, 38, 51, 64, 76, 88};
+int g_fuelCosts[6] = {0}; // Persistent fuel costs per asteroid (initialized in InitializeGame)
+
 // Station asteroids (higher prosperity, higher fuel)
 int g_stationProspectScores[6] = {35, 48, 62, 75, 85, 95};
 int g_stationGravityScores[6] = {45, 58, 71, 84, 90, 95};
@@ -403,19 +423,26 @@ bool g_showBarRumorModal = false;
 bool g_showBarGoldCardModal = false;
 bool g_showBarGamblingModal = false;
 bool g_showBarScientistModal = false;
+bool g_showBarSuccessModal = false;  // Success modal for 5 drinks reward
+bool g_showExitToMainMenuModal = false;  // Show exit to main menu confirmation modal
+float g_barModalDelayTimer = 0.0f;  // Timer for 1 second delay before showing bar modals
+int g_barModalPendingType = 0;  // 0=none, 1=rumor, 2=goldcard, 3=gambling, 4=scientist, 5=success
+int g_exitModalSelection = 0;  // 0=YES, 1=NO
+bool g_showWelcomeModal = false;  // Show welcome modal when starting new game
 char g_barRumorText[512] = {0};
 char g_barGamblingText[512] = {0};
 char g_barScientistText[512] = {0};
+char g_barSuccessText[512] = {0};
 int g_barMenuSelection = 0; // Menu selection (varies by location)
 int g_barRandomMood = 0; // Random mood index for bar atmosphere
 int g_barMaxMenuItems = 4; // Number of menu items (varies by location)
 const char* g_barMoods[] = {
-    "The air is thick with smoke and the smell of ozone.",
-    "A rowdy group of miners are singing shanties in the corner.",
-    "The bartender wipes a glass, looking bored.",
-    "A holographic dancer flickers intermittently on the stage.",
-    "You hear whispers of a big strike in sector 7.",
-    "The jukebox is playing a scratchy old jazz tune."
+    "THE AIR IS THICK WITH SMOKE AND THE SMELL OF OZONE.",
+    "A ROWDY GROUP OF MINERS ARE SINGING SHANTIES IN THE CORNER.",
+    "THE BARTENDER WIPES A GLASS, LOOKING BORED.",
+    "A HOLOGRAPHIC DANCER FLICKERS INTERMITTENTLY ON THE STAGE.",
+    "YOU HEAR WHISPERS OF A BIG STRIKE IN SECTOR 7.",
+    "THE JUKEBOX IS PLAYING A SCRATCHY OLD JAZZ TUNE."
 };
 int g_numBarMoods = 6;
 
@@ -476,6 +503,7 @@ struct RockInstance {
     float scale;
     Color color;
     bool active;
+    int prosperityPercentage;  // Prosperity percentage of the asteroid this rock came from
 };
 RockInstance G_Rocks[NUM_ROCKS];
 
@@ -519,7 +547,13 @@ float GetWorldHeight(float x, float z) {
         GridCell* cell = &G_CollisionGrid[cellX][cellZ];
         for(int i = 0; i < cell->count; i++) {
             int rockIdx = cell->rockIndices[i];
+            // Fix: Check if rock is active before using its collision mesh
+            if (!G_Rocks[rockIdx].active) continue;
+            
             int startTri = rockIdx * TRIS_PER_ROCK;
+            // Fix: Check if rock is active before using its collision mesh
+            if (!G_Rocks[rockIdx].active) continue;
+            
             int endTri = startTri + TRIS_PER_ROCK;
             for (int t = startTri; t < endTri; t++) {
                 float triH;
@@ -1080,6 +1114,7 @@ void GenerateRocksAndCollision() {
         int tintVal = GetRandomValue(200, 255);
         G_Rocks[r].color = (Color){(unsigned char)tintVal, (unsigned char)tintVal, (unsigned char)tintVal, 255};
         G_Rocks[r].active = true;
+        G_Rocks[r].prosperityPercentage = g_selectedAsteroidProspect;  // Set prosperity from current asteroid
 
         Matrix matScale = MatrixScale(scale, scale, scale);
         Matrix matRot = MatrixRotate(G_Rocks[r].axis, G_Rocks[r].angle * DEG2RAD);
@@ -1278,15 +1313,43 @@ void DrawProjectedShadow(Vector3 shipPos) {
 Color thrusterPalette[10] = { WHITE, WHITE, RAYWHITE, (Color){0, 255, 255, 255}, (Color){100, 255, 255, 255}, SKYBLUE, WHITE, ORANGE, RED, GOLD };
 
 void SpawnThrustParticles(Vector3 nozzlePos, Vector3 shipUpVector) {
-    Vector3 ejectDir = Vector3Scale(shipUpVector, -1.0f);
+    // Particles spray outwards immediately in a wide cone towards the surface
+    // Eject opposite to ship's thrust direction (downward towards surface)
+    Vector3 ejectDir = Vector3Normalize(shipUpVector);
+    ejectDir = Vector3Scale(ejectDir, -1.0f); // Eject opposite to thrust direction (downward)
+    
     int particlesPerFrame = 4;
     for (int k = 0; k < particlesPerFrame; k++) {
         for (int i = 0; i < MAX_PARTICLES; i++) {
             if (particles[i].life <= 0) {
+                // Spawn particles lower and push them away from ship center immediately
+                Vector3 offsetFromShip = Vector3Subtract(nozzlePos, g_shipPos);
+                float distFromShip = Vector3Length(offsetFromShip);
+                // Push spawn position further away if too close to ship center (at least 0.9 units)
+                if (distFromShip < 0.9f) {
+                    Vector3 pushDir = Vector3Normalize(offsetFromShip);
+                    if (Vector3Length(pushDir) < 0.1f) pushDir = ejectDir; // Fallback if offset is zero
+                    nozzlePos = Vector3Add(g_shipPos, Vector3Scale(pushDir, 0.9f));
+                }
+                
                 particles[i].pos = nozzlePos; particles[i].onGround = false;
-                Vector3 noise = { (GetRandomValue(-50,50))/100.0f, (GetRandomValue(-50,50))/100.0f, (GetRandomValue(-50,50))/100.0f };
-                Vector3 spreadDir = Vector3Add(ejectDir, Vector3Scale(noise, 0.6f));
-                particles[i].vel = Vector3Scale(spreadDir, (float)GetRandomValue(75, 150) / 10.0f);
+                
+                // Create cone spray: particles spread out in a narrower cone
+                // Reduced noise range and scale for tighter cone (50% narrower than previous)
+                Vector3 noise = { 
+                    (GetRandomValue(-20, 20)) / 100.0f,  // Narrower horizontal spread
+                    (GetRandomValue(-8, 8)) / 100.0f,     // Less vertical variation
+                    (GetRandomValue(-20, 20)) / 100.0f    // Narrower horizontal spread
+                };
+                // Reduced scale factor (1.0f) creates narrower cone spread
+                Vector3 spreadDir = Vector3Add(ejectDir, Vector3Scale(noise, 1.0f));
+                spreadDir = Vector3Normalize(spreadDir);
+                
+                // Strong velocity: particles spray out immediately with high speed
+                float ejectSpeed = (float)GetRandomValue(200, 400) / 10.0f; // 20-40 units/sec (much stronger)
+                Vector3 ejectVel = Vector3Scale(spreadDir, ejectSpeed);
+                particles[i].vel = Vector3Add(g_shipVel, ejectVel);
+                
                 particles[i].color = thrusterPalette[GetRandomValue(0,9)];
                 particles[i].life = 1.5f; break;
             }
@@ -1384,7 +1447,17 @@ void UpdateParticles(float dt) {
             }
             if (!particles[i].onGround) {
                 particles[i].vel.y += gravity * dt;
-                particles[i].pos = Vector3Add(particles[i].pos, Vector3Scale(particles[i].vel, dt));
+                Vector3 nextPos = Vector3Add(particles[i].pos, Vector3Scale(particles[i].vel, dt));
+                
+                // Particles disappear immediately if they touch the ship (not just collide)
+                if (Vector3Distance(nextPos, g_shipPos) < 0.7f) {
+                     // Kill particle immediately
+                     particles[i].life = 0.0f;
+                     continue; // Skip to next particle
+                }
+                
+                particles[i].pos = nextPos;
+                
                 float worldH = GetWorldHeight(particles[i].pos.x, particles[i].pos.z);
                 if (particles[i].pos.y <= worldH + 0.05f) {
                     particles[i].pos.y = worldH + 0.05f; particles[i].onGround = true;
@@ -1399,7 +1472,7 @@ void UpdateParticles(float dt) {
 }
 
 void DrawParticles() {
-    float pSize = 0.064f; 
+    float pSize = 0.0832f; // Increased by 30% from 0.064f 
     for (int i = 0; i < MAX_PARTICLES; i++) if (particles[i].life > 0)
         DrawCube(particles[i].pos, pSize, pSize, pSize, particles[i].color);
 }
@@ -1439,6 +1512,7 @@ void ResetState(GameState* currentState, int* menuSelection, GameState newState)
         g_showBarView = false;
         g_showAsteroidModal = false;
         g_showShopModal = false;
+        g_showExitToMainMenuModal = false; // Close exit modal
         // Simulate left arrow key press to exit previous page
         if (KEY_LEFT >= 0 && KEY_LEFT < 512) {
             g_inputState.keysPressed[KEY_LEFT] = true;
@@ -1450,10 +1524,14 @@ void ResetState(GameState* currentState, int* menuSelection, GameState newState)
         g_showBarView = false;
         g_showAsteroidModal = false;
         g_showShopModal = false;
+        g_showExitToMainMenuModal = false; // Close exit modal
         // Simulate left arrow key press to exit previous page
         if (KEY_LEFT >= 0 && KEY_LEFT < 512) {
             g_inputState.keysPressed[KEY_LEFT] = true;
         }
+    } else {
+        // Close exit modal when leaving home states
+        g_showExitToMainMenuModal = false;
     }
 }
 
@@ -1517,12 +1595,20 @@ static Vector2 CustomGetMousePosition() {
 void HandleESCNavigation(GameState* currentState, int* menuSelection) {
     if (CustomIsKeyPressed(KEY_ESCAPE)) {
         // From splash screen menu, ESC is handled in DrawPageSplash (can quit if QUIT GAME selected)
-        // From other states, ESC goes back to previous state
+        // ESC should only take player back to Depot, Station, or Halo, never to navigation or 3D environment
         if (*currentState != STATE_SPLASH) {
-            GameState temp = *currentState;
-            *currentState = g_previousState;
-            g_previousState = temp;
-            *menuSelection = 0;
+            // Always go back to the appropriate home state based on current location
+            // Never go back to navigation screen or 3D environment
+            if (g_currentLocation == 1) {
+                // Currently at Station - go back to Station Home
+                ResetState(currentState, menuSelection, STATE_STATION_HOME);
+            } else if (g_currentLocation == 2) {
+                // Currently at Halo - go back to Halo Home
+                ResetState(currentState, menuSelection, STATE_HALO_HOME);
+            } else {
+                // Currently at Depot (default) - go back to Depot Home
+                ResetState(currentState, menuSelection, STATE_DEPOT_HOME);
+            }
         }
     }
 }
@@ -1582,36 +1668,36 @@ __declspec(dllexport) __cdecl bool ShouldExit() {
 // ------------------------------------------------------------
 // DRAWING HELPERS (Shared UI)
 // ------------------------------------------------------------
-void DrawRetroWindow(const char* title, int x, int y, int w, int h) {
+
+// Forward declarations
+void DrawTextWithFont(const char* text, int posX, int posY, int fontSize, Color color);
+int MeasureTextWithFont(const char* text, int fontSize);
+void DrawWordWrappedText(const char* text, int x, int y, int maxWidth, int fontSize, Color color, int* outY);
+
+void DrawRetroWindow(const char* title, int x, int y, int w, int h, int titleFontSize = 12) {
     Color panelFill = {10, 15, 30, 240};
     Color border = {0, 255, 255, 255};
     DrawRectangle(x, y, w, h, panelFill);
     DrawRectangleLines(x, y, w, h, border);
     DrawRectangle(x, y, w, 30, border);
-    if (retroFont.texture.id > 0) {
-        Vector2 titleSize = MeasureTextEx(retroFont, title, 20.0f, 0);
-        DrawTextEx(retroFont, title, (Vector2){(float)(x + 10), (float)(y + 5)}, 20.0f, 0, BLACK);
-    } else {
-        DrawText(title, x + 10, y + 5, 20, BLACK);
-    }
+    DrawTextWithFont(title, x + 10, y + 5, titleFontSize, BLACK);
 }
 
 // KEYBOARD NAVIGATION BUTTON
-bool DrawButton(const char* text, int x, int y, int w, int h, bool selected) {
+bool DrawButton(const char* text, int x, int y, int w, int h, bool selected, int fontSize = 12) {
     Color fill = selected ? (Color){0, 100, 100, 255} : (Color){0, 40, 40, 255};
     Color border = selected ? WHITE : (Color){0, 255, 255, 255};
     
     DrawRectangle(x, y, w, h, fill);
     DrawRectangleLines(x, y, w, h, border);
     
-    int fontSize = 20;
     if (retroFont.texture.id > 0) {
         Vector2 textSize = MeasureTextEx(retroFont, text, (float)fontSize, 0);
         Vector2 pos = {(float)(x + (w - textSize.x) / 2), (float)(y + (h - textSize.y) / 2)};
         DrawTextEx(retroFont, text, pos, (float)fontSize, 0, border);
     } else {
-        int textW = MeasureText(text, fontSize);
-        DrawText(text, x + (w-textW)/2, y + (h-fontSize)/2, fontSize, border);
+        int textW = MeasureTextWithFont(text, fontSize);
+        DrawTextWithFont(text, x + (w-textW)/2, y + (h-fontSize)/2, fontSize, border);
     }
     
     if (selected && (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE))) {
@@ -1619,6 +1705,25 @@ bool DrawButton(const char* text, int x, int y, int w, int h, bool selected) {
         return true;
     }
     return false;
+}
+
+// Helper function to draw text using retroFont if available, otherwise default font
+void DrawTextWithFont(const char* text, int posX, int posY, int fontSize, Color color) {
+    if (retroFont.texture.id > 0) {
+        DrawTextEx(retroFont, text, (Vector2){(float)posX, (float)posY}, (float)fontSize, 0, color);
+    } else {
+        DrawText(text, posX, posY, fontSize, color);
+    }
+}
+
+// Helper function to measure text width using retroFont if available
+int MeasureTextWithFont(const char* text, int fontSize) {
+    if (retroFont.texture.id > 0) {
+        Vector2 size = MeasureTextEx(retroFont, text, (float)fontSize, 0);
+        return (int)size.x;
+    } else {
+        return MeasureText(text, fontSize);
+    }
 }
 
 // ------------------------------------------------------------
@@ -2065,8 +2170,10 @@ void DrawPageSplash(GameState* state, int* menuSelection, Vector3* shipPos, Vect
             // Draw a placeholder text so we know the splash screen is active
             char splashText[32];
             sprintf(splashText, "SPLASH %d", g_splashIndex);
-            DrawText(splashText, VIRTUAL_WIDTH/2 - 100, VIRTUAL_HEIGHT/2, 40, WHITE);
+            DrawTextWithFont(splashText, VIRTUAL_WIDTH/2 - 100, VIRTUAL_HEIGHT/2, 12, WHITE);
         }
+        
+        // Audio Logic: Background music is already playing (no bostonpump on splash)
         
         // Advance to next splash after beat duration
         if (g_splashTimer >= g_splashBeatDuration) {
@@ -2114,8 +2221,8 @@ void DrawPageSplash(GameState* state, int* menuSelection, Vector3* shipPos, Vect
             }
             // Draw placeholder text
             const char* menuText[] = {"NEW GAME", "LOAD GAME", "QUIT GAME"};
-            DrawText(menuText[g_menuOption], VIRTUAL_WIDTH/2 - 150, VIRTUAL_HEIGHT/2, 40, WHITE);
-            DrawText("Use UP/DOWN arrows, ENTER to select", VIRTUAL_WIDTH/2 - 200, VIRTUAL_HEIGHT/2 + 60, 20, GRAY);
+            DrawTextWithFont(menuText[g_menuOption], VIRTUAL_WIDTH/2 - 150, VIRTUAL_HEIGHT/2, 12, WHITE);
+            DrawTextWithFont("Use UP/DOWN arrows, ENTER to select", VIRTUAL_WIDTH/2 - 200, VIRTUAL_HEIGHT/2 + 60, 12, GRAY);
         }
         
         // Handle selection
@@ -2155,11 +2262,18 @@ void DrawPageSplash(GameState* state, int* menuSelection, Vector3* shipPos, Vect
                 G_Player.hullResistance = 1.0f;
                 SHIP_THRUST_POWER = 24.0f;  // Reset thrust power (20% stronger)
                 g_exit_requested = false;  // Reset exit flag
+                g_showWelcomeModal = true;  // Show welcome modal for new game
+                // Background music is already playing (plays alongside splash music)
                 *state = STATE_DEPOT_HOME;
                 *menuSelection = 0;
             } else if (g_menuOption == 1) {
                 // Load Game - load save file (simple implementation)
                 // TODO: Implement actual save/load system
+                // Stop splash music (background music is already playing)
+                if (IsMusicStreamPlaying(g_splashMusic)) {
+                    StopMusicStream(g_splashMusic);
+                    g_splashMusicFadingOut = false;
+                }
                 // For now, just go to Depot_Home
                 *state = STATE_DEPOT_HOME;
                 *menuSelection = 0;
@@ -2368,8 +2482,8 @@ void RenderAsteroidProspects() {
     }
     
     // Reduced font size
-    int fontSizeName = 10; 
-    int fontSizeStats = 9; 
+    int fontSizeName = 6; 
+    int fontSizeStats = 5; 
     int labelGap = 12; // pixels between model footprint and first line
     
     // Establish row baselines so text forms a tidy grid beneath each row
@@ -2389,20 +2503,20 @@ void RenderAsteroidProspects() {
         // Asteroid name (A-F) - centered horizontally
         char asteroidName[32];
         snprintf(asteroidName, sizeof(asteroidName), "ASTEROID %c", 'A' + i);
-        int nameW = MeasureText(asteroidName, fontSizeName);
-        DrawText(asteroidName, centerX - nameW/2, textY, fontSizeName, WHITE);
+        int nameW = MeasureTextWithFont(asteroidName, fontSizeName);
+        DrawTextWithFont(asteroidName, centerX - nameW/2, textY, fontSizeName, WHITE);
         
         // Prospect score - centered horizontally
         char prospectText[32];
         snprintf(prospectText, sizeof(prospectText), "PROSPECT: %d%%", prospectScores[i]);
-        int prospectW = MeasureText(prospectText, fontSizeStats);
-        DrawText(prospectText, centerX - prospectW/2, textY + 12, fontSizeStats, GREEN);
+        int prospectW = MeasureTextWithFont(prospectText, fontSizeStats);
+        DrawTextWithFont(prospectText, centerX - prospectW/2, textY + 12, fontSizeStats, GREEN);
         
         // Gravity score - centered horizontally
         char gravityText[32];
         snprintf(gravityText, sizeof(gravityText), "GRAVITY: %d%%", gravityScores[i]);
-        int gravityW = MeasureText(gravityText, fontSizeStats);
-        DrawText(gravityText, centerX - gravityW/2, textY + 22, fontSizeStats, (Color){0, 255, 255, 255});  // Cyan
+        int gravityW = MeasureTextWithFont(gravityText, fontSizeStats);
+        DrawTextWithFont(gravityText, centerX - gravityW/2, textY + 22, fontSizeStats, (Color){0, 255, 255, 255});  // Cyan
     }
     */
     
@@ -2436,26 +2550,26 @@ void RenderCommoditiesMarket() {
                               (g_currentLocation == 2) ? "NAGAKO'S HALO MARKET" : 
                               "SHINJUKU DEPOT MARKET";
     int headerX = 270;
-    DrawText(marketTitle, headerX, 30, 24, YELLOW);
+    DrawTextWithFont(marketTitle, headerX, 50, 15, YELLOW);  // Moved down 20px (from 30 to 50)
     
     // Draw credits and cargo info (aligned with header)
-    DrawText(TextFormat("CREDITS: %d", G_Player.credits), headerX, 70, 24, GREEN);
-    DrawText(TextFormat("CARGO: %d/%d", G_Player.cargoFilled, G_Player.cargoSpace), headerX, 100, 24, (Color){0, 255, 255, 255});
+    DrawTextWithFont(TextFormat("CREDITS: %d", G_Player.credits), headerX, 90, 15, GREEN);  // Moved down 20px (from 70 to 90)
+    DrawTextWithFont(TextFormat("CARGO: %d/%d", G_Player.cargoFilled, G_Player.cargoSpace), headerX, 120, 11, (Color){0, 255, 255, 255}); // Moved down 20px (from 100 to 120)
     
     // Draw commodities list
-    int startY = 140;
-    int lineHeight = 24;  // Adjusted for smaller commodity font
+    int startY = 160;  // Moved down 20px (from 140 to 160)
+    int lineHeight = 30;  // Increased for larger font
     int maxVisible = 10;  // Show up to 10 commodities at once
 
     // Pre-calc layout so names and prices stay tight and aligned
-    int nameFontSize = 14;
+    int nameFontSize = 11; // Increased by 5pt (was 14)
     int maxNameWidth = 0;
     for (int i = 0; i < NUM_COMMODITIES; i++) {
-        int w = MeasureText(g_commodityNames[i], nameFontSize);
+        int w = MeasureTextWithFont(g_commodityNames[i], nameFontSize);
         if (w > maxNameWidth) maxNameWidth = w;
     }
     int nameX = headerX + 10;                // Shift whole list right by ~120px
-    int priceGap = MeasureText("MMMMM", nameFontSize); // Roughly 5 characters
+    int priceGap = MeasureTextWithFont("MMMMM", nameFontSize); // Roughly 5 characters
     int priceStartX = nameX + maxNameWidth + priceGap;
     
     // Calculate scroll offset - start moving list up when reaching Hydrogen Isotopes (index 5)
@@ -2489,17 +2603,17 @@ void RenderCommoditiesMarket() {
         char commText[128];
         snprintf(commText, sizeof(commText), "%s: %d", g_commodityNames[commIdx], G_Player.inventory[commIdx]);
         Color textColor = (G_Player.inventory[commIdx] > 0) ? WHITE : GRAY;
-        DrawText(commText, nameX, yPos, nameFontSize, textColor);
+        DrawTextWithFont(commText, nameX, yPos, nameFontSize, textColor);
         
         // Price positioned just after longest name with a small gap
         char priceText[64];
         snprintf(priceText, sizeof(priceText), "%dcr", buyPrices[commIdx]);
-        DrawText(priceText, priceStartX, yPos, nameFontSize, (G_Player.inventory[commIdx] > 0) ? GREEN : GRAY);
+        DrawTextWithFont(priceText, priceStartX, yPos, nameFontSize, (G_Player.inventory[commIdx] > 0) ? GREEN : GRAY);
         
         // Sell indicator positioned after price
         if (G_Player.inventory[commIdx] > 0 && selected) {
-            int sellIndicatorX = priceStartX + MeasureText(priceText, nameFontSize) + 15;  // 15px spacing after price
-            DrawText("[S TO SELL]", sellIndicatorX, yPos, nameFontSize, YELLOW);
+            int sellIndicatorX = priceStartX + MeasureTextWithFont(priceText, nameFontSize) + 25;  // 25px spacing after price (moved 10px right)
+            DrawTextWithFont("[S TO SELL]", sellIndicatorX, yPos, nameFontSize, YELLOW);
         }
     }
     
@@ -2510,10 +2624,10 @@ void RenderCommoditiesMarket() {
         DrawRectangle(rectStartX, backY - 2, rectWidth, lineHeight, (Color){100, 100, 150, 100});
         DrawRectangleLines(rectStartX, backY - 2, rectWidth, lineHeight, YELLOW);
     }
-    DrawText("[BACK]", nameX, backY, nameFontSize, backSelected ? YELLOW : WHITE);
+    DrawTextWithFont("[BACK]", nameX, backY, nameFontSize, backSelected ? YELLOW : WHITE);
     
     // Instructions aligned with header
-    DrawText("UP/DOWN: Navigate | S: Sell | ENTER: Back", headerX, RENDER_HEIGHT - 40, nameFontSize, GRAY);
+    DrawTextWithFont("UP/DOWN: Navigate | S: Sell | ENTER: Back", headerX, RENDER_HEIGHT - 40, nameFontSize, GRAY);
     
     EndMode2D();
     EndTextureMode();
@@ -2654,11 +2768,11 @@ void RenderShipyardShop() {
         shopItemPrices[2] = 500;
         shopItemPrices[3] = 1000;
         shopItemPrices[4] = 50;
-        shopItemPrices[5] = 100;
+        shopItemPrices[5] = 400;  // REPAIRS - Repairs 10 Hull points for 400 credits
     }
     
-    int fontSizeName = 10;
-    int fontSizePrice = 9;
+    int fontSizeName = 6;
+    int fontSizePrice = 5;
     int labelGap = 12;
 
     // Establish row baselines so text forms a tidy grid beneath each row
@@ -2673,14 +2787,14 @@ void RenderShipyardShop() {
         int textY = (i < 3) ? textYTopRow : textYBottomRow;
         
         // Shop item name
-        int nameW = MeasureText(shopItemNames[i], fontSizeName);
-        DrawText(shopItemNames[i], centerX - nameW/2, textY, fontSizeName, WHITE);
+        int nameW = MeasureTextWithFont(shopItemNames[i], fontSizeName);
+        DrawTextWithFont(shopItemNames[i], centerX - nameW/2, textY, fontSizeName, WHITE);
         
         // Price
         char priceText[32];
         snprintf(priceText, sizeof(priceText), "PRICE: %d CR", shopItemPrices[i]);
-        int priceW = MeasureText(priceText, fontSizePrice);
-        DrawText(priceText, centerX - priceW/2, textY + 12, fontSizePrice, (Color){255, 255, 0, 255});  // Yellow
+        int priceW = MeasureTextWithFont(priceText, fontSizePrice);
+        DrawTextWithFont(priceText, centerX - priceW/2, textY + 12, fontSizePrice, (Color){255, 255, 0, 255});  // Yellow
     }
     */
     
@@ -2742,16 +2856,30 @@ void DrawAsteroidModal(GameState* state, int* menuSelection, Vector3* shipPos, V
                 
                 g_showAsteroidModal = false;
                 g_fuelCheckFailed = false;
+                g_wasInsideCylinder = false; // Reset beam-up sound flag for new mission
+                
+                // Play launch sequence sound when launching into 3D environment
+                if (g_launchSequenceSound.frameCount > 0) {
+                    SetSoundVolume(g_launchSequenceSound, 1.3f); // 30% louder
+                    PlaySound(g_launchSequenceSound);
+                }
                 
                 // Show GET READY splash screen
                 g_showGetReady = true;
                 g_getReadyTimer = 5.0f;  // Show for 5 seconds
                 
-                // Reset rocks (re-generate world for new asteroid?)
+                // Reset rocks (re-generate world for new asteroid) - completely fresh environment
                 GenerateRocksAndCollision(); 
                 InitCollisionGrid();
+                
+                // Clear all particles/debris for fresh start
+                for (int i = 0; i < MAX_PARTICLES; i++) {
+                    particles[i].life = 0.0f; // Kill all particles
+                    particles[i].onGround = false;
+                }
             } else {
-                // Not enough fuel - show separate warning modal
+                // Not enough fuel - close modal and show separate warning modal
+                g_showAsteroidModal = false;  // Close asteroid selection modal
                 g_fuelCheckFailed = true;
                 g_showFuelWarningModal = true;
                 g_fuelWarningTimer = 3.0f;  // Show for 3 seconds
@@ -2776,29 +2904,31 @@ void DrawAsteroidModal(GameState* state, int* menuSelection, Vector3* shipPos, V
     int prospect = g_prospectScores[g_selectedAsteroidIndex];
     int gravity = g_gravityScores[g_selectedAsteroidIndex];
     
-    // Draw asteroid name
+    // Draw asteroid name (with word wrapping support for long names)
     char titleText[64];
     snprintf(titleText, sizeof(titleText), "ASTEROID %c", asteroidName);
-    int titleW = MeasureText(titleText, 30);
-    DrawText(titleText, modalX + (modalWidth - titleW) / 2, modalY + 50, 30, WHITE);
+    int maxTextWidth = modalWidth - 100; // Padding to prevent overlap
+    int textY = modalY + 50;
+    int textBottomY = textY;
+    DrawWordWrappedText(titleText, modalX + 50, textY, maxTextWidth, 19, WHITE, &textBottomY);
     
-    // Draw fuel cost
+    // Draw fuel cost (with word wrapping support)
     char fuelText[64];
     snprintf(fuelText, sizeof(fuelText), "FUEL REQUIRED: %d", g_selectedAsteroidFuelCost);
-    int fuelW = MeasureText(fuelText, 24);
-    DrawText(fuelText, modalX + (modalWidth - fuelW) / 2, modalY + 120, 24, (Color){0, 255, 255, 255});  // Cyan
+    textY = textBottomY + 30;
+    DrawWordWrappedText(fuelText, modalX + 50, textY, maxTextWidth, 15, (Color){0, 255, 255, 255}, &textBottomY);  // Cyan
     
-    // Draw prospect percentage
+    // Draw prospect percentage (with word wrapping support)
     char prospectText[64];
     snprintf(prospectText, sizeof(prospectText), "PROSPECT: %d%%", prospect);
-    int prospectW = MeasureText(prospectText, 24);
-    DrawText(prospectText, modalX + (modalWidth - prospectW) / 2, modalY + 170, 24, GREEN);
+    textY = textBottomY + 30;
+    DrawWordWrappedText(prospectText, modalX + 50, textY, maxTextWidth, 15, GREEN, &textBottomY);
     
-    // Draw gravity percentage
+    // Draw gravity percentage (with word wrapping support)
     char gravityText[64];
     snprintf(gravityText, sizeof(gravityText), "GRAVITY: %d%%", gravity);
-    int gravityW = MeasureText(gravityText, 24);
-    DrawText(gravityText, modalX + (modalWidth - gravityW) / 2, modalY + 220, 24, (Color){0, 255, 255, 255});  // Cyan
+    textY = textBottomY + 30;
+    DrawWordWrappedText(gravityText, modalX + 50, textY, maxTextWidth, 15, (Color){0, 255, 255, 255}, &textBottomY);  // Cyan
     
     // Note: Fuel warning is now shown in a separate modal (drawn on top of everything)
     
@@ -2845,12 +2975,12 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
         shopItemPrices[3] = 5000;
         shopItemPrices[4] = 8000;
         shopItemPrices[5] = 10000;
-        shopItemDescriptions[0] = "Increases fuel capacity by 50%";
-        shopItemDescriptions[1] = "Micro-Black Hole increases cargo to 50";
-        shopItemDescriptions[2] = "Sells fuel in one barrel (1 barrel = 10 fuel)";
-        shopItemDescriptions[3] = "Red ship: 10% better everything";
-        shopItemDescriptions[4] = "Green ship: 20% better everything";
-        shopItemDescriptions[5] = "Purple ship: 30% better everything";
+        shopItemDescriptions[0] = "INCREASES FUEL CAPACITY BY 50%";
+        shopItemDescriptions[1] = "MICRO-BLACK HOLE INCREASES CARGO TO 50";
+        shopItemDescriptions[2] = "SELLS FUEL IN ONE BARREL (1 BARREL = 10 FUEL)";
+        shopItemDescriptions[3] = "RED SHIP: 10% BETTER EVERYTHING";
+        shopItemDescriptions[4] = "GREEN SHIP: 20% BETTER EVERYTHING";
+        shopItemDescriptions[5] = "PURPLE SHIP: 30% BETTER EVERYTHING";
     } else if (g_currentLocation == 2) {  // Halo
         shopItemNames[0] = "[A] BETTER LASER";
         shopItemNames[1] = "[B] BETTER COLLECTOR";
@@ -2864,12 +2994,12 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
         shopItemPrices[3] = 5000;
         shopItemPrices[4] = 8000;
         shopItemPrices[5] = 10000;
-        shopItemDescriptions[0] = "Advanced laser that blasts more rocks";
-        shopItemDescriptions[1] = "Improved collector with better efficiency";
-        shopItemDescriptions[2] = "Sells fuel in one barrel (1 barrel = 10 fuel)";
-        shopItemDescriptions[3] = "Red ship: 10% better everything";
-        shopItemDescriptions[4] = "Green ship: 20% better everything";
-        shopItemDescriptions[5] = "Purple ship: 30% better everything";
+        shopItemDescriptions[0] = "ADVANCED LASER THAT BLASTS MORE ROCKS";
+        shopItemDescriptions[1] = "IMPROVED COLLECTOR WITH BETTER EFFICIENCY";
+        shopItemDescriptions[2] = "SELLS FUEL IN ONE BARREL (1 BARREL = 10 FUEL)";
+        shopItemDescriptions[3] = "RED SHIP: 10% BETTER EVERYTHING";
+        shopItemDescriptions[4] = "GREEN SHIP: 20% BETTER EVERYTHING";
+        shopItemDescriptions[5] = "PURPLE SHIP: 30% BETTER EVERYTHING";
     } else {  // Depot
         shopItemNames[0] = "[A] LASER";
         shopItemNames[1] = "[B] COLLECTOR";
@@ -2882,13 +3012,13 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
         shopItemPrices[2] = 500;
         shopItemPrices[3] = 1000;
         shopItemPrices[4] = 50;
-        shopItemPrices[5] = 100;
-        shopItemDescriptions[0] = "Fits a laser allowing asteroids to be fired by pressing space";
-        shopItemDescriptions[1] = "Enables lasered debris to enter the CARGO of the ship";
-        shopItemDescriptions[2] = "Gives a boost to the ship's thruster by 20%";
-        shopItemDescriptions[3] = "Decreases the hull vulnerability by 20%";
-        shopItemDescriptions[4] = "Sells fuel in one barrel (1 barrel = 10 fuel)";
-        shopItemDescriptions[5] = "Repairs 1 Hull point";
+        shopItemPrices[5] = 400;  // REPAIRS - Repairs 10 Hull points for 400 credits
+        shopItemDescriptions[0] = "FITS A LASER ALLOWING ASTEROIDS TO BE FIRED BY PRESSING SPACE";
+        shopItemDescriptions[1] = "ENABLES LASERED DEBRIS TO ENTER THE CARGO OF THE SHIP";
+        shopItemDescriptions[2] = "GIVES A BOOST TO THE SHIP'S THRUSTER BY 20%";
+        shopItemDescriptions[3] = "INCREASES HULL CAPACITY BY 10 POINTS";
+        shopItemDescriptions[4] = "SELLS FUEL IN ONE BARREL (1 BARREL = 10 FUEL)";
+        shopItemDescriptions[5] = "REPAIRS 10 HULL POINTS";
     }
     
     // Handle ESC to close modal
@@ -3074,21 +3204,42 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
                     case 1:  // COLLECTOR
                         G_Player.hasCollector = true;
                         break;
-                    case 2:  // THRUSTER
-                            G_Player.thrusterBoost = 1.2f;
+                    case 2: { // THRUSTER - Increases thruster boost and power capacity
+                            // Multiply thruster boost (allows stacking if purchased multiple times)
+                            G_Player.thrusterBoost *= 1.2f;
+                            // Increase power to reflect thruster upgrade (+20 power for 20% boost)
+                            float powerIncrease = 20.0f;
+                            G_Player.power += powerIncrease;
+                            // Also increase maxPower to reflect the upgrade
+                            G_Player.maxPower += powerIncrease;
+                            // Ensure power doesn't exceed maxPower
+                            if (G_Player.power > G_Player.maxPower) G_Player.power = G_Player.maxPower;
+                            // Update SHIP_THRUST_POWER to match current power
+                            SHIP_THRUST_POWER = G_Player.power;
                         break;
-                    case 3:  // EXO-PLATING
-                            G_Player.hullResistance = 0.8f;
+                    }
+                    case 3:  // EXO-PLATING - Increases max hull by 10 points (repeatable)
+                            G_Player.maxHull += 10.0f;
+                            // Also apply current hull increase if hull is at max
+                            if (G_Player.hull >= G_Player.maxHull - 10.0f) {
+                                G_Player.hull = G_Player.maxHull;
+                            }
                         break;
                     case 4:  // FUEL
                             G_Player.fuel += 10.0f;
                         if (G_Player.fuel > G_Player.maxFuel) G_Player.fuel = G_Player.maxFuel;
                         break;
-                    case 5:  // REPAIRS
-                            G_Player.hull += 1.0f;
+                    case 5:  // REPAIRS - Repairs 10 hull points
+                            G_Player.hull += 10.0f;
                         if (G_Player.hull > G_Player.maxHull) G_Player.hull = G_Player.maxHull;
                         break;
                     }
+                }
+                
+                // Play fixing-on.wav sound at 100% volume when upgrade is purchased
+                if (g_fixingOnSound.frameCount > 0) {
+                    SetSoundVolume(g_fixingOnSound, 1.0f); // 100% volume
+                    PlaySound(g_fixingOnSound);
                 }
                 
                 g_showShopModal = false;
@@ -3121,85 +3272,38 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
     // Draw item name
     char titleText[64];
     snprintf(titleText, sizeof(titleText), "%s (%c)", itemNameStr, itemName);
-    int titleW = MeasureText(titleText, 30);
-    DrawText(titleText, modalX + (modalWidth - titleW) / 2, modalY + 50, 30, WHITE);
+    int titleW = MeasureTextWithFont(titleText, 19);
+    DrawTextWithFont(titleText, modalX + (modalWidth - titleW) / 2, modalY + 50, 19, WHITE);
     
     // Draw price
     char priceText[64];
     snprintf(priceText, sizeof(priceText), "PRICE: %d CREDITS", price);
-    int priceW = MeasureText(priceText, 24);
-    DrawText(priceText, modalX + (modalWidth - priceW) / 2, modalY + 120, 24, (Color){255, 255, 0, 255});  // Yellow
+    int priceW = MeasureTextWithFont(priceText, 15);
+    DrawTextWithFont(priceText, modalX + (modalWidth - priceW) / 2, modalY + 120, 15, (Color){255, 255, 0, 255});  // Yellow
     
-    // Draw description (centered, word-wrapped)
-    int fontSizeDesc = 20;
-    int maxDescWidth = modalWidth - 60; // Padding
-    int descLen = strlen(description);
-    char wrappedDesc[256];
-    strncpy(wrappedDesc, description, sizeof(wrappedDesc));
+    // Draw description (centered, word-wrapped using helper function)
+    int fontSizeDesc = 12;
+    int maxDescWidth = modalWidth - 100; // Increased padding to prevent overlap
+    int textY = modalY + 170;
+    int textBottomY = textY;
+    DrawWordWrappedText(description, modalX + 50, textY, maxDescWidth, fontSizeDesc, WHITE, &textBottomY);
     
-    // Simple word wrap
-    int lineStart = 0;
-    int currentY = modalY + 170;
-    int lineHeight = 25;
+    // Determine button Y position based on content
+    int buttonY = modalY + 320;  // Default position
     
-    // Check if text fits in one line
-    if (MeasureText(description, fontSizeDesc) <= maxDescWidth) {
-        int descW = MeasureText(description, fontSizeDesc);
-        DrawText(description, modalX + (modalWidth - descW) / 2, currentY, fontSizeDesc, WHITE);
-    } else {
-        // Needs wrapping - simplified manual wrapping
-        // For now, let's just split at a convenient space near the middle if it's too long
-        // Or implement a proper character-by-character check
-        
-        char lineBuffer[128];
-        int lastSpace = -1;
-        int currentLineStart = 0;
-        
-        for (int i = 0; i <= descLen; i++) {
-            if (description[i] == ' ' || description[i] == '\0') {
-                int len = i - currentLineStart;
-                strncpy(lineBuffer, &description[currentLineStart], len);
-                lineBuffer[len] = '\0';
-                
-                if (MeasureText(lineBuffer, fontSizeDesc) > maxDescWidth) {
-                    // This word pushed it over, print up to last space
-                    int printLen = lastSpace - currentLineStart;
-                    strncpy(lineBuffer, &description[currentLineStart], printLen);
-                    lineBuffer[printLen] = '\0';
-                    
-                    int lineW = MeasureText(lineBuffer, fontSizeDesc);
-                    DrawText(lineBuffer, modalX + (modalWidth - lineW) / 2, currentY, fontSizeDesc, WHITE);
-                    
-                    currentY += lineHeight;
-                    currentLineStart = lastSpace + 1; // Start next line after space
-                    
-                    // Re-evaluate current word for next line
-                    i = lastSpace; // Backtrack to process this word again on new line loop (i++ will move to next char)
-                    lastSpace = -1; // Reset last space
-                } else {
-                    lastSpace = i;
-                }
-            }
-        }
-        // Print remaining
-        if (currentLineStart < descLen) {
-            strncpy(lineBuffer, &description[currentLineStart], descLen - currentLineStart);
-            lineBuffer[descLen - currentLineStart] = '\0';
-            int lineW = MeasureText(lineBuffer, fontSizeDesc);
-            DrawText(lineBuffer, modalX + (modalWidth - lineW) / 2, currentY, fontSizeDesc, WHITE);
-        }
-    }
-    
-    // Draw warning if purchase failed
+    // Draw warning if purchase failed (positioned below description)
     if (g_purchaseFailed) {
-        int warningW = MeasureText(g_purchaseFailReason, 28);
-        DrawText(g_purchaseFailReason, modalX + (modalWidth - warningW) / 2, modalY + 290, 28, RED);
+        int warningY = textBottomY + 20;
+        int warningBottomY = warningY;
+        DrawWordWrappedText(g_purchaseFailReason, modalX + 50, warningY, maxDescWidth, 18, RED, &warningBottomY);
+        // Update button position if warning pushes content down
+        buttonY = warningBottomY + 30;
+        if (buttonY > modalY + modalHeight - 70) buttonY = modalY + modalHeight - 70; // Ensure button fits
     }
     
     // Draw Purchase and Exit buttons
     int buttonWidth = 200;
     int buttonHeight = 50;
-    int buttonY = modalY + 320;
     int purchaseX = modalX + (modalWidth / 2) - buttonWidth - 20;
     int exitX = modalX + (modalWidth / 2) + 20;
     
@@ -3217,418 +3321,683 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
 // ------------------------------------------------------------
 void CheckBarEvents() {
     if (g_barDrinksPurchased >= 5) {
-        // Trigger Rumor
+        // Reset drink counter
         g_barDrinksPurchased = 0; 
         
-        // Select random asteroid (C, D, E, F -> indices 2, 3, 4, 5)
-        int asteroidIdx = GetRandomValue(2, 5); 
+        // Select random asteroid A-C (indices 0-2)
+        int asteroidIdx = GetRandomValue(0, 2); 
         char asteroidChar = 'A' + asteroidIdx;
         
-        // Reduce gravity 8-20%
-        int reduction = GetRandomValue(8, 20);
-        float factor = 1.0f - (reduction / 100.0f);
-        g_gravityScores[asteroidIdx] = (int)(g_gravityScores[asteroidIdx] * factor);
+        // Randomly choose between gravity deduction or prosperity increase
+        bool isGravityReward = (GetRandomValue(0, 1) == 0);
         
-        snprintf(g_barRumorText, sizeof(g_barRumorText), 
-            "After a heavy drinking session with some of the spacers and fellow miners, "
-            "one of the guys lets slip of a secret gravity well operating on Asteroid %c.\n\n"
-            "GRAVITY REDUCED BY %d%%!", asteroidChar, reduction);
+        if (isGravityReward) {
+            // Reduce gravity 8-20% - use location-specific gravity scores
+            int reduction = GetRandomValue(8, 20);
+            float factor = 1.0f - (reduction / 100.0f);
             
-        g_showBarRumorModal = true;
+            int* gravityScores;
+            if (g_currentLocation == 1) {  // Station
+                gravityScores = g_stationGravityScores;
+            } else if (g_currentLocation == 2) {  // Halo
+                gravityScores = g_haloGravityScores;
+            } else {  // Depot
+                gravityScores = g_gravityScores;
+            }
+            
+            int oldGravity = gravityScores[asteroidIdx];
+            gravityScores[asteroidIdx] = (int)(gravityScores[asteroidIdx] * factor);
+            int newGravity = gravityScores[asteroidIdx];
+            
+            snprintf(g_barSuccessText, sizeof(g_barSuccessText), 
+                "AFTER A HEAVY DRINKING SESSION WITH SOME OF THE SPACERS AND FELLOW MINERS, "
+                "ONE OF THE GUYS LETS SLIP OF A SECRET GRAVITY WELL OPERATING ON ASTEROID %c.\n\n"
+                "GRAVITY REDUCED FROM %d%% TO %d%%!", asteroidChar, oldGravity, newGravity);
+        } else {
+            // Increase prosperity 5-15% - use location-specific prospect scores
+            int increase = GetRandomValue(5, 15);
+            
+            int* prospectScores;
+            if (g_currentLocation == 1) {  // Station
+                prospectScores = g_stationProspectScores;
+            } else if (g_currentLocation == 2) {  // Halo
+                prospectScores = g_haloProspectScores;
+            } else {  // Depot
+                prospectScores = g_prospectScores;
+            }
+            
+            int oldProsperity = prospectScores[asteroidIdx];
+            prospectScores[asteroidIdx] = prospectScores[asteroidIdx] + increase;
+            // Cap at 100%
+            if (prospectScores[asteroidIdx] > 100) {
+                prospectScores[asteroidIdx] = 100;
+            }
+            int newProsperity = prospectScores[asteroidIdx];
+            
+            snprintf(g_barSuccessText, sizeof(g_barSuccessText), 
+                "AFTER A HEAVY DRINKING SESSION WITH SOME OF THE SPACERS AND FELLOW MINERS, "
+                "ONE OF THE GUYS SHARES VALUABLE MINING INSIGHTS ABOUT ASTEROID %c.\n\n"
+                "PROSPERITY INCREASED FROM %d%% TO %d%%!", asteroidChar, oldProsperity, newProsperity);
+        }
+            
+        // Start delay timer before showing modal
+        g_barModalDelayTimer = 1.0f;
+        g_barModalPendingType = 5;  // Success modal
     }
 }
 
-void DrawBarModal(int modalX, int modalY, int modalWidth, int modalHeight) {
-    if (g_showBarRumorModal) {
-        // Rumor Modal
-        DrawRetroWindow("RUMOR MILL", modalX, modalY, modalWidth, modalHeight);
-        
-        // Draw Rumor Text (Word Wrapped)
-        int fontSizeDesc = 20;
-        int maxDescWidth = modalWidth - 60;
-        
-        // Simple word wrap logic
-        const char* description = g_barRumorText;
-        int descLen = strlen(description);
-        int currentY = modalY + 80;
-        int lineHeight = 25;
-        
-        char lineBuffer[128];
-        int lastSpace = -1;
-        int currentLineStart = 0;
-        
-        for (int i = 0; i <= descLen; i++) {
-            if (description[i] == ' ' || description[i] == '\0' || description[i] == '\n') {
-                bool isNewline = (description[i] == '\n');
-                int len = i - currentLineStart;
-                strncpy(lineBuffer, &description[currentLineStart], len);
+// ------------------------------------------------------------
+// MODAL: EXIT TO MAIN MENU CONFIRMATION
+// ------------------------------------------------------------
+void DrawExitToMainMenuModal(GameState* state, int* menuSelection) {
+    // Handle ESC to close modal
+    if (CustomIsKeyPressed(KEY_ESCAPE)) {
+        PlayTerminalTypeSound();
+        g_showExitToMainMenuModal = false;
+        g_exitModalSelection = 0; // Reset to YES
+        return;
+    }
+    
+    // Handle modal navigation
+    if (CustomIsKeyPressed(KEY_LEFT)) {
+        PlayTerminalTypeSound();
+        g_exitModalSelection = 0;  // YES
+    }
+    if (CustomIsKeyPressed(KEY_RIGHT)) {
+        PlayTerminalTypeSound();
+        g_exitModalSelection = 1;  // NO
+    }
+    
+    // Handle selection
+    if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
+        PlayTerminalTypeSound();
+        if (g_exitModalSelection == 0) {
+            // YES - reset to beginning (splash screen)
+            g_showExitToMainMenuModal = false;
+            g_exitModalSelection = 0; // Reset
+            ResetState(state, menuSelection, STATE_SPLASH);
+        } else {
+            // NO - close modal
+            g_showExitToMainMenuModal = false;
+            g_exitModalSelection = 0; // Reset to YES
+        }
+    }
+    
+    // Draw modal window (centered on screen)
+    int modalWidth = 600;
+    int modalHeight = 300;
+    int modalX = (VIRTUAL_WIDTH - modalWidth) / 2;
+    int modalY = (VIRTUAL_HEIGHT - modalHeight) / 2;
+    
+    DrawRetroWindow("EXIT TO MAIN MENU", modalX, modalY, modalWidth, modalHeight);
+    
+    // Question text (with word wrapping support)
+    const char* questionText = "EXIT TO MAIN MENU?";
+    int maxTextWidth = modalWidth - 100; // Padding to prevent overlap
+    int textY = modalY + 80;
+    int textBottomY = textY;
+    DrawWordWrappedText(questionText, modalX + 50, textY, maxTextWidth, 20, WHITE, &textBottomY);
+    
+    // Buttons
+    int buttonWidth = 200;
+    int buttonHeight = 50;
+    int buttonY = modalY + 180;
+    int yesX = modalX + (modalWidth / 2) - buttonWidth - 20;
+    int noX = modalX + (modalWidth / 2) + 20;
+    
+    bool yesSelected = (g_exitModalSelection == 0);
+    bool noSelected = (g_exitModalSelection == 1);
+    
+    DrawButton("YES", yesX, buttonY, buttonWidth, buttonHeight, yesSelected);
+    DrawButton("NO", noX, buttonY, buttonWidth, buttonHeight, noSelected);
+}
+
+// MODAL: WELCOME TO SHINJUKU STATION
+void DrawWelcomeModal(GameState* state, int* menuSelection) {
+    // Modal dimensions
+    int modalWidth = 700;
+    int modalHeight = 600;
+    int modalX = (VIRTUAL_WIDTH - modalWidth) / 2;
+    int modalY = (VIRTUAL_HEIGHT - modalHeight) / 2;
+    
+    // Handle ESC or ENTER/SPACE to close modal
+    if (CustomIsKeyPressed(KEY_ESCAPE) || CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
+        PlayTerminalTypeSound();
+        g_showWelcomeModal = false;
+        return;
+    }
+    
+    // Draw modal window - title font size increased by 30% (12 * 1.3 = 15.6, round to 16)
+    DrawRetroWindow("WELCOME TO SHINJUKU STATION", modalX, modalY, modalWidth, modalHeight, 16);
+    
+    // Welcome text - centered and properly spaced
+    int textStartY = modalY + 50;
+    int lineHeight = 24;
+    int fontSize = 12;  // Increased by 30% (was 9)
+    int textCenterX = modalX + modalWidth / 2;
+    int currentY = textStartY;
+    
+    // Title
+    const char* titleText = "WELCOME TO SHINJUKU STATION, SPACER!";
+    int titleW = MeasureTextWithFont(titleText, 19);  // Increased by 25% (was 15)
+    DrawTextWithFont(titleText, textCenterX - titleW / 2, currentY, 19, (Color){0, 255, 255, 255}); // Cyan
+    currentY += lineHeight + 8;
+    
+    // Tips - each line centered with specific colors
+    const char* tips[] = {
+        "YOU NEED A LASER AND A COLLECTOR TO MINE EFFECTIVELY.",
+        "",
+        "WHILE YOU CAN'T AFFORD TO UPGRADE YOUR THRUSTERS YET,",
+        "MAKE SURE YOU CHOOSE AN ASTEROID WITH LOW GRAVITY.",
+        "",
+        "ASTEROIDS ARE ALWAYS MOVING, SO FUEL REQUIRED",
+        "DISTANCES WILL ALWAYS BE CHANGING.",
+        "",
+        "HEAD TO AN ASTEROID ON THE PROSPECT MAP TO LAUNCH.",
+        "",
+        "GET VALUABLE GOSSIP AND ASTEROID DATA FROM",
+        "THE DRUNK SPACERS IN THE BAR.",
+        "",
+        "COMMODITIES IS WHERE YOU SELL THE STUFF YOU COLLECT.",
+        "",
+        "BE CAREFUL WITH A FULL HULL - YOUR SHIP GETS HEAVY.",
+        "",
+        "OUT HERE IN THE OORT CLOUD IT'S DANGEROUS.",
+        "",
+        "ONCE YOU'RE DEAD... YOU'RE DEAD SPACER!"
+    };
+    
+    // Color mapping for specific lines
+    int numTips = sizeof(tips) / sizeof(tips[0]);
+    for (int i = 0; i < numTips; i++) {
+        if (strlen(tips[i]) > 0) {
+            int lineW = MeasureTextWithFont(tips[i], fontSize);
+            Color lineColor = WHITE; // Default color
+            
+            // Set colors for specific lines
+            if (strstr(tips[i], "YOU NEED A LASER AND A COLLECTOR") != NULL) {
+                lineColor = RED; // Red for laser/collector requirement
+            } else if (strstr(tips[i], "HEAD TO AN ASTEROID ON THE PROSPECT MAP") != NULL) {
+                lineColor = (Color){0, 255, 255, 255}; // Cyan for prospect map
+            } else if (strstr(tips[i], "ONCE YOU'RE DEAD") != NULL) {
+                lineColor = RED; // Bright red for death warning
+            }
+            
+            // Center each line
+            DrawTextWithFont(tips[i], textCenterX - lineW / 2, currentY, fontSize, lineColor);
+            currentY += lineHeight;
+        } else {
+            // Empty line - smaller spacing
+            currentY += lineHeight / 2;
+        }
+    }
+    
+    // OKAY button - positioned at bottom with spacing - font size increased by 30% (12 * 1.3 = 15.6, round to 16)
+    int buttonWidth = 200;
+    int buttonHeight = 50;
+    int buttonY = modalY + modalHeight - 60;
+    int buttonX = modalX + (modalWidth - buttonWidth) / 2;
+    
+    if (DrawButton("OKAY", buttonX, buttonY, buttonWidth, buttonHeight, true, 16)) {
+        g_showWelcomeModal = false;
+    }
+}
+
+// Helper function to draw word-wrapped text
+// x, y: starting position
+// maxWidth: maximum width for wrapping (text will be centered within this width)
+// fontSize: font size for text
+// color: text color
+// outY: optional pointer to store final Y position
+void DrawWordWrappedText(const char* text, int x, int y, int maxWidth, int fontSize, Color color, int* outY) {
+    if (!text || strlen(text) == 0) {
+        if (outY) *outY = y;
+        return;
+    }
+    
+    int descLen = strlen(text);
+    int currentY = y;
+    int lineHeight = 25;
+    char lineBuffer[256];
+    int lastSpace = -1;
+    int currentLineStart = 0;
+    
+    for (int i = 0; i <= descLen; i++) {
+        if (text[i] == ' ' || text[i] == '\0' || text[i] == '\n') {
+            bool isNewline = (text[i] == '\n');
+            int len = i - currentLineStart;
+            if (len > 0) {
+                strncpy(lineBuffer, &text[currentLineStart], len);
                 lineBuffer[len] = '\0';
+            } else {
+                lineBuffer[0] = '\0';
+            }
+            
+            if (MeasureTextWithFont(lineBuffer, fontSize) > maxWidth || isNewline) {
+                int printLen = isNewline ? len : (lastSpace - currentLineStart);
+                if (!isNewline && printLen < 0) printLen = len;
+                if (printLen < 0) printLen = 0;
+                if (printLen > 255) printLen = 255;
                 
-                if (MeasureText(lineBuffer, fontSizeDesc) > maxDescWidth || isNewline) {
-                    // Print up to split
-                    int printLen = isNewline ? len : (lastSpace - currentLineStart);
-                    if (!isNewline && printLen < 0) printLen = len; // Single word too long?
-                    
-                    strncpy(lineBuffer, &description[currentLineStart], printLen);
-                    lineBuffer[printLen] = '\0';
-                    
-                    int lineW = MeasureText(lineBuffer, fontSizeDesc);
-                    DrawText(lineBuffer, modalX + (modalWidth - lineW) / 2, currentY, fontSizeDesc, WHITE);
-                    
-                    currentY += lineHeight;
-                    currentLineStart = isNewline ? (i + 1) : (lastSpace + 1);
-                    
-                    if (!isNewline) {
-                        i = lastSpace;
-                        lastSpace = -1;
-                    }
-                } else {
-                    lastSpace = i;
+                strncpy(lineBuffer, &text[currentLineStart], printLen);
+                lineBuffer[printLen] = '\0';
+                
+                int lineW = MeasureTextWithFont(lineBuffer, fontSize);
+                DrawTextWithFont(lineBuffer, x + (maxWidth - lineW) / 2, currentY, fontSize, color);
+                
+                currentY += lineHeight;
+                currentLineStart = isNewline ? (i + 1) : (lastSpace + 1);
+                
+                if (!isNewline) {
+                    i = lastSpace;
+                    lastSpace = -1;
                 }
+            } else {
+                lastSpace = i;
             }
         }
-        if (currentLineStart < descLen) {
-            strncpy(lineBuffer, &description[currentLineStart], descLen - currentLineStart);
-            lineBuffer[descLen - currentLineStart] = '\0';
-            int lineW = MeasureText(lineBuffer, fontSizeDesc);
-            DrawText(lineBuffer, modalX + (modalWidth - lineW) / 2, currentY, fontSizeDesc, WHITE);
+    }
+    if (currentLineStart < descLen) {
+        int remaining = descLen - currentLineStart;
+        if (remaining > 255) remaining = 255;
+        strncpy(lineBuffer, &text[currentLineStart], remaining);
+        lineBuffer[remaining] = '\0';
+        int lineW = MeasureTextWithFont(lineBuffer, fontSize);
+        DrawTextWithFont(lineBuffer, x + (maxWidth - lineW) / 2, currentY, fontSize, color);
+        currentY += lineHeight;
+    }
+    if (outY) *outY = currentY;
+}
+
+// Handle bar modal input (called before drawing)
+void HandleBarModalInput() {
+    // Update bar modal delay timer
+    float dt = GetFrameTime();
+    if (g_barModalDelayTimer > 0.0f) {
+        g_barModalDelayTimer -= dt;
+        if (g_barModalDelayTimer <= 0.0f) {
+            // Timer expired - show the pending modal
+            if (g_barModalPendingType == 1) {
+                g_showBarRumorModal = true;
+            } else if (g_barModalPendingType == 2) {
+                g_showBarGoldCardModal = true;
+            } else if (g_barModalPendingType == 3) {
+                g_showBarGamblingModal = true;
+            } else if (g_barModalPendingType == 4) {
+                g_showBarScientistModal = true;
+            } else if (g_barModalPendingType == 5) {
+                g_showBarSuccessModal = true;
+            }
+            g_barModalPendingType = 0;  // Reset pending type
         }
-        
-        // Exit button
-        DrawButton("OK", modalX + (modalWidth - 200)/2, modalY + 300, 200, 50, true);
-        
+    }
+    
+    // Handle sub-modals first - they can be closed with ENTER/SPACE
+    if (g_showBarRumorModal || g_showBarGoldCardModal || g_showBarGamblingModal || g_showBarScientistModal || g_showBarSuccessModal) {
         if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
             PlayTerminalTypeSound();
             g_showBarRumorModal = false;
-        }
-    } else if (g_showBarGoldCardModal) {
-        // Gold Card Modal
-        DrawRetroWindow("VIP ACCESS", modalX, modalY, modalWidth, modalHeight);
-        
-        int currentY = modalY + 60;
-        DrawText("DRINKS ARE ON THE HOUSE!", modalX + (modalWidth - MeasureText("DRINKS ARE ON THE HOUSE!", 24))/2, currentY, 24, YELLOW);
-        currentY += 40;
-        
-        const char* msg = "The bar erupts in cheers! A shady figure approaches you:\n"
-                          "\"Here's a little something for your generosity...\"\n\n"
-                          "RECEIVED: COMMODITIES GOLD CARD\n"
-                          "(All asteroid gravities reduced by 10%)";
-                          
-        // Simple draw for now (manual wrap)
-        DrawText("The bar erupts in cheers! A shady figure approaches you:", modalX + 30, currentY, 20, WHITE); currentY += 25;
-        DrawText("\"Here's a little something for your generosity...\"", modalX + 30, currentY, 20, WHITE); currentY += 40;
-        DrawText("RECEIVED: COMMODITIES GOLD CARD", modalX + (modalWidth - MeasureText("RECEIVED: COMMODITIES GOLD CARD", 22))/2, currentY, 22, GREEN); currentY += 30;
-        DrawText("(All asteroid gravities reduced by 10%)", modalX + (modalWidth - MeasureText("(All asteroid gravities reduced by 10%)", 20))/2, currentY, 20, (Color){0, 255, 255, 255});
-        
-        DrawButton("AWESOME", modalX + (modalWidth - 200)/2, modalY + 320, 200, 50, true);
-        
-        if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
-            PlayTerminalTypeSound();
             g_showBarGoldCardModal = false;
-        }
-    } else if (g_showBarGamblingModal) {
-        // Gambling Modal (Station only)
-        DrawRetroWindow("SPACE CASINO", modalX, modalY, modalWidth, modalHeight);
-        
-        // Word wrap gambling text
-        int fontSizeDesc = 20;
-        int maxDescWidth = modalWidth - 60;
-        const char* description = g_barGamblingText;
-        int descLen = strlen(description);
-        int currentY = modalY + 80;
-        int lineHeight = 25;
-        
-        char lineBuffer[128];
-        int lastSpace = -1;
-        int currentLineStart = 0;
-        
-        for (int i = 0; i <= descLen; i++) {
-            if (description[i] == ' ' || description[i] == '\0' || description[i] == '\n') {
-                bool isNewline = (description[i] == '\n');
-                int len = i - currentLineStart;
-                strncpy(lineBuffer, &description[currentLineStart], len);
-                lineBuffer[len] = '\0';
-                
-                if (MeasureText(lineBuffer, fontSizeDesc) > maxDescWidth || isNewline) {
-                    int printLen = isNewline ? len : (lastSpace - currentLineStart);
-                    if (!isNewline && printLen < 0) printLen = len;
-                    
-                    strncpy(lineBuffer, &description[currentLineStart], printLen);
-                    lineBuffer[printLen] = '\0';
-                    
-                    int lineW = MeasureText(lineBuffer, fontSizeDesc);
-                    DrawText(lineBuffer, modalX + (modalWidth - lineW) / 2, currentY, fontSizeDesc, WHITE);
-                    
-                    currentY += lineHeight;
-                    currentLineStart = isNewline ? (i + 1) : (lastSpace + 1);
-                    
-                    if (!isNewline) {
-                        i = lastSpace;
-                        lastSpace = -1;
-        }
-    } else {
-                    lastSpace = i;
-                }
-            }
-        }
-        if (currentLineStart < descLen) {
-            strncpy(lineBuffer, &description[currentLineStart], descLen - currentLineStart);
-            lineBuffer[descLen - currentLineStart] = '\0';
-            int lineW = MeasureText(lineBuffer, fontSizeDesc);
-            DrawText(lineBuffer, modalX + (modalWidth - lineW) / 2, currentY, fontSizeDesc, WHITE);
-        }
-        
-        DrawButton("OK", modalX + (modalWidth - 200)/2, modalY + 300, 200, 50, true);
-        
-        if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
-            PlayTerminalTypeSound();
             g_showBarGamblingModal = false;
-        }
-    } else if (g_showBarScientistModal) {
-        // Scientist Chat Modal (Station only)
-        DrawRetroWindow("SCIENTIST TIPS", modalX, modalY, modalWidth, modalHeight);
-        
-        // Word wrap scientist text
-        int fontSizeDesc = 20;
-        int maxDescWidth = modalWidth - 60;
-        const char* description = g_barScientistText;
-        int descLen = strlen(description);
-        int currentY = modalY + 80;
-        int lineHeight = 25;
-        
-        char lineBuffer[128];
-        int lastSpace = -1;
-        int currentLineStart = 0;
-        
-        for (int i = 0; i <= descLen; i++) {
-            if (description[i] == ' ' || description[i] == '\0' || description[i] == '\n') {
-                bool isNewline = (description[i] == '\n');
-                int len = i - currentLineStart;
-                strncpy(lineBuffer, &description[currentLineStart], len);
-                lineBuffer[len] = '\0';
-                
-                if (MeasureText(lineBuffer, fontSizeDesc) > maxDescWidth || isNewline) {
-                    int printLen = isNewline ? len : (lastSpace - currentLineStart);
-                    if (!isNewline && printLen < 0) printLen = len;
-                    
-                    strncpy(lineBuffer, &description[currentLineStart], printLen);
-                    lineBuffer[printLen] = '\0';
-                    
-                    int lineW = MeasureText(lineBuffer, fontSizeDesc);
-                    DrawText(lineBuffer, modalX + (modalWidth - lineW) / 2, currentY, fontSizeDesc, WHITE);
-                    
-                    currentY += lineHeight;
-                    currentLineStart = isNewline ? (i + 1) : (lastSpace + 1);
-                    
-                    if (!isNewline) {
-                        i = lastSpace;
-                        lastSpace = -1;
-                    }
-                } else {
-                    lastSpace = i;
-                }
-            }
-        }
-        if (currentLineStart < descLen) {
-            strncpy(lineBuffer, &description[currentLineStart], descLen - currentLineStart);
-            lineBuffer[descLen - currentLineStart] = '\0';
-            int lineW = MeasureText(lineBuffer, fontSizeDesc);
-            DrawText(lineBuffer, modalX + (modalWidth - lineW) / 2, currentY, fontSizeDesc, WHITE);
-        }
-        
-        DrawButton("OK", modalX + (modalWidth - 200)/2, modalY + 300, 200, 50, true);
-        
-        if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
-            PlayTerminalTypeSound();
             g_showBarScientistModal = false;
+            g_showBarSuccessModal = false;
+            g_barModalPendingType = 0;  // Reset pending type
+            g_barModalDelayTimer = 0.0f;  // Reset timer
         }
+        return; // Don't process main menu input when sub-modal is open
+    }
+    
+    // Get menu options based on location - ensure consistency
+    // Note: Removed delay timer - input should work immediately
+    int numOptions = 4; // Default for Depot and Halo
+    if (g_currentLocation == 1) {
+        numOptions = 5; // Station has 5 options
+    } else if (g_currentLocation == 2) {
+        numOptions = 4; // Halo has 4 options
     } else {
-        // Main Bar Menu (location-specific)
-        const char* barTitle = (g_currentLocation == 1) ? "HIROHITO STATION BAR" : 
-                               (g_currentLocation == 2) ? "NAGAKO'S HALO BAR" : "THE ASTRO BAR";
-        DrawRetroWindow(barTitle, modalX, modalY, modalWidth, modalHeight);
+        numOptions = 4; // Depot has 4 options
+    }
+    
+    // Update max menu items to match current location
+    g_barMaxMenuItems = numOptions;
+    
+    // Validate and fix menu selection before processing input
+    if (g_barMenuSelection >= numOptions) {
+        g_barMenuSelection = numOptions - 1;
+    }
+    if (g_barMenuSelection < 0) {
+        g_barMenuSelection = 0;
+    }
+    
+    // Navigation
+    if (CustomIsKeyPressed(KEY_UP)) {
+        PlayTerminalTypeSound();
+        g_barMenuSelection--;
+        if (g_barMenuSelection < 0) {
+            g_barMenuSelection = numOptions - 1;
+        }
+    }
+    if (CustomIsKeyPressed(KEY_DOWN)) {
+        PlayTerminalTypeSound();
+        g_barMenuSelection++;
+        if (g_barMenuSelection >= numOptions) {
+            g_barMenuSelection = 0;
+        }
+    }
+    
+    // Selection
+    if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
+        PlayTerminalTypeSound();
         
-        // Mood Text
-        if (retroFont.texture.id > 0) {
-            Vector2 moodSize = MeasureTextEx(retroFont, g_barMoods[g_barRandomMood], 18.0f, 0);
-            DrawTextEx(retroFont, g_barMoods[g_barRandomMood],
-                (Vector2){(float)(modalX + (modalWidth - moodSize.x)/2), (float)(modalY + 50)},
-                18.0f, 0, LIGHTGRAY);
-        } else {
-            DrawText(g_barMoods[g_barRandomMood], modalX + (modalWidth - MeasureText(g_barMoods[g_barRandomMood], 18))/2, modalY + 50, 18, LIGHTGRAY);
+        // Validate selection is still in bounds before processing
+        if (g_barMenuSelection < 0 || g_barMenuSelection >= numOptions) {
+            return; // Invalid selection, don't process
         }
         
-        // Menu Options (location-specific)
-        int startY = modalY + 100;
-        int spacing = 50;
-        const char* options[6];
-        int numOptions = 4;
-        
-        if (g_currentLocation == 1) {  // Station
-            options[0] = "BUY ASTRO BREW (5 CR)";
-            options[1] = "TAKE SPACE SHOT (10 CR)";
-            options[2] = "TRY YOUR LUCK (50 CR)";
-            options[3] = "CHAT WITH SCIENTIST (FREE)";
-            options[4] = "LEAVE BAR";
-            numOptions = 5;
-        } else if (g_currentLocation == 2) {  // Halo
-            options[0] = "BUY PREMIUM DRINK (15 CR)";
-            options[1] = "NETWORK WITH TRADERS (100 CR)";
-            options[2] = "LISTEN TO STORIES (FREE)";
-            options[3] = "LEAVE BAR";
-            numOptions = 4;
-        } else {  // Depot
-            options[0] = "BUY ASTRO BREW (5 CR)";
-            options[1] = "TAKE SPACE SHOT (10 CR)";
-            options[2] = "DRINKS ARE ON ME! (1000 CR)";
-            options[3] = "LEAVE BAR";
-            numOptions = 4;
-        }
-        
-        g_barMaxMenuItems = numOptions;
-        
-        for (int i = 0; i < numOptions; i++) {
-            bool selected = (g_barMenuSelection == i);
-            int btnY = startY + i * spacing;
-            DrawButton(options[i], modalX + 50, btnY, modalWidth - 100, 45, selected);
-            
-            if (i == 2 && g_currentLocation == 0 && G_Player.hasGoldCard) {
-                if (retroFont.texture.id > 0) {
-                    DrawTextEx(retroFont, "[OWNED]",
-                        (Vector2){(float)(modalX + modalWidth - 120), (float)(btnY + 12)},
-                        20.0f, 0, GREEN);
-                } else {
-                    DrawText("[OWNED]", modalX + modalWidth - 120, btnY + 12, 20, GREEN);
-                }
-            }
-        }
-        
-        // Status (moved down to avoid overlapping LEAVE BAR button)
-        char status[64];
-        snprintf(status, sizeof(status), "DRINKS: %d/5  CREDITS: %d", g_barDrinksPurchased, G_Player.credits);
-        if (retroFont.texture.id > 0) {
-            Vector2 statusSize = MeasureTextEx(retroFont, status, 20.0f, 0);
-            DrawTextEx(retroFont, status,
-                (Vector2){(float)(modalX + (modalWidth - statusSize.x)/2), (float)(modalY + 380)},
-                20.0f, 0, YELLOW);
-        } else {
-            DrawText(status, modalX + (modalWidth - MeasureText(status, 20))/2, modalY + 380, 20, YELLOW);
-        }
-        
-        // Navigation
-        if (CustomIsKeyPressed(KEY_UP)) {
-            g_barMenuSelection--;
-            if (g_barMenuSelection < 0) g_barMenuSelection = numOptions - 1;
-        }
-        if (CustomIsKeyPressed(KEY_DOWN)) {
-            g_barMenuSelection++;
-            if (g_barMenuSelection >= numOptions) g_barMenuSelection = 0;
-        }
-        
-        // Selection
-        if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
-            PlayTerminalTypeSound();
-            if (g_currentLocation == 1) {  // Station
-                if (g_barMenuSelection == 0) { // Beer
-                    if (G_Player.credits >= 5) {
-                        G_Player.credits -= 5;
-                        g_barDrinksPurchased++;
-                        CheckBarEvents();
-                    }
-                } else if (g_barMenuSelection == 1) { // Shot
-                    if (G_Player.credits >= 10) {
-                        G_Player.credits -= 10;
-                        g_barDrinksPurchased++;
-                        CheckBarEvents();
-                    }
-                } else if (g_barMenuSelection == 2) { // Gambling
-                    if (G_Player.credits >= 50) {
-                        G_Player.credits -= 50;
-                        int winAmount = GetRandomValue(0, 200);  // 0-200 credits
-                        G_Player.credits += winAmount;
-                        if (winAmount > 0) {
-                            snprintf(g_barGamblingText, sizeof(g_barGamblingText),
-                                "You place your bet and spin the wheel...\n\n"
-                                "LUCKY! You won %d credits!", winAmount);
-                        } else {
-                            snprintf(g_barGamblingText, sizeof(g_barGamblingText),
-                                "You place your bet and spin the wheel...\n\n"
-                                "Better luck next time! You lost 50 credits.");
-                        }
-                        g_showBarGamblingModal = true;
-                    }
-                } else if (g_barMenuSelection == 3) { // Scientist chat
-                    // 30% thruster boost, rounded down to nearest 10% = 20%
-                    float boost = G_Player.thrusterBoost * 1.2f;  // 20% boost
-                    if (boost > G_Player.thrusterBoost) {
-                        G_Player.thrusterBoost = boost;
-                        snprintf(g_barScientistText, sizeof(g_barScientistText),
-                            "You chat with a scientist on their way to a research station.\n\n"
-                            "They share some tips on improving your ship's thrusters.\n\n"
-                            "THRUSTER BOOST INCREASED BY 20%%!");
-                        g_showBarScientistModal = true;
-                    } else {
-                        snprintf(g_barScientistText, sizeof(g_barScientistText),
-                            "You chat with a scientist, but they have no new tips for you.");
-                        g_showBarScientistModal = true;
-                    }
-                } else if (g_barMenuSelection == 4) { // Leave
-                    g_showBarView = false;
-                    g_barDrinksPurchased = 0;
-                    g_depotHomePage = 1;
-                }
-            } else if (g_currentLocation == 2) {  // Halo
-                if (g_barMenuSelection == 0) { // Premium drink
-                    if (G_Player.credits >= 15) {
-                        G_Player.credits -= 15;
-                        g_barDrinksPurchased++;
-                        CheckBarEvents();
-                    }
-                } else if (g_barMenuSelection == 1) { // Network with traders
-                    if (G_Player.credits >= 100) {
-                        G_Player.credits -= 100;
-                        // Could add trader benefits here
-                        g_barDrinksPurchased++;
-                        CheckBarEvents();
-                    }
-                } else if (g_barMenuSelection == 2) { // Listen to stories
-                    // Free - just socialize
-                    g_barDrinksPurchased++;
-                    CheckBarEvents();
-                } else if (g_barMenuSelection == 3) { // Leave
-                    g_showBarView = false;
-                    g_barDrinksPurchased = 0;
-                    g_depotHomePage = 1;
-                }
-            } else {  // Depot
-            if (g_barMenuSelection == 0) { // Beer
+        if (g_currentLocation == 1) {  // Station - Hirohito Station Bar
+            if (g_barMenuSelection == 0) { // Buy Astro Brew (5 CR)
                 if (G_Player.credits >= 5) {
                     G_Player.credits -= 5;
                     g_barDrinksPurchased++;
                     CheckBarEvents();
                 }
-            } else if (g_barMenuSelection == 1) { // Shot
+            } else if (g_barMenuSelection == 1) { // Take Space Shot (10 CR)
                 if (G_Player.credits >= 10) {
                     G_Player.credits -= 10;
                     g_barDrinksPurchased++;
                     CheckBarEvents();
                 }
-            } else if (g_barMenuSelection == 2) { // Drinks on me
+            } else if (g_barMenuSelection == 2) { // Try Your Luck (50 CR) - Gambling
+                if (G_Player.credits >= 50) {
+                    G_Player.credits -= 50;
+                    int winAmount = GetRandomValue(0, 200);
+                    G_Player.credits += winAmount;
+                    if (winAmount > 0) {
+                        snprintf(g_barGamblingText, sizeof(g_barGamblingText),
+                            "YOU PLACE YOUR BET AND SPIN THE WHEEL...\n\n"
+                            "LUCKY! YOU WON %d CREDITS!", winAmount);
+                    } else {
+                        snprintf(g_barGamblingText, sizeof(g_barGamblingText),
+                            "YOU PLACE YOUR BET AND SPIN THE WHEEL...\n\n"
+                            "BETTER LUCK NEXT TIME! YOU LOST 50 CREDITS.");
+                    }
+                    // Start delay timer before showing modal
+                    g_barModalDelayTimer = 1.0f;
+                    g_barModalPendingType = 3;  // Gambling modal
+                }
+            } else if (g_barMenuSelection == 3) { // Chat with Scientist (FREE)
+                float boost = G_Player.thrusterBoost * 1.2f;
+                if (boost > G_Player.thrusterBoost) {
+                    G_Player.thrusterBoost = boost;
+                    snprintf(g_barScientistText, sizeof(g_barScientistText),
+                        "YOU CHAT WITH A SCIENTIST ON THEIR WAY TO A RESEARCH STATION.\n\n"
+                        "THEY SHARE SOME TIPS ON IMPROVING YOUR SHIP'S THRUSTERS.\n\n"
+                        "THRUSTER BOOST INCREASED BY 20%%!");
+                } else {
+                    snprintf(g_barScientistText, sizeof(g_barScientistText),
+                        "YOU CHAT WITH A SCIENTIST, BUT THEY HAVE NO NEW TIPS FOR YOU.");
+                }
+                // Start delay timer before showing modal
+                g_barModalDelayTimer = 1.0f;
+                g_barModalPendingType = 4;  // Scientist modal
+            } else if (g_barMenuSelection == 4) { // Leave Bar
+                g_showBarView = false;
+                g_barDrinksPurchased = 0;
+                g_barMenuSelection = 0;
+                g_depotHomePage = 1;
+            }
+        } else if (g_currentLocation == 2) {  // Halo - Nagako's Halo Bar
+            if (g_barMenuSelection == 0) { // Buy Premium Drink (15 CR)
+                if (G_Player.credits >= 15) {
+                    G_Player.credits -= 15;
+                    g_barDrinksPurchased++;
+                    CheckBarEvents();
+                }
+            } else if (g_barMenuSelection == 1) { // Network with Traders (100 CR)
+                if (G_Player.credits >= 100) {
+                    G_Player.credits -= 100;
+                    g_barDrinksPurchased++;
+                    CheckBarEvents();
+                }
+            } else if (g_barMenuSelection == 2) { // Listen to Stories (FREE)
+                g_barDrinksPurchased++;
+                CheckBarEvents();
+            } else if (g_barMenuSelection == 3) { // Leave Bar
+                g_showBarView = false;
+                g_barDrinksPurchased = 0;
+                g_barMenuSelection = 0;
+                g_depotHomePage = 1;
+            }
+        } else {  // Depot - The Astro Bar
+            if (g_barMenuSelection == 0) { // Buy Astro Brew (5 CR)
+                if (G_Player.credits >= 5) {
+                    G_Player.credits -= 5;
+                    g_barDrinksPurchased++;
+                    CheckBarEvents();
+                }
+            } else if (g_barMenuSelection == 1) { // Take Space Shot (10 CR)
+                if (G_Player.credits >= 10) {
+                    G_Player.credits -= 10;
+                    g_barDrinksPurchased++;
+                    CheckBarEvents();
+                }
+            } else if (g_barMenuSelection == 2) { // Drinks Are On Me! (1000 CR)
                 if (G_Player.credits >= 1000 && !G_Player.hasGoldCard) {
                     G_Player.credits -= 1000;
                     G_Player.hasGoldCard = true;
-                    for(int i=0; i<6; i++) {
-                        g_gravityScores[i] = (int)(g_gravityScores[i] * 0.9f);
-                    }
-                    g_showBarGoldCardModal = true;
+                    // Start delay timer before showing modal
+                    g_barModalDelayTimer = 1.0f;
+                    g_barModalPendingType = 2;  // Gold card modal
                 }
-            } else if (g_barMenuSelection == 3) { // Leave
+            } else if (g_barMenuSelection == 3) { // Leave Bar
                 g_showBarView = false;
                 g_barDrinksPurchased = 0;
-                    g_depotHomePage = 1;
-                }
+                g_barMenuSelection = 0;
+                g_depotHomePage = 1;
             }
         }
+    }
+}
+
+void DrawBarModal(int modalX, int modalY, int modalWidth, int modalHeight) {
+    // Note: Input is now handled in DrawPageDepotHome() update phase, not here
+    
+    // Draw sub-modals - these take priority and block main menu
+    if (g_showBarRumorModal) {
+        DrawRetroWindow("RUMOR MILL", modalX, modalY, modalWidth, modalHeight);
+        // Center text on OK button - OK button is centered at modalX + modalWidth/2
+        // Text should be centered within modalWidth - 100, starting at modalX + 50 (increased padding to prevent overlap)
+        // Position text higher to avoid overlap with button
+        int textY = modalY + 70;
+        int textBottomY = textY;
+        // Text increased by 25% (12 * 1.25 = 15)
+        DrawWordWrappedText(g_barRumorText, modalX + 50, textY, modalWidth - 100, 15, WHITE, &textBottomY);
+        // Position OK button below text with proper spacing (at least 20px gap) - font size increased by 25% (12 * 1.25 = 15)
+        int buttonY = textBottomY + 30;
+        if (buttonY > modalY + modalHeight - 70) buttonY = modalY + modalHeight - 70; // Ensure button fits
+        DrawButton("OK", modalX + (modalWidth - 200)/2, buttonY, 200, 50, true, 15);
+        return;
+    }
+    
+    if (g_showBarGoldCardModal) {
+        DrawRetroWindow("VIP ACCESS", modalX, modalY, modalWidth, modalHeight);
+        // Use word wrapping for all text to prevent overlap
+        int textCenterX = modalX + modalWidth/2;
+        int maxTextWidth = modalWidth - 100; // Padding to prevent overlap
+        int currentY = modalY + 70;
+        int textBottomY = currentY;
+        
+        // Title - use word wrapping in case it's too long - increased by 25% (15 * 1.25 = 18.75, round to 19)
+        const char* titleText = "DRINKS ARE ON THE HOUSE!";
+        DrawWordWrappedText(titleText, modalX + 50, currentY, maxTextWidth, 19, YELLOW, &textBottomY);
+        currentY = textBottomY + 20;
+        
+        // Multi-line text with word wrapping - increased by 25% (12 * 1.25 = 15)
+        const char* line1Text = "THE BAR ERUPTS IN CHEERS! A SHADY FIGURE APPROACHES YOU:";
+        DrawWordWrappedText(line1Text, modalX + 50, currentY, maxTextWidth, 15, WHITE, &textBottomY);
+        currentY = textBottomY + 15;
+        
+        const char* line2Text = "\"HERE'S A LITTLE SOMETHING FOR YOUR GENEROSITY...\"";
+        DrawWordWrappedText(line2Text, modalX + 50, currentY, maxTextWidth, 15, WHITE, &textBottomY);
+        currentY = textBottomY + 20;
+        
+        const char* cardText = "RECEIVED: COMMODITIES GOLD CARD";
+        // Increased by 25% (14 * 1.25 = 17.5, round to 18)
+        DrawWordWrappedText(cardText, modalX + 50, currentY, maxTextWidth, 18, GREEN, &textBottomY);
+        currentY = textBottomY + 20;
+        
+        const char* bonusText = "(ALL COMMODITY SELL VALUES INCREASED BY 20%)";
+        DrawWordWrappedText(bonusText, modalX + 50, currentY, maxTextWidth, 15, (Color){0, 255, 255, 255}, &textBottomY);
+        
+        // Position button with proper spacing below text - font size increased by 25% (12 * 1.25 = 15)
+        int buttonY = textBottomY + 30;
+        if (buttonY > modalY + modalHeight - 70) buttonY = modalY + modalHeight - 70; // Ensure button fits
+        DrawButton("AWESOME", modalX + (modalWidth - 200)/2, buttonY, 200, 50, true, 15);
+        return;
+    }
+    
+    if (g_showBarGamblingModal) {
+        DrawRetroWindow("SPACE CASINO", modalX, modalY, modalWidth, modalHeight);
+        // Center text on OK button - OK button is centered at modalX + modalWidth/2
+        // Text should be centered within modalWidth - 100, starting at modalX + 50 (increased padding to prevent overlap)
+        // Position text higher to avoid overlap with button
+        int textY = modalY + 70;
+        int textBottomY = textY;
+        // Text increased by 25% (12 * 1.25 = 15)
+        DrawWordWrappedText(g_barGamblingText, modalX + 50, textY, modalWidth - 100, 15, WHITE, &textBottomY);
+        // Position OK button below text with proper spacing - font size increased by 25% (12 * 1.25 = 15)
+        int buttonY = textBottomY + 30;
+        if (buttonY > modalY + modalHeight - 70) buttonY = modalY + modalHeight - 70; // Ensure button fits
+        DrawButton("OK", modalX + (modalWidth - 200)/2, buttonY, 200, 50, true, 15);
+        return;
+    }
+    
+    if (g_showBarScientistModal) {
+        DrawRetroWindow("SCIENTIST TIPS", modalX, modalY, modalWidth, modalHeight);
+        // Center text on OK button - OK button is centered at modalX + modalWidth/2
+        // Text should be centered within modalWidth - 100, starting at modalX + 50 (increased padding to prevent overlap)
+        // Position text higher to avoid overlap with button
+        int textY = modalY + 70;
+        int textBottomY = textY;
+        // Text increased by 25% (12 * 1.25 = 15)
+        DrawWordWrappedText(g_barScientistText, modalX + 50, textY, modalWidth - 100, 15, WHITE, &textBottomY);
+        // Position OK button below text with proper spacing - font size increased by 25% (12 * 1.25 = 15)
+        int buttonY = textBottomY + 30;
+        if (buttonY > modalY + modalHeight - 70) buttonY = modalY + modalHeight - 70; // Ensure button fits
+        DrawButton("OK", modalX + (modalWidth - 200)/2, buttonY, 200, 50, true, 15);
+        return;
+    }
+    
+    if (g_showBarSuccessModal) {
+        DrawRetroWindow("SUCCESS!", modalX, modalY, modalWidth, modalHeight);
+        // Center text on OK button - OK button is centered at modalX + modalWidth/2
+        // Text should be centered within modalWidth - 100, starting at modalX + 50 (increased padding to prevent overlap)
+        // Position text higher to avoid overlap with button
+        int textY = modalY + 70;
+        int textBottomY = textY;
+        // Text increased by 25% (12 * 1.25 = 15)
+        DrawWordWrappedText(g_barSuccessText, modalX + 50, textY, modalWidth - 100, 15, WHITE, &textBottomY);
+        // Position OK button below text with proper spacing - font size increased by 25% (12 * 1.25 = 15)
+        int buttonY = textBottomY + 30;
+        if (buttonY > modalY + modalHeight - 70) buttonY = modalY + modalHeight - 70; // Ensure button fits
+        DrawButton("OK", modalX + (modalWidth - 200)/2, buttonY, 200, 50, true, 15);
+        return;
+    }
+    
+    // Main Bar Menu - determine title and options based on location
+    const char* barTitle;
+    const char* options[6];
+    int numOptions;
+    
+    if (g_currentLocation == 1) {  // Station - Hirohito Station Bar
+        barTitle = "HIROHITO STATION BAR";
+        options[0] = "BUY ASTRO BREW (5 CR)";
+        options[1] = "TAKE SPACE SHOT (10 CR)";
+        options[2] = "TRY YOUR LUCK (50 CR)";
+        options[3] = "CHAT WITH SCIENTIST (FREE)";
+        options[4] = "LEAVE BAR";
+        numOptions = 5;
+    } else if (g_currentLocation == 2) {  // Halo - Nagako's Halo Bar
+        barTitle = "NAGAKO'S HALO BAR";
+        options[0] = "BUY PREMIUM DRINK (15 CR)";
+        options[1] = "NETWORK WITH TRADERS (100 CR)";
+        options[2] = "LISTEN TO STORIES (FREE)";
+        options[3] = "LEAVE BAR";
+        numOptions = 4;
+    } else {  // Depot - The Astro Bar
+        barTitle = "THE ASTRO BAR";
+        options[0] = "BUY ASTRO BREW (5 CR)";
+        options[1] = "TAKE SPACE SHOT (10 CR)";
+        options[2] = "DRINKS ARE ON ME! (1000 CR)";
+        options[3] = "LEAVE BAR";
+        numOptions = 4;
+    }
+    
+    // Ensure menu selection is valid for current location
+    if (g_barMenuSelection >= numOptions) {
+        g_barMenuSelection = numOptions - 1;
+    }
+    if (g_barMenuSelection < 0) {
+        g_barMenuSelection = 0;
+    }
+    
+    // Update max menu items to match current location
+    g_barMaxMenuItems = numOptions;
+    
+    // Draw the main bar window
+    DrawRetroWindow(barTitle, modalX, modalY, modalWidth, modalHeight);
+    
+    // Mood Text - centered at top - increased by 25% (11 * 1.25 = 13.75, round to 14)
+    if (retroFont.texture.id > 0) {
+        Vector2 moodSize = MeasureTextEx(retroFont, g_barMoods[g_barRandomMood], 14.0f, 0);
+        DrawTextEx(retroFont, g_barMoods[g_barRandomMood],
+            (Vector2){(float)(modalX + (modalWidth - moodSize.x)/2), (float)(modalY + 50)},
+            14.0f, 0, LIGHTGRAY);
+    } else {
+        DrawTextWithFont(g_barMoods[g_barRandomMood], modalX + (modalWidth - MeasureTextWithFont(g_barMoods[g_barRandomMood], 14))/2, modalY + 50, 14, LIGHTGRAY);
+    }
+    
+    // Draw menu options - ensure proper spacing to avoid overlap with status bar
+    int startY = modalY + 100;
+    int spacing = 50;
+    
+    // Calculate last button position to ensure status bar doesn't overlap
+    int lastButtonY = startY + (numOptions - 1) * spacing;
+    int lastButtonBottom = lastButtonY + 45; // Button height is 45
+    
+    for (int i = 0; i < numOptions; i++) {
+        bool selected = (g_barMenuSelection == i);
+        int btnY = startY + i * spacing;
+        // Button text increased by 25% (12 * 1.25 = 15)
+        DrawButton(options[i], modalX + 50, btnY, modalWidth - 100, 45, selected, 15);
+        
+        // Show [OWNED] indicator for Gold Card option in Depot if already owned - increased by 25% (12 * 1.25 = 15)
+        if (i == 2 && g_currentLocation == 0 && G_Player.hasGoldCard) {
+            if (retroFont.texture.id > 0) {
+                DrawTextEx(retroFont, "[OWNED]",
+                    (Vector2){(float)(modalX + modalWidth - 120), (float)(btnY + 12)},
+                    15.0f, 0, GREEN);
+            } else {
+                DrawTextWithFont("[OWNED]", modalX + modalWidth - 120, btnY + 12, 15, GREEN);
+            }
+        }
+    }
+    
+    // Status bar at bottom - ensure it doesn't overlap with buttons (at least 20px gap)
+    int statusY = lastButtonBottom + 25; // 25px gap after last button
+    if (statusY > modalY + modalHeight - 30) {
+        statusY = modalY + modalHeight - 30; // Ensure status fits in modal
+    }
+    char status[64];
+    snprintf(status, sizeof(status), "CREDITS: %d", G_Player.credits);
+    // Status text increased by 25% (13 * 1.25 = 16.25, round to 16)
+    if (retroFont.texture.id > 0) {
+        Vector2 statusSize = MeasureTextEx(retroFont, status, 16.0f, 0);
+        DrawTextEx(retroFont, status,
+            (Vector2){(float)(modalX + (modalWidth - statusSize.x)/2), (float)statusY},
+            16.0f, 0, YELLOW);
+    } else {
+        DrawTextWithFont(status, modalX + (modalWidth - MeasureTextWithFont(status, 16))/2, statusY, 16, YELLOW);
     }
 }
 
@@ -3703,26 +4072,26 @@ void DrawDepotStats(int statsYOffset) {
     rankUpper[i] = '\0';
     
     if (retroFont.texture.id > 0) {
-        DrawTextEx(retroFont, rankUpper, (Vector2){(float)pilotDataX, (float)pilotDataY}, 24, 0, WHITE);
+        DrawTextEx(retroFont, rankUpper, (Vector2){(float)pilotDataX, (float)pilotDataY}, 14, 0, WHITE);
     } else {
-        DrawText(rankUpper, pilotDataX, pilotDataY, 24, WHITE);
+        DrawTextWithFont(rankUpper, pilotDataX, pilotDataY, 14, WHITE);
     }
     
     char creditsText[32];
     snprintf(creditsText, sizeof(creditsText), "%d", G_Player.credits);
     if (retroFont.texture.id > 0) {
-        DrawTextEx(retroFont, creditsText, (Vector2){(float)pilotDataX, (float)pilotDataY + 30}, 24, 0, WHITE);  // Moved down 5px (from +25 to +30)
+        DrawTextEx(retroFont, creditsText, (Vector2){(float)pilotDataX, (float)pilotDataY + 30}, 14, 0, WHITE);  // Moved down 5px (from +25 to +30)
     } else {
-        DrawText(creditsText, pilotDataX, pilotDataY + 30, 24, WHITE);  // Moved down 5px (from +25 to +30)
+        DrawTextWithFont(creditsText, pilotDataX, pilotDataY + 30, 14, WHITE);  // Moved down 5px (from +25 to +30)
     }
     
     // CARGO DATA section (middle bottom) - Display collected commodities (no header, all caps)
     int cargoDataX = VIRTUAL_WIDTH / 2 - 200 + 160;  // Moved right 10px (from 150 to 160)
     int cargoDataY = VIRTUAL_HEIGHT - 120 + statsYOffset - 12;  // Moved down 3px (from -15 to -12)
-    int cargoLineHeight = 16;
-    int maxCargoLines = 6;  // Show up to 6 commodities
+    int cargoLineHeight = 22; // Tight spacing - font size is 20, so 22 gives minimal gap
+    int maxCargoLines = 5;  // Show only first 5 commodities
     
-    // Display commodities that player has collected (all caps, no header)
+    // Display commodities that player has collected (all caps, no header) - limit to first 5
     int cargoLine = 0;
     for (int i = 0; i < NUM_COMMODITIES && cargoLine < maxCargoLines; i++) {
         if (G_Player.inventory[i] > 0) {
@@ -3741,43 +4110,48 @@ void DrawDepotStats(int statsYOffset) {
             int yPos = cargoDataY + (cargoLine * cargoLineHeight);
             
             if (retroFont.texture.id > 0) {
-                DrawTextEx(retroFont, cargoText, (Vector2){(float)cargoDataX, (float)yPos}, 16, 0, (Color){200, 200, 255, 255});
+                DrawTextEx(retroFont, cargoText, (Vector2){(float)cargoDataX, (float)yPos}, 12, 0, (Color){200, 200, 255, 255});
             } else {
-                DrawText(cargoText, cargoDataX, yPos, 16, (Color){200, 200, 255, 255});
+                DrawTextWithFont(cargoText, cargoDataX, yPos, 12, (Color){200, 200, 255, 255});
             }
             cargoLine++;
+            
+            // Stop after displaying 5 items
+            if (cargoLine >= maxCargoLines) break;
         }
     }
     
     // If no cargo, show empty message
     if (cargoLine == 0) {
         const char* emptyText = "EMPTY";
-        int yPos = cargoDataY + 5;  // Moved down 5px
+        int yPos = cargoDataY + 2;  // Moved down 2px
         if (retroFont.texture.id > 0) {
-            DrawTextEx(retroFont, emptyText, (Vector2){(float)cargoDataX, (float)yPos}, 16, 0, GRAY);
+            DrawTextEx(retroFont, emptyText, (Vector2){(float)cargoDataX, (float)yPos}, 13, 0, GRAY);
         } else {
-            DrawText(emptyText, cargoDataX, yPos, 16, GRAY);
+            DrawTextWithFont(emptyText, cargoDataX, yPos, 13, GRAY);
         }
     }
 }
 
 void HandleDepotInput(GameState* state, int* menuSelection) {
-    // Handle Page Switching (Up/Down Arrows)
-    if (CustomIsKeyPressed(KEY_DOWN)) {
-        g_depotHomePage++;
-        if (g_depotHomePage > 4) g_depotHomePage = 1;
-        // Reset overlay states when changing pages
-        g_showProspectAsteroids = false;
-        g_showShipyardShop = false;
-        g_showCommoditiesMarket = false;
-        g_showBarView = false;
-    }
-    if (CustomIsKeyPressed(KEY_UP)) {
-        g_depotHomePage--;
-        if (g_depotHomePage < 1) g_depotHomePage = 4;
-        g_showProspectAsteroids = false;
-        g_showShipyardShop = false;
-        g_showBarView = false;
+    // Handle Page Switching (Up/Down Arrows) - but NOT when bar view is open (bar needs UP/DOWN for menu navigation)
+    if (!g_showBarView) {
+        if (CustomIsKeyPressed(KEY_DOWN)) {
+            g_depotHomePage++;
+            if (g_depotHomePage > 4) g_depotHomePage = 1;
+            // Reset overlay states when changing pages
+            g_showProspectAsteroids = false;
+            g_showShipyardShop = false;
+            g_showCommoditiesMarket = false;
+            g_showBarView = false;
+        }
+        if (CustomIsKeyPressed(KEY_UP)) {
+            g_depotHomePage--;
+            if (g_depotHomePage < 1) g_depotHomePage = 4;
+            g_showProspectAsteroids = false;
+            g_showShipyardShop = false;
+            g_showBarView = false;
+        }
     }
 }
 
@@ -3818,22 +4192,63 @@ Texture2D* GetDepotPageTexture() {
 void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, Vector3* shipVel) {
     // Simulate left arrow key press immediately when returning to depot/station/halo to exit previous page
     static GameState lastState = STATE_SPLASH;
+    static int enteringStationSoundPlayCount = 0; // Track how many times we've played (0, 1, or 2)
+    bool justEnteredHome = false;
+    bool isInHomeState = (*state == STATE_DEPOT_HOME || *state == STATE_STATION_HOME || *state == STATE_HALO_HOME);
+    
     if ((lastState != STATE_DEPOT_HOME && *state == STATE_DEPOT_HOME) ||
         (lastState != STATE_STATION_HOME && *state == STATE_STATION_HOME) ||
         (lastState != STATE_HALO_HOME && *state == STATE_HALO_HOME)) {
-        // Just entered home state - simulate left arrow press immediately
+        // Just entered home state
+        justEnteredHome = true;
+        // Reset the play count when entering a new home state
+        enteringStationSoundPlayCount = 0;
+        // Simulate left arrow press immediately
         if (KEY_LEFT >= 0 && KEY_LEFT < 512) {
             g_inputState.keysPressed[KEY_LEFT] = true;
         }
     }
+    
+    // Play entering station sound when entering from splash (new game) or from 3D environment
+    // Play it twice: once immediately, then again after the first finishes
+    if (isInHomeState && (lastState == STATE_SPLASH || lastState == STATE_LANDER || 
+                          lastState == STATE_DEBRIS || lastState == STATE_NAV_SCREEN)) {
+        if (g_enteringStationSound.frameCount > 0 && !IsSoundPlaying(g_enteringStationSound)) {
+            if (enteringStationSoundPlayCount == 0) {
+                // Play first instance
+                PlaySound(g_enteringStationSound);
+                enteringStationSoundPlayCount = 1;
+            } else if (enteringStationSoundPlayCount == 1) {
+                // First instance finished, play second instance
+                PlaySound(g_enteringStationSound);
+                enteringStationSoundPlayCount = 2; // Mark as complete
+            }
+        }
+    }
+    
+    // Reset play count if we leave the home state
+    if (!isInHomeState) {
+        enteringStationSoundPlayCount = 0;
+    }
+    
     lastState = *state;
     
     // 1. Clear Background
     ClearBackground(BLACK);
     
-    // Handle ESC key - close modal/prospect view/shop view first, then go back
+    // Handle ESC key - close modal/prospect view/shop view first, then show exit modal, then go back
     if (CustomIsKeyPressed(KEY_ESCAPE)) {
-        if (g_showNoCommodityModal) {
+        if (g_showWelcomeModal) {
+            // Close welcome modal
+            PlayTerminalTypeSound();
+            g_showWelcomeModal = false;
+            return;
+        } else if (g_showExitToMainMenuModal) {
+            // Close exit modal
+            g_showExitToMainMenuModal = false;
+            g_exitModalSelection = 0; // Reset to YES
+            return;
+        } else if (g_showNoCommodityModal) {
             // Close no commodity modal first
             g_showNoCommodityModal = false;
             return;
@@ -3863,13 +4278,30 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
             g_depotHomePage = 1;
             return;
         } else if (g_showBarView) {
-            // Close bar view and go back to Depot_Home page 1
-            if (!g_showBarRumorModal && !g_showBarGoldCardModal) {
-                g_showBarView = false;
-                g_barDrinksPurchased = 0; // Reset drinks when leaving
-                g_depotHomePage = 1;
+            // Close bar modals first if any are open
+            if (g_showBarRumorModal || g_showBarGoldCardModal || g_showBarGamblingModal || g_showBarScientistModal || g_showBarSuccessModal) {
+                PlayTerminalTypeSound();
+                g_showBarRumorModal = false;
+                g_showBarGoldCardModal = false;
+                g_showBarGamblingModal = false;
+                g_showBarScientistModal = false;
+                g_showBarSuccessModal = false;
+                g_barModalPendingType = 0;  // Reset pending type
+                g_barModalDelayTimer = 0.0f;  // Reset timer
                 return;
             }
+            // Close bar view and go back to Depot_Home page 1
+            PlayTerminalTypeSound();
+            g_showBarView = false;
+            g_barDrinksPurchased = 0; // Reset drinks when leaving
+            g_barMenuSelection = 0; // Reset menu selection
+            g_depotHomePage = 1;
+            return;
+        } else if (isInHomeState) {
+            // Show exit to main menu modal when in home state
+            g_showExitToMainMenuModal = true;
+            g_exitModalSelection = 0; // Default to YES
+            return;
         } else {
             // Navigate back to previous state
             HandleESCNavigation(state, menuSelection);
@@ -3877,8 +4309,12 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
         }
     }
     
-    // Handle Enter key on page 1 to toggle asteroid prospect view (disabled when modal is open)
-    if (g_depotHomePage == 1 && !g_showAsteroidModal && CustomIsKeyPressed(KEY_ENTER)) {
+    // Block input when welcome modal is open (except ESC/ENTER/SPACE handled above)
+    if (g_showWelcomeModal) {
+        // Skip all other input processing - modal handles its own input
+    } else {
+        // Handle Enter key on page 1 to toggle asteroid prospect view (disabled when modal is open)
+        if (g_depotHomePage == 1 && !g_showAsteroidModal && CustomIsKeyPressed(KEY_ENTER)) {
         PlayTerminalTypeSound();
         g_showProspectAsteroids = !g_showProspectAsteroids;
         if (g_showProspectAsteroids) {
@@ -3915,12 +4351,24 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
             g_showBarView = true;
             g_barModalTimer = 0.0f; // Start fresh delay before showing options
             g_barDrinksPurchased = 0;
+            g_barMenuSelection = 0; // Reset menu selection to first item
             g_barRandomMood = GetRandomValue(0, g_numBarMoods - 1);
-        } else {
-            // If already showing bar view, close it? Or handled by ESC?
-            // Let's assume ESC is for exit, Enter enters.
-            // But if user presses Enter again inside bar... maybe nothing or interact with modal?
-            // Modal interaction is handled separately.
+            
+            // Set max menu items based on current location
+            if (g_currentLocation == 1) {
+                g_barMaxMenuItems = 5; // Station has 5 options
+            } else {
+                g_barMaxMenuItems = 4; // Halo and Depot have 4 options
+            }
+            
+            // Close any open modals when entering bar
+            g_showBarRumorModal = false;
+            g_showBarGoldCardModal = false;
+            g_showBarGamblingModal = false;
+            g_showBarScientistModal = false;
+            g_showBarSuccessModal = false;
+            g_barModalPendingType = 0;  // Reset pending type
+            g_barModalDelayTimer = 0.0f;  // Reset timer
         }
     }
     
@@ -3946,6 +4394,9 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
         
         if (CustomIsKeyPressed(KEY_A)) {
             PlayTerminalTypeSound();
+            // Close fuel warning modal if open
+            g_showFuelWarningModal = false;
+            g_fuelCheckFailed = false;
             g_prospectPageOverlay = 1;  // A
             g_selectedAsteroidIndex = 0;  // A = index 0
             g_selectedAsteroidFuelCost = GetRandomValue(fuelMin, fuelMax);
@@ -3953,9 +4404,11 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
             g_selectedAsteroidProspect = prospectScores[0];
             g_showAsteroidModal = true;
             g_modalSelection = 0;
-            g_fuelCheckFailed = false;
         } else if (CustomIsKeyPressed(KEY_B)) {
             PlayTerminalTypeSound();
+            // Close fuel warning modal if open
+            g_showFuelWarningModal = false;
+            g_fuelCheckFailed = false;
             g_prospectPageOverlay = 2;  // B
             g_selectedAsteroidIndex = 1;
             g_selectedAsteroidFuelCost = GetRandomValue(fuelMin, fuelMax);
@@ -3963,9 +4416,11 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
             g_selectedAsteroidProspect = prospectScores[1];
             g_showAsteroidModal = true;
             g_modalSelection = 0;
-            g_fuelCheckFailed = false;
         } else if (CustomIsKeyPressed(KEY_C)) {
             PlayTerminalTypeSound();
+            // Close fuel warning modal if open
+            g_showFuelWarningModal = false;
+            g_fuelCheckFailed = false;
             g_prospectPageOverlay = 3;  // C
             g_selectedAsteroidIndex = 2;
             g_selectedAsteroidFuelCost = GetRandomValue(fuelMin, fuelMax);
@@ -3973,9 +4428,11 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
             g_selectedAsteroidProspect = prospectScores[2];
             g_showAsteroidModal = true;
             g_modalSelection = 0;
-            g_fuelCheckFailed = false;
         } else if (CustomIsKeyPressed(KEY_D)) {
             PlayTerminalTypeSound();
+            // Close fuel warning modal if open
+            g_showFuelWarningModal = false;
+            g_fuelCheckFailed = false;
             g_prospectPageOverlay = 4;  // D
             g_selectedAsteroidIndex = 3;
             g_selectedAsteroidFuelCost = GetRandomValue(fuelMin, fuelMax);
@@ -3983,9 +4440,11 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
             g_selectedAsteroidProspect = prospectScores[3];
             g_showAsteroidModal = true;
             g_modalSelection = 0;
-            g_fuelCheckFailed = false;
         } else if (CustomIsKeyPressed(KEY_E)) {
             PlayTerminalTypeSound();
+            // Close fuel warning modal if open
+            g_showFuelWarningModal = false;
+            g_fuelCheckFailed = false;
             g_prospectPageOverlay = 5;  // E
             g_selectedAsteroidIndex = 4;
             g_selectedAsteroidFuelCost = GetRandomValue(fuelMin, fuelMax);
@@ -3993,9 +4452,11 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
             g_selectedAsteroidProspect = prospectScores[4];
             g_showAsteroidModal = true;
             g_modalSelection = 0;
-            g_fuelCheckFailed = false;
         } else if (CustomIsKeyPressed(KEY_F)) {
             PlayTerminalTypeSound();
+            // Close fuel warning modal if open
+            g_showFuelWarningModal = false;
+            g_fuelCheckFailed = false;
             g_prospectPageOverlay = 6;  // F
             g_selectedAsteroidIndex = 5;
             g_selectedAsteroidFuelCost = GetRandomValue(fuelMin, fuelMax);
@@ -4003,7 +4464,6 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
             g_selectedAsteroidProspect = prospectScores[5];
             g_showAsteroidModal = true;
             g_modalSelection = 0;
-            g_fuelCheckFailed = false;
         }
     }
     
@@ -4076,6 +4536,18 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
     Rectangle destRect = { 0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT }; // Full virtual screen
     DrawTexturePro(viewTex, srcRect, destRect, (Vector2){0,0}, 0.0f, WHITE);
     
+    // Handle bar input FIRST (before other input handlers) when bar view is active
+    // Also process delay timer even if bar view is not active (for modals that persist)
+    if (g_showBarView && g_depotHomePage == 4) {
+        // Update timer
+        g_barModalTimer += GetFrameTime();
+        // Handle bar input (this will process UP/DOWN/ENTER keys and delay timer)
+        HandleBarModalInput();
+    } else if (g_barModalDelayTimer > 0.0f || g_barModalPendingType > 0) {
+        // Process delay timer even if bar view is not active (for modals triggered before view closed)
+        HandleBarModalInput();
+    }
+    
     // Handle commodities market navigation when market view is active
     if (g_showCommoditiesMarket && g_depotHomePage == 3) {
         int numOpt = NUM_COMMODITIES + 1;  // Commodities + back
@@ -4089,34 +4561,43 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
         }
         // Handle [S] key for selling (changed from ENTER)
         if (CustomIsKeyPressed(KEY_S)) {
-            PlayTerminalTypeSound();
             // Sell selected commodity
             if (g_commoditiesMarketSelection < NUM_COMMODITIES) {
                 // Sell commodity
                 int* buyPrices = g_stationBuyPrices[g_currentLocation];
                 if (G_Player.inventory[g_commoditiesMarketSelection] > 0) {
+                    // Play sale sound instead of terminal type sound
+                    if (g_saleSound.frameCount > 0) {
+                        PlaySound(g_saleSound);
+                    }
                     G_Player.inventory[g_commoditiesMarketSelection]--;
-                    G_Player.credits += buyPrices[g_commoditiesMarketSelection];
+                    // Apply gold card bonus: 20% increase in sell value
+                    int basePrice = buyPrices[g_commoditiesMarketSelection];
+                    int sellPrice = G_Player.hasGoldCard ? (int)(basePrice * 1.2f) : basePrice;
+                    G_Player.credits += sellPrice;
                     G_Player.cargoFilled--;
                 } else {
-                    // Show modal: "YOU HAVE NO X TO SELL"
-                    snprintf(g_noCommodityName, sizeof(g_noCommodityName), "%s", g_commodityNames[g_commoditiesMarketSelection]);
-                    g_showNoCommodityModal = true;
+                    // Play No.wav sound at 100% volume when trying to sell commodity you don't have
+                    if (g_noSound.frameCount > 0) {
+                        PlaySound(g_noSound);
+                    }
                 }
             }
         }
-        // Handle ENTER for back/exit only
+        // Handle ENTER for back/exit only (only when BACK is selected)
         if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
-            PlayTerminalTypeSound();
             if (g_commoditiesMarketSelection == NUM_COMMODITIES) {
                 // Back - close market view
+                PlayTerminalTypeSound();
                 g_showCommoditiesMarket = false;
             }
+            // Do nothing if a commodity is selected (not BACK)
         }
     }
+    } // End of welcome modal input block
     
     // 3. Handle page navigation with up/down arrows (pages 1-4) - disabled when modal is open or in sub-views
-    if (!g_showAsteroidModal && !g_showShopModal && !g_showBarView && !g_showCommoditiesMarket) {
+    if (!g_showWelcomeModal && !g_showAsteroidModal && !g_showShopModal && !g_showBarView && !g_showCommoditiesMarket) {
         if (CustomIsKeyPressed(KEY_DOWN)) {
             if (g_depotHomePage < 4) {
                 g_depotHomePage++;
@@ -4251,6 +4732,16 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
     // Fuel is only refueled when purchasing at shop or starting new game
     DrawDepotStats(0);
     
+    // Draw welcome modal if open (on top of everything, shown first)
+    if (g_showWelcomeModal) {
+        DrawWelcomeModal(state, menuSelection);
+    }
+    
+    // Draw exit to main menu modal if open (on top of everything)
+    if (g_showExitToMainMenuModal) {
+        DrawExitToMainMenuModal(state, menuSelection);
+    }
+    
     // Draw asteroid launch modal if open (on top of everything)
     if (g_showAsteroidModal && g_showProspectAsteroids && g_depotHomePage == 1) {
         DrawAsteroidModal(state, menuSelection, shipPos, shipVel);
@@ -4261,49 +4752,67 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
         DrawShopPurchaseModal(state, menuSelection);
     }
     
-    // Draw Bar modal/interface if open (after delay)
-    if (g_showBarView && g_depotHomePage == 4) {
-        g_barModalTimer += GetFrameTime();
-        // Keep a tiny delay to avoid instant pop, but never hang
-        if (g_barModalTimer >= 0.15f) {
-            // Center modal on screen
-            int modalWidth = 600;
-            int modalHeight = 450;
-            int modalX = (VIRTUAL_WIDTH - modalWidth) / 2;
-            int modalY = (VIRTUAL_HEIGHT - modalHeight) / 2;
-            DrawBarModal(modalX, modalY, modalWidth, modalHeight);
-        }
-    }
-    
-    // Draw Fuel Warning Modal (on top of everything, no buttons, auto-closes after 3 seconds)
+    // Draw Fuel Warning Modal (on top of everything, with OKAY button, closes on Enter or after 3 seconds)
     if (g_showFuelWarningModal) {
-        float dt = GetFrameTime();
-        g_fuelWarningTimer -= dt;
-        
-        if (g_fuelWarningTimer <= 0.0f) {
+        // Handle Enter key to close modal
+        if (CustomIsKeyPressed(KEY_ENTER)) {
+            PlayTerminalTypeSound();
             g_showFuelWarningModal = false;
             g_fuelCheckFailed = false;
         } else {
-            // Draw modal on top of everything
-            int modalWidth = 700;
-            int modalHeight = 300;
-            int modalX = (VIRTUAL_WIDTH - modalWidth) / 2;
-            int modalY = (VIRTUAL_HEIGHT - modalHeight) / 2;
+            float dt = GetFrameTime();
+            g_fuelWarningTimer -= dt;
             
-            // Dark background with border
-            DrawRectangle(modalX, modalY, modalWidth, modalHeight, (Color){20, 5, 5, 240});
-            DrawRectangleLines(modalX, modalY, modalWidth, modalHeight, RED);
-            DrawRectangleLines(modalX + 1, modalY + 1, modalWidth - 2, modalHeight - 2, (Color){255, 100, 100, 255});
-            
-            // Warning text
-            const char* warningText = "OUT OF FUEL WARNING";
-            int warningW = MeasureText(warningText, 36);
-            DrawText(warningText, modalX + (modalWidth - warningW) / 2, modalY + 60, 36, RED);
-            
-            // Abort text
-            const char* abortText = "MINE ABORTED";
-            int abortW = MeasureText(abortText, 28);
-            DrawText(abortText, modalX + (modalWidth - abortW) / 2, modalY + 120, 28, YELLOW);
+            // Auto-close after 3 seconds as fallback
+            if (g_fuelWarningTimer <= 0.0f) {
+                g_showFuelWarningModal = false;
+                g_fuelCheckFailed = false;
+            } else {
+                // Draw modal on top of everything
+                int modalWidth = 700;
+                int modalHeight = 300;
+                int modalX = (VIRTUAL_WIDTH - modalWidth) / 2;
+                int modalY = (VIRTUAL_HEIGHT - modalHeight) / 2;
+                
+                // Dark background with border
+                DrawRectangle(modalX, modalY, modalWidth, modalHeight, (Color){20, 5, 5, 240});
+                DrawRectangleLines(modalX, modalY, modalWidth, modalHeight, RED);
+                DrawRectangleLines(modalX + 1, modalY + 1, modalWidth - 2, modalHeight - 2, (Color){255, 100, 100, 255});
+                
+                // Warning text (with word wrapping support)
+                const char* warningText = "OUT OF FUEL WARNING";
+                int maxTextWidth = modalWidth - 100; // Padding to prevent overlap
+                int textY = modalY + 60;
+                int textBottomY = textY;
+                DrawWordWrappedText(warningText, modalX + 50, textY, maxTextWidth, 23, RED, &textBottomY);
+                
+                // Abort text (with word wrapping support)
+                const char* abortText = "MINE ABORTED";
+                textY = textBottomY + 30;
+                DrawWordWrappedText(abortText, modalX + 50, textY, maxTextWidth, 18, YELLOW, &textBottomY);
+                
+                // OKAY button (centered at bottom)
+                int buttonWidth = 150;
+                int buttonHeight = 40;
+                int buttonX = modalX + (modalWidth - buttonWidth) / 2;
+                int buttonY = modalY + modalHeight - buttonHeight - 30;
+                
+                // Button background (highlighted to show it's active)
+                Color buttonColor = (Color){100, 0, 0, 255};
+                DrawRectangle(buttonX, buttonY, buttonWidth, buttonHeight, buttonColor);
+                DrawRectangleLines(buttonX, buttonY, buttonWidth, buttonHeight, RED);
+                DrawRectangleLines(buttonX + 1, buttonY + 1, buttonWidth - 2, buttonHeight - 2, (Color){255, 150, 150, 255});
+                
+                // Button text
+                const char* buttonText = "OKAY";
+                int buttonTextW = MeasureTextWithFont(buttonText, 15);
+                DrawTextWithFont(buttonText, buttonX + (buttonWidth - buttonTextW) / 2, buttonY + 8, 15, WHITE);
+                
+                // Instruction text below button
+                const char* instructionText = "PRESS ENTER";
+                int instructionW = MeasureTextWithFont(instructionText, 11);
+                DrawTextWithFont(instructionText, modalX + (modalWidth - instructionW) / 2, buttonY + buttonHeight + 5, 11, (Color){200, 200, 200, 255});
+            }
         }
     }
     
@@ -4325,17 +4834,41 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
             DrawRectangleLines(modalX, modalY, modalWidth, modalHeight, YELLOW);
             DrawRectangleLines(modalX + 1, modalY + 1, modalWidth - 2, modalHeight - 2, (Color){255, 255, 100, 255});
             
-            // Message text: "YOU HAVE NO X TO SELL"
+            // Message text: "YOU HAVE NO X TO SELL" (with word wrapping support)
             char messageText[128];
             snprintf(messageText, sizeof(messageText), "YOU HAVE NO %s TO SELL", g_noCommodityName);
-            int messageW = MeasureText(messageText, 32);
-            DrawText(messageText, modalX + (modalWidth - messageW) / 2, modalY + 80, 32, YELLOW);
+            int maxTextWidth = modalWidth - 100; // Padding to prevent overlap
+            int textY = modalY + 80;
+            int textBottomY = textY;
+            DrawWordWrappedText(messageText, modalX + 50, textY, maxTextWidth, 20, YELLOW, &textBottomY);
             
-            // Instruction text
+            // Instruction text (with word wrapping support)
             const char* instructionText = "PRESS ENTER OR ESC TO CLOSE";
-            int instructionW = MeasureText(instructionText, 20);
-            DrawText(instructionText, modalX + (modalWidth - instructionW) / 2, modalY + 150, 20, WHITE);
+            textY = textBottomY + 30;
+            DrawWordWrappedText(instructionText, modalX + 50, textY, maxTextWidth, 12, WHITE, &textBottomY);
         }
+    }
+    
+    // Draw Bar modal/interface if open (AFTER all other modals, so it renders on top)
+    // This includes sub-modals like gold card, rumor, success, etc.
+    // IMPORTANT: Draw sub-modals even if bar view is not active (they can persist)
+    bool hasActiveBarModal = g_showBarRumorModal || g_showBarGoldCardModal || g_showBarGamblingModal || 
+                              g_showBarScientistModal || g_showBarSuccessModal;
+    
+    // Always draw bar modals if any are active (regardless of bar view state)
+    if (hasActiveBarModal || (g_showBarView && g_depotHomePage == 4)) {
+        // Draw dark background overlay for sub-modals to make them stand out
+        if (hasActiveBarModal) {
+            // Semi-transparent dark overlay covering entire screen
+            DrawRectangle(0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT, (Color){0, 0, 0, 180});
+        }
+        
+        // Center modal on screen
+        int modalWidth = 600;
+        int modalHeight = 450;
+        int modalX = (VIRTUAL_WIDTH - modalWidth) / 2;
+        int modalY = (VIRTUAL_HEIGHT - modalHeight) / 2;
+        DrawBarModal(modalX, modalY, modalWidth, modalHeight);
     }
 }
 
@@ -4345,7 +4878,7 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
 void DrawPageDebris(GameState* state, int* menuSelection) {
     ClearBackground((Color){5, 20, 10, 255});
     DrawRetroWindow("DEBRIS COLLECTION", 300, 200, 600, 400);
-    DrawText("Collecting Debris...", 450, 300, 20, GREEN);
+    DrawTextWithFont("Collecting Debris...", 450, 300, 12, GREEN);
     
     if (DrawButton("FINISH", 500, 500, 200, 40, true)) {
         // Old debris collection - now handled by ConvertDebrisToCommodity()
@@ -4372,14 +4905,14 @@ void DrawPageDepotSelect(GameState* state, int* menuSelection) {
 
     DrawCircle(400, 300, 60, BLUE);
     DrawCircleLines(400, 300, 65, c1);
-    DrawText("ALPHA STATION", 350, 370, 20, c1);
+    DrawTextWithFont("ALPHA STATION", 350, 370, 12, c1);
     if (DrawButton("DOCK", 350, 400, 100, 30, *menuSelection == 0)) {
         ResetState(state, menuSelection, STATE_DEPOT_HOME);
     }
 
     DrawCircle(800, 400, 40, PURPLE);
     DrawCircleLines(800, 400, 45, c2);
-    DrawText("OUTPOST BETA", 750, 450, 20, c2);
+    DrawTextWithFont("OUTPOST BETA", 750, 450, 12, c2);
     if (DrawButton("LOCKED", 750, 480, 100, 30, *menuSelection == 1)) {
         // Locked logic
     }
@@ -4413,18 +4946,18 @@ void DrawPageGameOver(GameState* state, int* menuSelection) {
     
     // Draw "GAME OVER" text
     char gameOverText[] = "GAME OVER";
-    int textWidth = MeasureText(gameOverText, 80);
+    int textWidth = MeasureTextWithFont(gameOverText, 50);
     int centerX = VIRTUAL_WIDTH / 2;
     int centerY = VIRTUAL_HEIGHT / 2;
     
     // Draw with outline for visibility
-    DrawText(gameOverText, centerX - textWidth/2 + 3, centerY - 40 + 3, 80, BLACK);
-    DrawText(gameOverText, centerX - textWidth/2, centerY - 40, 80, RED);
+    DrawTextWithFont(gameOverText, centerX - textWidth/2 + 3, centerY - 40 + 3, 50, BLACK);
+    DrawTextWithFont(gameOverText, centerX - textWidth/2, centerY - 40, 50, RED);
     
     // Draw instruction text
     char instructionText[] = "PRESS ANY KEY TO CONTINUE";
-    int instWidth = MeasureText(instructionText, 30);
-    DrawText(instructionText, centerX - instWidth/2, centerY + 60, 30, YELLOW);
+    int instWidth = MeasureTextWithFont(instructionText, 19);
+    DrawTextWithFont(instructionText, centerX - instWidth/2, centerY + 60, 19, YELLOW);
     
     // Check for any key press to return to splash
     // Check all keys from A-Z, 0-9, and common keys
@@ -4465,7 +4998,7 @@ void DrawPageGetReady(GameState* state, int* menuSelection) {
     
     // Draw "GET READY" text with flashing effect
     char getReadyText[] = "GET READY";
-    int textWidth = MeasureText(getReadyText, 80);
+    int textWidth = MeasureTextWithFont(getReadyText, 50);
     int centerX = VIRTUAL_WIDTH / 2;
     int centerY = VIRTUAL_HEIGHT / 2;
     
@@ -4474,54 +5007,54 @@ void DrawPageGetReady(GameState* state, int* menuSelection) {
     
     if (flashOn) {
         // Draw with outline for visibility (same style as game over)
-        DrawText(getReadyText, centerX - textWidth/2 + 3, centerY - 200 + 3, 80, BLACK);
-        DrawText(getReadyText, centerX - textWidth/2, centerY - 200, 80, (Color){0, 255, 255, 255}); // Cyan color
+        DrawTextWithFont(getReadyText, centerX - textWidth/2 + 3, centerY - 200 + 3, 50, BLACK);
+        DrawTextWithFont(getReadyText, centerX - textWidth/2, centerY - 200, 50, (Color){0, 255, 255, 255}); // Cyan color
     }
     
     // Controls and Guide (below GET READY text) - Larger text
     int startY = centerY - 60;
     int lineHeight = 35;
-    int fontSize = 28;  // Larger font size
+    int fontSize = 18;  // Larger font size
     
     // Controls Section - All on one line in red
     const char* controlsLine = "LMB = THRUST .. MOUSE = MOVE .. RMB = YAW";
-    int controlsW = MeasureText(controlsLine, fontSize);
-    DrawText(controlsLine, centerX - controlsW/2, startY, fontSize, RED);
+    int controlsW = MeasureTextWithFont(controlsLine, fontSize);
+    DrawTextWithFont(controlsLine, centerX - controlsW/2, startY, fontSize, RED);
     
     // SPACE = FIRE LASER in cyan below controls
     int laserY = startY + lineHeight;
     if (G_Player.hasLaser) {
         const char* laserText = "SPACE = FIRE LASER";
-        int laserW = MeasureText(laserText, fontSize);
-        DrawText(laserText, centerX - laserW/2, laserY, fontSize, (Color){0, 255, 255, 255}); // Cyan
+        int laserW = MeasureTextWithFont(laserText, fontSize);
+        DrawTextWithFont(laserText, centerX - laserW/2, laserY, fontSize, (Color){0, 255, 255, 255}); // Cyan
     } else {
         const char* laserText = "SPACE = FIRE LASER (LASER REQ)";
-        int laserW = MeasureText(laserText, fontSize);
-        DrawText(laserText, centerX - laserW/2, laserY, fontSize, (Color){0, 255, 255, 255}); // Cyan
+        int laserW = MeasureTextWithFont(laserText, fontSize);
+        DrawTextWithFont(laserText, centerX - laserW/2, laserY, fontSize, (Color){0, 255, 255, 255}); // Cyan
     }
     
     // Guide Section
     int guideY = laserY + lineHeight * 2;
     const char* guideLabel = "GUIDE";
-    int guideW = MeasureText(guideLabel, fontSize);
-    DrawText(guideLabel, centerX - guideW/2, guideY, fontSize, YELLOW);
+    int guideW = MeasureTextWithFont(guideLabel, fontSize);
+    DrawTextWithFont(guideLabel, centerX - guideW/2, guideY, fontSize, YELLOW);
     
     // EXIT text in red
     int exitY = guideY + lineHeight;
     const char* exitText = "EXIT: Red Reverse Gravity Tunnel to exit";
-    int exitW = MeasureText(exitText, fontSize);
-    DrawText(exitText, centerX - exitW/2, exitY, fontSize, RED);
+    int exitW = MeasureTextWithFont(exitText, fontSize);
+    DrawTextWithFont(exitText, centerX - exitW/2, exitY, fontSize, RED);
     
     // COLLECT text in cyan
     int collectY = exitY + lineHeight;
     if (G_Player.hasCollector) {
         const char* collectText = "COLLECT: Fly close slowly to collect it";
-        int collectW = MeasureText(collectText, fontSize);
-        DrawText(collectText, centerX - collectW/2, collectY, fontSize, (Color){0, 255, 255, 255}); // Cyan
+        int collectW = MeasureTextWithFont(collectText, fontSize);
+        DrawTextWithFont(collectText, centerX - collectW/2, collectY, fontSize, (Color){0, 255, 255, 255}); // Cyan
     } else {
         const char* collectText = "COLLECT: Fly close slowly to collect it (COLLECTOR REQ)";
-        int collectW = MeasureText(collectText, fontSize);
-        DrawText(collectText, centerX - collectW/2, collectY, fontSize, (Color){0, 255, 255, 255}); // Cyan
+        int collectW = MeasureTextWithFont(collectText, fontSize);
+        DrawTextWithFont(collectText, centerX - collectW/2, collectY, fontSize, (Color){0, 255, 255, 255}); // Cyan
     }
     
     // Update timer and transition to lander when timer expires OR left mouse button is pressed
@@ -4533,6 +5066,8 @@ void DrawPageGetReady(GameState* state, int* menuSelection) {
     
     if (g_getReadyTimer <= 0.0f || skipReady) {
         g_showGetReady = false;
+        // Reset bostonpump flag when leaving Get Ready (it will continue playing in lander)
+        // bostonpumpStarted will reset when Get Ready appears again
         *state = STATE_LANDER;
         *menuSelection = 0;
     }
@@ -4545,7 +5080,7 @@ void DrawPageGetReady(GameState* state, int* menuSelection) {
 void DrawPageBar(GameState* state, int* menuSelection) {
     ClearBackground(BLACK);
     DrawRetroWindow("THE RUSTY ROCKET BAR", 200, 100, 800, 600);
-    DrawText("Bartender: 'Careful out there, miner...'", 250, 200, 20, YELLOW);
+    DrawTextWithFont("Bartender: 'Careful out there, miner...'", 250, 200, 12, YELLOW);
     
     if (DrawButton("BACK", 500, 600, 200, 40, true)) ResetState(state, menuSelection, STATE_DEPOT_HOME);
 }
@@ -4553,16 +5088,22 @@ void DrawPageBar(GameState* state, int* menuSelection) {
 void DrawPageShipyard(GameState* state, int* menuSelection) {
     ClearBackground(BLACK);
     DrawRetroWindow("SHIPYARD", 200, 100, 800, 600);
-    DrawText("Upgrade your thrusters and hull here.", 250, 200, 20, WHITE);
+    DrawTextWithFont("UPGRADE YOUR THRUSTERS AND HULL HERE.", 250, 200, 12, WHITE);
     
     if (CustomIsKeyPressed(KEY_DOWN) || CustomIsKeyPressed(KEY_UP)) *menuSelection = !(*menuSelection); // Toggle 0/1
 
-    if (DrawButton("UPGRADE THRUST (500cr)", 250, 300, 300, 40, *menuSelection == 0)) {
+    if (DrawButton("UPGRADE THRUST (500CR)", 250, 300, 300, 40, *menuSelection == 0)) {
         if (G_Player.credits >= 500 && G_Player.power < G_Player.maxPower) {
             G_Player.credits -= 500;
             G_Player.power += 5.0f;
             if (G_Player.power > G_Player.maxPower) G_Player.power = G_Player.maxPower;
             SHIP_THRUST_POWER = G_Player.power;  // Update thrust power to match player power
+            
+            // Play fixing-on.wav sound at 100% volume when upgrade is purchased
+            if (g_fixingOnSound.frameCount > 0) {
+                SetSoundVolume(g_fixingOnSound, 1.0f); // 100% volume
+                PlaySound(g_fixingOnSound);
+            }
         }
     }
     if (DrawButton("BACK", 500, 600, 200, 40, *menuSelection == 1)) ResetState(state, menuSelection, STATE_DEPOT_HOME);
@@ -4591,8 +5132,8 @@ void DrawPageMarket(GameState* state, int* menuSelection) {
     }
     
     // Header
-    DrawText(TextFormat("CREDITS: %d", G_Player.credits), 250, 160, 30, GREEN);
-    DrawText(TextFormat("CARGO: %d/%d", G_Player.cargoFilled, G_Player.cargoSpace), 250, 200, 20, YELLOW);
+    DrawTextWithFont(TextFormat("CREDITS: %d", G_Player.credits), 250, 160, 19, GREEN);
+    DrawTextWithFont(TextFormat("CARGO: %d/%d", G_Player.cargoFilled, G_Player.cargoSpace), 250, 200, 12, YELLOW);
     
     // Draw commodities list (scrollable if needed)
     int startY = 240;
@@ -4615,15 +5156,17 @@ void DrawPageMarket(GameState* state, int* menuSelection) {
         // Commodity name and quantity
         char commText[128];
         snprintf(commText, sizeof(commText), "%s: %d", g_commodityNames[commIdx], G_Player.inventory[commIdx]);
-        DrawText(commText, 250, yPos, 20, WHITE);
+        DrawTextWithFont(commText, 250, yPos, 12, WHITE);
         
-        // Sell button with price
+        // Sell button with price (apply gold card bonus: 20% increase in sell value)
         char sellText[64];
-        snprintf(sellText, sizeof(sellText), "SELL (%dcr)", buyPrices[commIdx]);
+        int basePrice = buyPrices[commIdx];
+        int sellPrice = G_Player.hasGoldCard ? (int)(basePrice * 1.2f) : basePrice;
+        snprintf(sellText, sizeof(sellText), "SELL (%dcr)", sellPrice);
         if (DrawButton(sellText, 600, yPos - 5, 150, 30, selected)) {
             if (G_Player.inventory[commIdx] > 0) {
                 G_Player.inventory[commIdx]--;
-                G_Player.credits += buyPrices[commIdx];
+                G_Player.credits += sellPrice;
                 G_Player.cargoFilled--;
             }
         }
@@ -4644,7 +5187,7 @@ void DrawPageMarket(GameState* state, int* menuSelection) {
 void DrawPageLodgings(GameState* state, int* menuSelection) {
     ClearBackground(BLACK);
     DrawRetroWindow("CREW LODGINGS", 200, 100, 800, 600);
-    DrawText("Zzz... Rested and Saved.", 350, 300, 20, BLUE);
+    DrawTextWithFont("Zzz... Rested and Saved.", 350, 300, 12, BLUE);
     if (DrawButton("BACK", 500, 600, 200, 40, true)) ResetState(state, menuSelection, STATE_DEPOT_HOME);
 }
 
@@ -4718,9 +5261,47 @@ typedef struct {
     bool active;
     float scale;
     Color color;
+    int prosperityPercentage;  // Prosperity percentage of the asteroid this debris came from
 } DebrisChunk;
 
 DebrisChunk g_debris[MAX_DEBRIS];
+
+// Function to spawn smaller rocks when a rock explodes
+void SpawnSmallerRocks(Vector3 pos, float sourceRockScale, int prosperityPercentage) {
+    // Spawn 8-10 smaller rocks
+    int numRocks = GetRandomValue(8, 10);
+    
+    for (int k = 0; k < numRocks; k++) {
+        // Find empty slot in G_Rocks array
+        int slot = -1;
+        for (int j = 0; j < NUM_ROCKS; j++) {
+            if (!G_Rocks[j].active) { slot = j; break; }
+        }
+        
+        if (slot != -1) {
+            // Smaller scale: 30-60% of source rock size
+            float minScale = sourceRockScale * 0.3f;
+            float maxScale = sourceRockScale * 0.6f;
+            float newScale = minScale + ((float)GetRandomValue(0, 1000) / 1000.0f) * (maxScale - minScale);
+            if (newScale < 0.2f) newScale = 0.2f; // Minimum size
+            
+            // Spread position around explosion point
+            float spreadRadius = sourceRockScale * 0.8f;
+            float rx = pos.x + ((float)GetRandomValue(-100, 100) / 100.0f) * spreadRadius;
+            float rz = pos.z + ((float)GetRandomValue(-100, 100) / 100.0f) * spreadRadius;
+            float ry = GetTerrainHeight(rx, rz) + (0.2f * newScale);
+            
+            G_Rocks[slot].position = (Vector3){rx, ry, rz};
+            G_Rocks[slot].scale = newScale;
+            G_Rocks[slot].axis = Vector3Normalize((Vector3){(float)GetRandomValue(-1,1),(float)GetRandomValue(-1,1),(float)GetRandomValue(-1,1)});
+            G_Rocks[slot].angle = (float)GetRandomValue(0, 360);
+            int tintVal = GetRandomValue(200, 255);
+            G_Rocks[slot].color = (Color){(unsigned char)tintVal, (unsigned char)tintVal, (unsigned char)tintVal, 255};
+            G_Rocks[slot].active = true;
+            G_Rocks[slot].prosperityPercentage = prosperityPercentage;  // Inherit prosperity from source rock
+        }
+    }
+}
 
 void SpawnDebris(Vector3 pos, int count, float sourceRockScale, int asteroidProspect) {
     for (int k = 0; k < count; k++) {
@@ -4755,35 +5336,11 @@ void SpawnDebris(Vector3 pos, int count, float sourceRockScale, int asteroidPros
             float minDebrisScale = maxDebrisScale * 0.2f; // 20% of max for variety
             g_debris[slot].scale = minDebrisScale + ((float)GetRandomValue(0, 1000) / 1000.0f) * (maxDebrisScale - minDebrisScale);
             
-            // Random colors for debris - only colored ones (not gray) are collectible
-            // Gray probability is inversely related to asteroid prosperity
-            // Higher prosperity (70%) = lower gray chance (10%)
-            // Lower prosperity (10%) = higher gray chance (50%)
-            // Map prosperity (10-70) to gray probability (50%-10%)
-            float prospectFactor = (float)asteroidProspect / 100.0f; // 0.1 to 0.7
-            float grayProbability = 0.5f - (prospectFactor - 0.1f) * (0.4f / 0.6f); // 0.5 to 0.1
-            if (grayProbability < 0.1f) grayProbability = 0.1f;
-            if (grayProbability > 0.5f) grayProbability = 0.5f;
+            // All debris is gray (100% chance) - not collectible
+            g_debris[slot].color = GRAY; // Gray - not collectible
             
-            // Roll for gray vs colored debris
-            float roll = (float)GetRandomValue(0, 99) / 100.0f;
-            int colType;
-            if (roll < grayProbability) {
-                colType = 0; // Gray - not collectible
-            } else {
-                // Colored debris (coral, white, cyan)
-                colType = GetRandomValue(1, 3);
-            }
-            
-            if (colType == 0) {
-                g_debris[slot].color = GRAY; // Gray - not collectible
-            } else if (colType == 1) {
-                g_debris[slot].color = (Color){255, 127, 80, 255}; // Coral - collectible
-            } else if (colType == 2) {
-                g_debris[slot].color = (Color){200, 200, 200, 255}; // White-ish - collectible
-            } else {
-                g_debris[slot].color = (Color){0, 200, 200, 255}; // Cyan traces - collectible
-            }
+            // Store prosperity percentage in debris
+            g_debris[slot].prosperityPercentage = asteroidProspect;
         }
     }
 }
@@ -4827,14 +5384,12 @@ void UpdateRocksAndDebris(float dt, Vector3 shipPos) {
             if (isColored) {
             float dist = Vector3Distance(g_debris[i].position, shipPos);
             if (dist < 20.0f) { // Vacuum Range
-                    // Calculate rejection rate based on prospecting score
-                    // 10% prospect = 90% rejection, 70% prospect = 30% rejection
-                    float prospectPercent = (float)g_selectedAsteroidProspect / 100.0f; // 0.1 to 0.7
-                    float rejectionRate = 1.0f - prospectPercent; // 0.9 to 0.3 (inverse)
+                    // Use debris's own prosperity percentage for collection chance
+                    int debrisProsperity = g_debris[i].prosperityPercentage;
+                    int collectionRoll = GetRandomValue(0, 99);
                     
-                    // Roll for rejection - if rejected, don't collect this frame
-                    float roll = (float)GetRandomValue(0, 1000) / 1000.0f;
-                    if (roll >= rejectionRate) { // Only proceed if NOT rejected
+                    // Only proceed if prosperity check succeeds
+                    if (collectionRoll < debrisProsperity) {
                 Vector3 dir = Vector3Normalize(Vector3Subtract(shipPos, g_debris[i].position));
                 float speed = 30.0f * (1.0f - dist/20.0f) + 10.0f; // Faster when closer
                 
@@ -4849,6 +5404,11 @@ void UpdateRocksAndDebris(float dt, Vector3 shipPos) {
                             ConvertDebrisToCommodity();
                             
                     G_Player.cargoFilled++;
+                    
+                    // Play collect sound when cargo is collected
+                    if (g_collectSound.frameCount > 0) {
+                        PlaySound(g_collectSound);
+                    }
                     // Spawn simple spark or effect?
                         }
                     }
@@ -4874,6 +5434,11 @@ void UpdateLaserLogic(float dt, Vector3 shipPos, Vector3 shipDir) {
 
     // Continuous beam while space is held (not just on key press)
     if (CustomIsKeyDown(KEY_SPACE) && G_Player.hasLaser && !G_Player.laserOverheated) {
+        // Play laser sound
+        if (!IsSoundPlaying(g_laserSound)) {
+            PlaySound(g_laserSound);
+        }
+
         // Heat up: 3 seconds to reach max heat (100)
         G_Player.laserHeat += (100.0f / 3.0f) * dt; // ~33.33 per second
         if (G_Player.laserHeat >= G_Player.maxLaserHeat) {
@@ -4970,29 +5535,69 @@ void UpdateLaserLogic(float dt, Vector3 shipPos, Vector3 shipDir) {
         
         // Hit Logic
         if (hitRockIdx != -1) {
-            // Spawn massive debris explosion: 200-500 pieces based on rock size
-            // Rock scale is typically 0.5 to 3.0, map to 200-500 pieces
-            float rockScale = G_Rocks[hitRockIdx].scale;
-            int minPieces = 200;
-            int maxPieces = 500;
-            // Larger rocks create more debris
-            int pieceCount = minPieces + (int)((rockScale / 3.0f) * (maxPieces - minPieces));
-            if (pieceCount > maxPieces) pieceCount = maxPieces;
-            if (pieceCount < minPieces) pieceCount = minPieces;
+            // Check if rock explodes based on prosperity percentage
+            int prosperity = G_Rocks[hitRockIdx].prosperityPercentage;
+            int roll = GetRandomValue(0, 99);
             
-            SpawnDebris(G_Rocks[hitRockIdx].position, pieceCount, rockScale, g_selectedAsteroidProspect);
-            // Destroy rock
-            G_Rocks[hitRockIdx].active = false;
-            
-            // Particle effect at hit point
-             Vector3 normal = {0, 1, 0}; // Approximate
-             SpawnCollisionParticles(hitPoint, normal); 
+            if (roll < prosperity) {
+                // Rock explodes
+                float rockScale = G_Rocks[hitRockIdx].scale;
+                Vector3 rockPos = G_Rocks[hitRockIdx].position;
+                
+                // Check if this is a smaller rock (scale < 1.0) - if so, spawn debris particles
+                // Otherwise spawn smaller rocks
+                if (rockScale < 1.0f) {
+                    // Smaller rock - check prosperity to spawn collection debris particles
+                    int debrisRoll = GetRandomValue(0, 99);
+                    if (debrisRoll < prosperity) {
+                        // Spawn collection debris particles
+                        int particleCount = GetRandomValue(10, 15);
+                        SpawnDebris(rockPos, particleCount, rockScale * 2.0f, prosperity);
+                        
+                        // Play rock sound when debris is released
+                        if (g_rockSound.frameCount > 0) {
+                            SetSoundVolume(g_rockSound, 0.70f);
+                            PlaySound(g_rockSound);
+                        }
+                    }
+                } else {
+                    // Large rock - spawn smaller rocks
+                    SpawnSmallerRocks(rockPos, rockScale, prosperity);
+                    
+                    // Large rocks can also spawn debris - check prosperity
+                    int debrisRoll = GetRandomValue(0, 99);
+                    if (debrisRoll < prosperity) {
+                        // Spawn debris particles from large rock
+                        int particleCount = GetRandomValue(10, 15);
+                        SpawnDebris(rockPos, particleCount, rockScale, prosperity);
+                        
+                        // Play rock sound when debris is released
+                        if (g_rockSound.frameCount > 0) {
+                            SetSoundVolume(g_rockSound, 0.70f);
+                            PlaySound(g_rockSound);
+                        }
+                    }
+                }
+                
+                // Destroy original rock
+                G_Rocks[hitRockIdx].active = false;
+                
+                // Particle effect at hit point
+                Vector3 normal = {0, 1, 0}; // Approximate
+                SpawnCollisionParticles(hitPoint, normal);
+            }
+            // If roll fails, rock doesn't explode (nothing happens)
             
         } else if (hitDebrisIdx != -1) {
-            // Destroy Debris
+            // Destroy Debris when hit by laser
             g_debris[hitDebrisIdx].active = false;
-             Vector3 normal = {0, 1, 0}; 
-             SpawnCollisionParticles(hitPoint, normal);
+            Vector3 normal = {0, 1, 0}; 
+            SpawnCollisionParticles(hitPoint, normal);
+        }
+    } else {
+        // Stop laser sound if not firing or overheated
+        if (IsSoundPlaying(g_laserSound)) {
+            StopSound(g_laserSound);
         }
     }
 }
@@ -5031,9 +5636,54 @@ void RenderNavScreen() {
         g_navTorusA = LoadModelFromMesh(meshA);
         
         Mesh meshB = GenFlatShadedIcosahedron(6.0f);  // Large icosahedron for Hirohito Station
+        // Apply cyan color to icosahedron vertices
+        if (!meshB.colors) meshB.colors = (unsigned char*)MemAlloc(meshB.vertexCount * 4);
+        for (int i = 0; i < meshB.vertexCount; i++) {
+            meshB.colors[i * 4 + 0] = 0;    // R
+            meshB.colors[i * 4 + 1] = 255;  // G (cyan)
+            meshB.colors[i * 4 + 2] = 255;  // B (cyan)
+            meshB.colors[i * 4 + 3] = 255;  // A
+        }
         g_navIcoB = LoadModelFromMesh(meshB);
         
         Mesh meshC = GenFlatShadedTorus(12.0f, 3.0f, 24, 16);  // Large torus for Nagako's Halo
+        // Apply red gradient: dark red bottom, medium red middle, light red top
+        // Colors are already allocated by GenFlatShadedTorus, so we just overwrite them
+        for (int i = 0; i < meshC.vertexCount; i++) {
+            // Get vertex Y position to determine shading
+            float yPos = meshC.vertices[i * 3 + 1]; // Y coordinate
+            float minY = -3.0f; // Bottom of torus (size * sin(-90°))
+            float maxY = 3.0f;  // Top of torus (size * sin(90°))
+            float normalizedY = (yPos - minY) / (maxY - minY);
+            normalizedY = (normalizedY < 0.0f) ? 0.0f : (normalizedY > 1.0f) ? 1.0f : normalizedY;
+            
+            // Three shade rule: dark red bottom -> medium red middle -> light red top
+            unsigned char r, g, b;
+            if (normalizedY < 0.33f) {
+                // Bottom third: dark red (100,0,0) to (140,0,0)
+                float t = normalizedY / 0.33f;
+                r = (unsigned char)(100 + t * 40);
+                g = 0;
+                b = 0;
+            } else if (normalizedY < 0.67f) {
+                // Middle third: medium red (140,0,0) to (215,0,0)
+                float t = (normalizedY - 0.33f) / 0.34f;
+                r = (unsigned char)(140 + t * 75);
+                g = 0;
+                b = 0;
+            } else {
+                // Top third: light red (215,0,0) to (255,50,50)
+                float t = (normalizedY - 0.67f) / 0.33f;
+                r = (unsigned char)(215 + t * 40);
+                g = (unsigned char)(t * 50);
+                b = (unsigned char)(t * 50);
+            }
+            
+            meshC.colors[i * 4 + 0] = r;
+            meshC.colors[i * 4 + 1] = g;
+            meshC.colors[i * 4 + 2] = b;
+            meshC.colors[i * 4 + 3] = 255;
+        }
         g_navTorusC = LoadModelFromMesh(meshC);
         
         g_navModelsLoaded = true;
@@ -5098,6 +5748,8 @@ void RenderNavScreen() {
     static int navLocAmbient = -1;
     static int navLocLightPos[5] = {-1};
     static int navLocLightColor[5] = {-1};
+    static int navLocLightDir5 = -1;
+    static int navLocLightCut5 = -1;
     
     if (!navShaderLoaded) {
         navShader = LoadShader("lighting.vs", "lighting.fs");
@@ -5117,6 +5769,8 @@ void RenderNavScreen() {
             navLocLightColor[3] = GetShaderLocation(navShader, "lightColor4");
             navLocLightPos[4] = GetShaderLocation(navShader, "lightPos5");
             navLocLightColor[4] = GetShaderLocation(navShader, "lightColor5");
+            navLocLightDir5 = GetShaderLocation(navShader, "lightDir5");
+            navLocLightCut5 = GetShaderLocation(navShader, "lightCutoff5");
             
             // Set up lighting (same as station viewport)
             float ambient[3] = { 0.1f, 0.1f, 0.1f };
@@ -5142,15 +5796,25 @@ void RenderNavScreen() {
             SetShaderValue(navShader, navLocLightColor[3], lightColor4, SHADER_UNIFORM_VEC3);
             SetShaderValue(navShader, navLocLightPos[3], &lightPos4, SHADER_UNIFORM_VEC3);
             
-            float lightColor5[3] = { 0.53f, 0.81f, 0.92f };
-            Vector3 lightPos5 = navCamera.position;
+            // Light 5: Cyan spotlight pointing at icosahedron (center)
+            float lightColor5[3] = { 0.0f, 1.0f, 1.0f };  // Cyan
+            Vector3 lightPos5 = { 0.0f, 8.0f, 8.0f };  // Position above and behind icosahedron
+            Vector3 lightDir5 = { 0.0f, -1.0f, -1.0f };  // Direction towards icosahedron (0,0,0)
+            Vector3 normalizedDir = Vector3Normalize(lightDir5);
             SetShaderValue(navShader, navLocLightColor[4], lightColor5, SHADER_UNIFORM_VEC3);
             SetShaderValue(navShader, navLocLightPos[4], &lightPos5, SHADER_UNIFORM_VEC3);
+            SetShaderValue(navShader, navLocLightDir5, &normalizedDir, SHADER_UNIFORM_VEC3);
+            float cutoff5 = cosf(30.0f * DEG2RAD);  // 30 degree cone
+            SetShaderValue(navShader, navLocLightCut5, &cutoff5, SHADER_UNIFORM_FLOAT);
             
             // Apply shader to models
             g_navTorusA.materials[0].shader = navShader;
             g_navIcoB.materials[0].shader = navShader;
             g_navTorusC.materials[0].shader = navShader;
+            
+            // Set material colors to preserve base colors
+            g_navIcoB.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = (Color){0, 255, 255, 255};  // Cyan
+            g_navTorusC.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = (Color){255, 100, 100, 255};  // Red
         }
         navShaderLoaded = true;
     }
@@ -5159,8 +5823,12 @@ void RenderNavScreen() {
     if (navShader.id > 0 && navLocViewPos >= 0) {
         float camPos[3] = { navCamera.position.x, navCamera.position.y, navCamera.position.z };
         SetShaderValue(navShader, navLocViewPos, camPos, SHADER_UNIFORM_VEC3);
-        Vector3 lightPos5 = navCamera.position;
+        // Update cyan spotlight to point at icosahedron
+        Vector3 lightPos5 = { 0.0f, 8.0f, 8.0f };
+        Vector3 lightDir5 = { 0.0f, -1.0f, -1.0f };
+        Vector3 normalizedDir = Vector3Normalize(lightDir5);
         SetShaderValue(navShader, navLocLightPos[4], &lightPos5, SHADER_UNIFORM_VEC3);
+        SetShaderValue(navShader, navLocLightDir5, &normalizedDir, SHADER_UNIFORM_VEC3);
     }
     
     BeginShaderMode(navShader);
@@ -5168,33 +5836,36 @@ void RenderNavScreen() {
     // Rearranged layout: Hirohito Station (Icosahedron) in center, two toruses on either side
     // Scale down models 60% smaller (0.15 * 0.4 = 0.06)
     float shapeScale = 0.06f;  // Base scale for icosahedron
-    float icosahedronScale = 0.075f;  // Icosahedron increased by 25% (0.06 * 1.25 = 0.075)
+    float icosahedronScale = 0.09975f;  // Icosahedron increased by 33% (0.075 * 1.33 = 0.09975)
     float leftTorusScale = 0.108f;  // Left torus increased by 50% (0.072 * 1.5 = 0.108)
     float rightTorusScale = 0.1044f;  // Right torus increased by 45% (0.072 * 1.45 = 0.1044)
     Vector3 rotationAxis = {0, 1, 0};
     
-    // B: Icosahedron (Center) - HIROHITO STATION - increased by 25%
+    // B: Icosahedron (Center) - HIROHITO STATION - increased by 33%, cyan colored
     Vector3 posB = {0.0f, 0.0f, 0.0f};
+    Color cyanColor = (Color){0, 255, 255, 255};  // Cyan
     DrawModelEx(g_navIcoB, posB, rotationAxis, g_navRotation * DEG2RAD, 
-               (Vector3){icosahedronScale, icosahedronScale, icosahedronScale}, WHITE);
+               (Vector3){icosahedronScale, icosahedronScale, icosahedronScale}, cyanColor);
     
-    // A: Torus (Left) - SHINJUKU DEPOT - moved down 10px and increased by 50%
-    Vector3 posA = {-6.4f, -0.05f, 0.0f};  // Moved down 10px (approximately -0.05 units in 3D space)
+    // A: Torus (Left) - SHINJUKU DEPOT - moved 65px to the right
+    Vector3 posA = {-5.1f, -0.05f, 0.0f};  // Moved 65px right (approximately 1.3 units)
     DrawModelEx(g_navTorusA, posA, rotationAxis, g_navRotation * DEG2RAD, 
                (Vector3){leftTorusScale, leftTorusScale, leftTorusScale}, WHITE);
     
-    // C: Torus (Right) - NAGAKO'S HALO - increased by 45%
-    Vector3 posC = {6.4f, 0.0f, 0.0f};
+    // C: Torus (Right) - NAGAKO'S HALO - moved 65px to the left, red gradient colors
+    Vector3 posC = {5.1f, 0.0f, 0.0f};  // Moved 65px left (approximately 1.3 units)
+    // Use bright red tint to ensure red colors are visible (multiplies with red vertex colors)
+    Color redTint = (Color){255, 200, 200, 255};  // Light red tint to enhance red vertex colors
     DrawModelEx(g_navTorusC, posC, rotationAxis, g_navRotation * DEG2RAD, 
-               (Vector3){rightTorusScale, rightTorusScale, rightTorusScale}, WHITE);
+               (Vector3){rightTorusScale, rightTorusScale, rightTorusScale}, redTint);
     
     EndShaderMode();
     rlEnableBackfaceCulling();
     EndMode3D();
     
     // Draw labels on render texture - positioned 5px below each 3D object
-    // Text is 5pt smaller (16 - 5 = 11)
-    int fontSize = 11;
+    // Text size increased by 50% (11 * 1.5 = 16.5, rounded to 17)
+    int fontSize = 10;
     int centerX = RENDER_WIDTH / 2;
     int centerY = RENDER_HEIGHT / 2;
     int textOffsetY = 5;  // 5px below 3D objects
@@ -5205,56 +5876,56 @@ void RenderNavScreen() {
     
     // B: Center - HIROHITO STATION (Icosahedron)
     const char* labelB = "HIROHITO STATION [B]";
-    int wB = MeasureText(labelB, fontSize);
+    int wB = MeasureTextWithFont(labelB, fontSize);
     int textY_B = objectScreenY + textOffsetY;
     // Ensure text doesn't go off screen
     int textX_B = centerX - wB/2;
     if (textX_B < 0) textX_B = 0;
     if (textX_B + wB > RENDER_WIDTH) textX_B = RENDER_WIDTH - wB;
-    DrawText(labelB, textX_B, textY_B, fontSize, WHITE);
+    DrawTextWithFont(labelB, textX_B, textY_B, fontSize, WHITE);
     const char* fuelB = "FUEL REQ: 80";
-    int wFuelB = MeasureText(fuelB, fontSize);
+    int wFuelB = MeasureTextWithFont(fuelB, fontSize);
     Color fuelColB = (G_Player.fuel >= 80) ? GREEN : RED;
     int fuelX_B = centerX - wFuelB/2;
     if (fuelX_B < 0) fuelX_B = 0;
     if (fuelX_B + wFuelB > RENDER_WIDTH) fuelX_B = RENDER_WIDTH - wFuelB;
-    DrawText(fuelB, fuelX_B, textY_B + fontSize + 2, fontSize, fuelColB);
+    DrawTextWithFont(fuelB, fuelX_B, textY_B + fontSize + 2, fontSize, fuelColB);
     
     // A: Left - SHINJUKU DEPOT (Torus)
     const char* labelA = "SHINJUKU DEPOT [A]";
     int fuelReqA = 20;
-    int wA = MeasureText(labelA, fontSize);
+    int wA = MeasureTextWithFont(labelA, fontSize);
     int textX_A = (int)(RENDER_WIDTH * 0.25f);  // Left side
     int textY_A = objectScreenY + textOffsetY;
     // Ensure text doesn't go off screen
     if (textX_A - wA/2 < 0) textX_A = wA/2;
     if (textX_A + wA/2 > RENDER_WIDTH) textX_A = RENDER_WIDTH - wA/2;
-    DrawText(labelA, textX_A - wA/2, textY_A, fontSize, (Color){0, 255, 255, 255});
+    DrawTextWithFont(labelA, textX_A - wA/2, textY_A, fontSize, (Color){0, 255, 255, 255});
     char fuelA[32];
     snprintf(fuelA, sizeof(fuelA), "FUEL REQ: %d", fuelReqA);
-    int wFuelA = MeasureText(fuelA, fontSize);
+    int wFuelA = MeasureTextWithFont(fuelA, fontSize);
     Color fuelColA = (G_Player.fuel >= fuelReqA) ? GREEN : RED;
     int fuelX_A = textX_A - wFuelA/2;
     if (fuelX_A < 0) fuelX_A = 0;
     if (fuelX_A + wFuelA > RENDER_WIDTH) fuelX_A = RENDER_WIDTH - wFuelA;
-    DrawText(fuelA, fuelX_A, textY_A + fontSize + 2, fontSize, fuelColA);
+    DrawTextWithFont(fuelA, fuelX_A, textY_A + fontSize + 2, fontSize, fuelColA);
     
     // C: Right - NAGAKO'S HALO (Torus)
     const char* labelC = "NAGAKO'S HALO [C]";
-    int wC = MeasureText(labelC, fontSize);
+    int wC = MeasureTextWithFont(labelC, fontSize);
     int textX_C = (int)(RENDER_WIDTH * 0.75f);  // Right side
     int textY_C = objectScreenY + textOffsetY;
     // Ensure text doesn't go off screen
     if (textX_C - wC/2 < 0) textX_C = wC/2;
     if (textX_C + wC/2 > RENDER_WIDTH) textX_C = RENDER_WIDTH - wC/2;
-    DrawText(labelC, textX_C - wC/2, textY_C, fontSize, MAGENTA);
+    DrawTextWithFont(labelC, textX_C - wC/2, textY_C, fontSize, MAGENTA);
     const char* fuelC = "FUEL REQ: 100";
-    int wFuelC = MeasureText(fuelC, fontSize);
+    int wFuelC = MeasureTextWithFont(fuelC, fontSize);
     Color fuelColC = (G_Player.fuel >= 100) ? GREEN : RED;
     int fuelX_C = textX_C - wFuelC/2;
     if (fuelX_C < 0) fuelX_C = 0;
     if (fuelX_C + wFuelC > RENDER_WIDTH) fuelX_C = RENDER_WIDTH - wFuelC;
-    DrawText(fuelC, fuelX_C, textY_C + fontSize + 2, fontSize, fuelColC);
+    DrawTextWithFont(fuelC, fuelX_C, textY_C + fontSize + 2, fontSize, fuelColC);
     
     EndTextureMode();
 }
@@ -5281,22 +5952,22 @@ void DrawNavScreen(GameState* state, int* selection) {
         int req = (g_navTarget==1)?20:(g_navTarget==2)?80:100;
         bool canGo = G_Player.fuel >= req;
         
-        DrawText(TextFormat("DESTINATION: %s", targetName), 350, 250, 24, WHITE);
-        DrawText(TextFormat("FUEL REQUIRED: %d", req), 350, 290, 20, canGo?GREEN:RED);
-        DrawText(TextFormat("CURRENT FUEL: %.1f", G_Player.fuel), 350, 320, 20, WHITE);
+        DrawTextWithFont(TextFormat("DESTINATION: %s", targetName), 350, 250, 15, WHITE);
+        DrawTextWithFont(TextFormat("FUEL REQUIRED: %d", req), 350, 290, 12, canGo?GREEN:RED);
+        DrawTextWithFont(TextFormat("CURRENT FUEL: %.1f", G_Player.fuel), 350, 320, 12, WHITE);
         
-        if (!canGo) DrawText("INSUFFICIENT FUEL!", 450, 360, 24, RED);
+        if (!canGo) DrawTextWithFont("INSUFFICIENT FUEL!", 450, 360, 15, RED);
         
         // Buttons
         Color btnCol1 = (g_navSelection==0)?WHITE:GRAY;
         Color btnCol2 = (g_navSelection==1)?WHITE:GRAY;
         
         if (canGo) {
-            DrawText("> ENGAGE <", 400, 420, 20, btnCol1);
+            DrawTextWithFont("> ENGAGE <", 400, 420, 12, btnCol1);
         } else {
-            DrawText("  ENGAGE  ", 400, 420, 20, DARKGRAY);
+            DrawTextWithFont("  ENGAGE  ", 400, 420, 12, DARKGRAY);
         }
-        DrawText("> EXIT <", 700, 420, 20, btnCol2);
+        DrawTextWithFont("> EXIT <", 700, 420, 12, btnCol2);
         
         if (CustomIsKeyPressed(KEY_LEFT) || CustomIsKeyPressed(KEY_RIGHT)) g_navSelection = !g_navSelection;
         
@@ -5350,49 +6021,99 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
         }
     }
     
-    // Update background music stream and handle track switching with crossfading
-    Music* currentMusic = (g_currentTrack == 0) ? &g_backgroundMusic : &g_backgroundMusic2;
-    Music* nextMusic = (g_currentTrack == 0) ? &g_backgroundMusic2 : &g_backgroundMusic;
-    
-    if (currentMusic->frameCount > 0) {
-        UpdateMusicStream(*currentMusic);
-        
-        // Handle Fading
-        float length = GetMusicTimeLength(*currentMusic);
-        float played = GetMusicTimePlayed(*currentMusic);
-        float targetVol = 0.7f;
-        float fadeTime = 2.0f; // 2 seconds fade
-        
-        // Fade In
-        if (played < fadeTime) {
-            SetMusicVolume(*currentMusic, targetVol * (played / fadeTime));
-        }
-        // Fade Out
-        else if (played > length - fadeTime) {
-            float fadeVal = (length - played) / fadeTime;
-            if (fadeVal < 0.0f) fadeVal = 0.0f;
-            SetMusicVolume(*currentMusic, targetVol * fadeVal);
-        }
-        // Normal Volume
-        else {
-            SetMusicVolume(*currentMusic, targetVol);
-        }
-
-        // Check if finished
-        if (!IsMusicStreamPlaying(*currentMusic) || played >= length) {
-            // Track ended, switch
-            if (nextMusic->frameCount > 0) {
-                StopMusicStream(*currentMusic); // Ensure stopped
-                SeekMusicStream(*nextMusic, 0.0f);
-                PlayMusicStream(*nextMusic);
-                SetMusicVolume(*nextMusic, 0.0f); // Start silent for fade in
-                g_currentTrack = (g_currentTrack == 0) ? 1 : 0;
-            } else {
-                // If next track failed to load, loop current
-                StopMusicStream(*currentMusic);
-                SeekMusicStream(*currentMusic, 0.0f);
+    // Handle music based on game state
+    if (g_currentState == STATE_SPLASH) {
+        // On splash screen - only play background music (no bostonpump)
+        Music* currentMusic = (g_currentTrack == 0) ? &g_backgroundMusic : &g_backgroundMusic2;
+        if (currentMusic->frameCount > 0) {
+            // Start background music if not playing yet
+            if (!IsMusicStreamPlaying(*currentMusic)) {
                 PlayMusicStream(*currentMusic);
-                SetMusicVolume(*currentMusic, 0.0f);
+                SetMusicVolume(*currentMusic, 0.7f);
+            } else {
+                UpdateMusicStream(*currentMusic);
+            }
+        }
+        
+        // Stop splash music if playing (shouldn't be on splash screen)
+        if (IsMusicStreamPlaying(g_splashMusic)) {
+            StopMusicStream(g_splashMusic);
+            g_splashMusicFadingOut = false;
+        }
+    } else if (g_showGetReady || g_currentState == STATE_LANDER || g_currentState == STATE_DEBRIS) {
+        // On Get Ready screen or in 3D environment - play bostonpump.wav looping with background music
+        // Start bostonpump if not playing yet
+        if (g_splashMusic.frameCount > 0) {
+            if (!IsMusicStreamPlaying(g_splashMusic)) {
+                PlayMusicStream(g_splashMusic);
+                SetMusicVolume(g_splashMusic, 0.7f);
+                g_splashMusicFadingOut = false;
+            } else {
+                UpdateMusicStream(g_splashMusic);
+            }
+        }
+        
+        // Continue playing background music alongside bostonpump
+        Music* currentMusic = (g_currentTrack == 0) ? &g_backgroundMusic : &g_backgroundMusic2;
+        if (currentMusic->frameCount > 0) {
+            if (!IsMusicStreamPlaying(*currentMusic)) {
+                PlayMusicStream(*currentMusic);
+                SetMusicVolume(*currentMusic, 0.7f);
+            } else {
+                UpdateMusicStream(*currentMusic);
+            }
+        }
+    } else {
+        // Not on splash or in 3D - stop splash music and update background music
+        if (IsMusicStreamPlaying(g_splashMusic)) {
+            StopMusicStream(g_splashMusic);
+            g_splashMusicFadingOut = false;
+        }
+        
+        // Update background music stream and handle track switching with crossfading
+        Music* currentMusic = (g_currentTrack == 0) ? &g_backgroundMusic : &g_backgroundMusic2;
+        Music* nextMusic = (g_currentTrack == 0) ? &g_backgroundMusic2 : &g_backgroundMusic;
+        
+        if (currentMusic->frameCount > 0) {
+            UpdateMusicStream(*currentMusic);
+            
+            // Handle Fading
+            float length = GetMusicTimeLength(*currentMusic);
+            float played = GetMusicTimePlayed(*currentMusic);
+            float targetVol = 0.7f;
+            float fadeTime = 2.0f; // 2 seconds fade
+            
+            // Fade In
+            if (played < fadeTime) {
+                SetMusicVolume(*currentMusic, targetVol * (played / fadeTime));
+            }
+            // Fade Out
+            else if (played > length - fadeTime) {
+                float fadeVal = (length - played) / fadeTime;
+                if (fadeVal < 0.0f) fadeVal = 0.0f;
+                SetMusicVolume(*currentMusic, targetVol * fadeVal);
+            }
+            // Normal Volume
+            else {
+                SetMusicVolume(*currentMusic, targetVol);
+            }
+
+            // Check if finished
+            if (!IsMusicStreamPlaying(*currentMusic) || played >= length) {
+                // Track ended, switch
+                if (nextMusic->frameCount > 0) {
+                    StopMusicStream(*currentMusic); // Ensure stopped
+                    SeekMusicStream(*nextMusic, 0.0f);
+                    PlayMusicStream(*nextMusic);
+                    SetMusicVolume(*nextMusic, 0.0f); // Start silent for fade in
+                    g_currentTrack = (g_currentTrack == 0) ? 1 : 0;
+                } else {
+                    // If next track failed to load, loop current
+                    StopMusicStream(*currentMusic);
+                    SeekMusicStream(*currentMusic, 0.0f);
+                    PlayMusicStream(*currentMusic);
+                    SetMusicVolume(*currentMusic, 0.0f);
+                }
             }
         }
     }
@@ -5556,10 +6277,43 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
 
         case STATE_LANDER:
             DisableCursor();
-            HandleESCNavigation(&g_currentState, &g_menuSelection);
+            
+            // Handle ESC for pause/unpause (override normal ESC navigation)
+            if (CustomIsKeyPressed(KEY_ESCAPE)) {
+                g_isPaused = !g_isPaused;
+                PlayTerminalTypeSound();
+            }
+            
+            // Only handle ESC navigation if not paused (and ESC wasn't just pressed)
+            if (!g_isPaused) {
+                // Don't call HandleESCNavigation here - ESC is now for pause
+            }
         {
             // End 2D Mode for 3D rendering to use full framebuffer natively
             EndMode2D();
+            
+            // Reset pause state when entering lander
+            if (g_currentState == STATE_LANDER && g_previousState != STATE_LANDER) {
+                g_isPaused = false;  // Reset pause when entering lander
+            }
+            
+            // Reset environment on first frame entering lander - fresh rocks, no debris
+            // Use static flag to ensure this only runs once per entry, not every frame
+            static GameState lastLanderEntryState = STATE_SPLASH;
+            if (lastLanderEntryState != STATE_LANDER && g_currentState == STATE_LANDER) {
+                // Just entered STATE_LANDER - reset everything for fresh environment
+                GenerateRocksAndCollision();
+                InitCollisionGrid();
+                // Clear all particles/debris - completely fresh start
+                for (int i = 0; i < MAX_PARTICLES; i++) {
+                    particles[i].life = 0.0f;
+                    particles[i].onGround = false;
+                }
+                lastLanderEntryState = STATE_LANDER; // Mark that we've reset
+            } else if (g_currentState != STATE_LANDER) {
+                // Reset the flag when we leave STATE_LANDER so it can reset again next time
+                lastLanderEntryState = g_currentState;
+            }
             
             static int lander_frame = 0;
             lander_frame++;
@@ -5587,22 +6341,30 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             }
             
             // LANDER LOGIC (Existing 3D Game)
+            // Calculate ship rotation and forward vector (needed for drawing even when paused)
             // --- Input ---
             Vector2 mouseDelta = CustomGetMouseDelta();
             
+            // Only update input if not paused
+            if (!g_isPaused) {
             g_shipPitch -= mouseDelta.y * 0.15f; 
             g_shipRoll -= mouseDelta.x * 0.15f; 
             if (fabs(mouseDelta.x) < 0.1f) g_shipRoll = Lerp(g_shipRoll, 0.0f, 1.0f * dt);
             g_shipPitch = Clamp(g_shipPitch, -85.0f, 85.0f);
             if (CustomIsMouseButtonReleased(MOUSE_BUTTON_RIGHT)) g_yawDirection *= -1;
             if (CustomIsMouseButtonDown(MOUSE_BUTTON_RIGHT)) g_shipYaw -= 120.0f * dt * (float)g_yawDirection;
+            }
 
+            // Always calculate rotation matrix and forward vector (needed for drawing)
             Matrix matRoll = MatrixRotateZ(DEG2RAD * -g_shipRoll);
             Matrix matPitch = MatrixRotateX(DEG2RAD * g_shipPitch);
             Matrix matYaw = MatrixRotateY(DEG2RAD * g_shipYaw);
             Matrix rot = MatrixMultiply(MatrixMultiply(matPitch, matRoll), matYaw);
             Vector3 shipForward = { rot.m8, rot.m9, rot.m10 }; 
-            Vector3 shipUp = { rot.m4, rot.m5, rot.m6 };        
+            Vector3 shipUp = { rot.m4, rot.m5, rot.m6 };
+            
+            // Only update game logic if not paused
+            if (!g_isPaused) {        
 
             // --- Physics & Systems ---
             UpdateRocksAndDebris(dt, g_shipPos);
@@ -5629,6 +6391,12 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             // Zero gravity inside target cylinder + auto-thrust and stabilization
             bool autoThrusting = false;
             if (insideTargetCyl) {
+                // Play beam-up sound when ship first enters the cylinder
+                if (!g_wasInsideCylinder && g_beamUpSound.frameCount > 0) {
+                    PlaySound(g_beamUpSound);
+                    g_wasInsideCylinder = true;
+                }
+                
                 dynamicGravity = 0.0f;
                 // Auto-thrust: apply upward thrust automatically
                 autoThrusting = true;
@@ -5643,13 +6411,22 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                 float altAboveTerrain = g_shipPos.y - targetCylTerrainH;
                 if (altAboveTerrain >= 20.0f) {
                     ResetState(&g_currentState, &g_menuSelection, STATE_NAV_SCREEN);
+                    g_wasInsideCylinder = false; // Reset flag when leaving
                 }
+            } else {
+                // Reset flag when ship leaves the cylinder
+                g_wasInsideCylinder = false;
             }
             
+            // If fuel is empty, apply 500% gravity (5x normal gravity) - massive downward pull
+            if (G_Player.fuel <= 0.0f && !insideTargetCyl) {
+                dynamicGravity = dynamicGravity * 5.0f; // 500% gravity effect - ship will crash hard
+            }
             g_shipVel.y += dynamicGravity * dt;
 
             // Thrust Logic with Cargo Penalty (or auto-thrust if inside cylinder)
             bool isThrusting = CustomIsMouseButtonDown(MOUSE_LEFT_BUTTON) || CustomIsKeyDown(KEY_W) || autoThrusting;
+            
             // Only allow thrusting if fuel is available
             if (isThrusting && G_Player.fuel > 0.0f && !explosionTriggered) {
                 // Apply thruster boost and cargo penalty (-5% per cargo unit)
@@ -5660,15 +6437,33 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                 float effectiveThrustPower = SHIP_THRUST_POWER * G_Player.thrusterBoost * thrustMultiplier;
                 
                 g_shipVel = Vector3Add(g_shipVel, Vector3Scale(shipUp, effectiveThrustPower * dt));
-                Vector3 engineNozzle = Vector3Add(g_shipPos, Vector3Scale(shipUp, -0.4f));
+                
+                // Spawn particles on the ship
+                Vector3 engineNozzle = g_shipPos; // Spawn directly on ship
                 SpawnThrustParticles(engineNozzle, shipUp);
                 
                 // Consume fuel based on burn rate
-                G_Player.fuel -= SHIP_FUEL_BURN_RATE * dt;
+                // Fix: Fuel Upgrade reduces consumption by 50%
+                float burnRate = SHIP_FUEL_BURN_RATE;
+                if (G_Player.hasFuelTankUpgrade) burnRate *= 0.5f;
+                
+                G_Player.fuel -= burnRate * dt;
                 if (G_Player.fuel < 0.0f) G_Player.fuel = 0.0f;
-            } else if (isThrusting && G_Player.fuel <= 0.0f && !explosionTriggered) {
-                // Fuel depleted - no thrust available
-                // Visual/audio feedback could be added here
+
+                // Play thruster sound (looping)
+                if (!IsSoundPlaying(g_thrusterSound)) {
+                    PlaySound(g_thrusterSound);
+                }
+            } else {
+                // Stop thruster sound if not thrusting or out of fuel
+                if (IsSoundPlaying(g_thrusterSound)) {
+                    StopSound(g_thrusterSound);
+                }
+
+                if (isThrusting && G_Player.fuel <= 0.0f && !explosionTriggered) {
+                    // Fuel depleted - no thrust available
+                    // Visual/audio feedback could be added here
+                }
             }
             
             // Note: Laser logic moved to drawing phase for visuals, but input checked there too.
@@ -5709,23 +6504,54 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                     float highVelocityThreshold = 15.0f;
                     
                     if (isNewCollision) {
-                    Vector3 collisionNormal = {0, 1, 0};
-                    SpawnCollisionParticles(nextPos, collisionNormal);
-                    SpawnAsteroidDebris(nextPos);
+                        Vector3 collisionNormal = {0, 1, 0};
+                        SpawnCollisionParticles(nextPos, collisionNormal);
+                        SpawnAsteroidDebris(nextPos);
+
+                        // Fix: One collision = 10 units of hull damage (unless gravity > 50% then 20 units)
+                        float damagePerHit = 10.0f;
+                        if (g_selectedAsteroidGravity > 50) damagePerHit = 20.0f;
+                        damagePerHit *= G_Player.hullResistance;
+                        
+                        // If out of fuel, ANY collision is instant death
+                        if (G_Player.fuel <= 0.0f) damagePerHit = 99999.0f;
+
+                        int hullBefore = (int)G_Player.hull;
+                        G_Player.hull -= damagePerHit;
+                        int hullAfter = (int)G_Player.hull;
+                        // Play crash sound if hull crossed an integer boundary downward
+                        if (hullAfter < hullBefore && g_crashSound.frameCount > 0) {
+                            PlaySound(g_crashSound);
+                        }
                     }
                     
                     if (collisionVelocity > highVelocityThreshold) {
+                        int hullBefore = (int)G_Player.hull;
                         G_Player.hull = 0;
+                        // Play crash sound if hull was above 0 and is now 0
+                        if (hullBefore > 0 && g_crashSound.frameCount > 0) {
+                            PlaySound(g_crashSound);
+                        }
                     } else {
                         // Continuous damage while stuck in terrain
+                        int hullBefore = (int)G_Player.hull;
                         float damageAmount = 2.0f * G_Player.hullResistance * dt;
                         G_Player.hull -= damageAmount;
                         if (G_Player.hull < 0) G_Player.hull = 0;
+                        int hullAfter = (int)G_Player.hull;
+                        // Play crash sound if hull crossed an integer boundary downward
+                        if (hullAfter < hullBefore && g_crashSound.frameCount > 0) {
+                            PlaySound(g_crashSound);
+                        }
                     }
                     
                     if (G_Player.hull <= 0 && !explosionTriggered) {
                         explosionPos = nextPos;
                         SpawnExplosionParticles(nextPos);
+                        // Play explode sound immediately when ship is destroyed
+                        if (g_explodeSound.frameCount > 0) {
+                            PlaySound(g_explodeSound);
+                        }
                         explosionTriggered = true;
                         frozenCameraPos = g_camera.position;
                         float worldH = GetWorldHeight(frozenCameraPos.x, frozenCameraPos.z);
@@ -5795,15 +6621,39 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                         float pushDistance = minDistance + 1.0f; // Large clearance
                         nextPos = Vector3Add(G_Rocks[i].position, Vector3Scale(pushDir, pushDistance));
                         
-                        // Apply damage every frame while colliding
+                        // Apply damage on collision (Discrete, not continuous)
                         float collisionVelocity = Vector3Length(g_shipVel);
                         if (collisionVelocity > 15.0f) {
+                            int hullBefore = (int)G_Player.hull;
                             G_Player.hull = 0; // Instant destruction at high speed
+                            // Play crash sound if hull was above 0 and is now 0
+                            if (hullBefore > 0 && g_crashSound.frameCount > 0) {
+                                PlaySound(g_crashSound);
+                            }
                         } else {
-                            // Continuous damage while embedded
-                            float damageAmount = 2.0f * G_Player.hullResistance * dt; // Damage per second
-                            G_Player.hull -= damageAmount;
-                             if (G_Player.hull < 0) G_Player.hull = 0;
+                            // Fix: One collision = 10 units of hull damage (unless gravity > 50% then 20 units)
+                            float damagePerHit = 10.0f;
+                            
+                            // Check asteroid gravity
+                            if (g_selectedAsteroidGravity > 50) damagePerHit = 20.0f;
+                            
+                            // Sheet Metal (Hull Resistance/Exo-Plating) alters this.
+                            damagePerHit *= G_Player.hullResistance;
+                            
+                            // If out of fuel, ANY collision is instant death
+                            if (G_Player.fuel <= 0.0f) damagePerHit = 99999.0f;
+                            
+                            // Apply instantaneous damage
+                            // The collision resolution pushes the ship out, so this happens once per hit.
+                            int hullBefore = (int)G_Player.hull;
+                            G_Player.hull -= damagePerHit;
+
+                            if (G_Player.hull < 0) G_Player.hull = 0;
+                            int hullAfter = (int)G_Player.hull;
+                            // Play crash sound if hull crossed an integer boundary downward
+                            if (hullAfter < hullBefore && g_crashSound.frameCount > 0) {
+                                PlaySound(g_crashSound);
+                            }
                          }
                         
                         // Spawn collision particles
@@ -5825,6 +6675,10 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                         if (G_Player.hull <= 0 && !explosionTriggered) {
                             explosionPos = nextPos;
                             SpawnExplosionParticles(nextPos);
+                            // Play explode sound immediately when ship is destroyed
+                            if (g_explodeSound.frameCount > 0) {
+                                PlaySound(g_explodeSound);
+                            }
                             explosionTriggered = true;
                             frozenCameraPos = g_camera.position;
                             float worldH = GetWorldHeight(frozenCameraPos.x, frozenCameraPos.z);
@@ -5884,6 +6738,7 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             }
 
             UpdateParticles(dt);
+            } // End of pause check - game logic updates only when not paused
 
             // --- Draw 3D Scene ---
             BeginMode3D(g_camera);
@@ -5899,7 +6754,13 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                 if (!explosionTriggered) {
                     DrawProjectedShadow(g_shipPos);
                     g_ship.transform = rot;
-                    DrawModel(g_ship, g_shipPos, 1.0f, WHITE);
+                    
+                    Model* shipModelToDraw = &g_ship; // Default Blue
+                    if (G_Player.shipColor == 1) shipModelToDraw = &g_stationShopModels[3]; // Red
+                    else if (G_Player.shipColor == 2) shipModelToDraw = &g_stationShopModels[4]; // Green
+                    else if (G_Player.shipColor == 3) shipModelToDraw = &g_stationShopModels[5]; // Purple
+                    
+                    DrawModel(*shipModelToDraw, g_shipPos, 1.0f, WHITE);
                 }
                 
                 // Rocks
@@ -5935,8 +6796,10 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                 EndBlendMode();
                 }
                 
-                // Laser Visuals
-                UpdateLaserLogic(dt, g_shipPos, shipForward);
+                // Laser Visuals (only update when not paused)
+                if (!g_isPaused) {
+                    UpdateLaserLogic(dt, g_shipPos, shipForward);
+                }
                 
                 rlEnableBackfaceCulling();
                 DrawParticles();
@@ -5956,11 +6819,11 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             
             // Altitude Meter
             float alt = g_shipPos.y - GetTerrainHeight(g_shipPos.x, g_shipPos.z);
-            DrawText(TextFormat("ALT: %.1f", alt), VIRTUAL_WIDTH - 150, 40, 30, WHITE);
+            DrawTextWithFont(TextFormat("ALT: %.1f", alt), VIRTUAL_WIDTH - 150, 40, 21, WHITE);  // Increased by 30% (was 16)
             
             // Fuel gauge
             int fuelBars = (int)(G_Player.fuel / 10.0f);
-            DrawText("FUEL", 10, screenH - 40, 20, WHITE);
+            DrawTextWithFont("FUEL", 10, screenH - 40, 13, WHITE);  // Increased by 30% (was 10)
             for(int i=0; i<10; i++) {
                 Color barCol = (i < fuelBars) ? GREEN : DARKGRAY;
                 if (i < 3 && i < fuelBars) barCol = RED;
@@ -5968,11 +6831,12 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             }
             
             // Cargo gauge (25 max - updated)
-            int cargoMax = 25;
+            int cargoMax = G_Player.cargoSpace;
             float cargoPct = (float)G_Player.cargoFilled / (float)cargoMax;
             if (cargoPct > 1.0f) cargoPct = 1.0f;
             
-            DrawText(TextFormat("CARGO %d/%d", G_Player.cargoFilled, cargoMax), 10, screenH - 80, 20, WHITE);
+            // Cargo text increased by 25% (8 * 1.25 = 10)
+            DrawTextWithFont(TextFormat("CARGO %d/%d", G_Player.cargoFilled, cargoMax), 10, screenH - 80, 10, WHITE);
             // Draw continuous bar
             DrawRectangle(150, screenH - 80, 200, 20, DARKGRAY); // Background
             DrawRectangle(150, screenH - 80, (int)(200 * cargoPct), 20, ORANGE); // Fill
@@ -5980,7 +6844,7 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             
             // Hull gauge
             int hullBars = (int)(G_Player.hull / 10.0f);
-            DrawText("HULL", 10, screenH - 120, 20, WHITE);
+            DrawTextWithFont("HULL", 10, screenH - 120, 13, WHITE);  // Increased by 30% (was 10)
             for(int i=0; i<10; i++) {
                 Color barCol = (i < hullBars) ? (Color){200, 200, 255, 255} : DARKGRAY; 
                 if (i < 3 && i < hullBars) barCol = RED;
@@ -5989,7 +6853,7 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             
             // Laser Heat Bar (if fitted) - Make sure it's always visible
             if (G_Player.hasLaser) {
-                 DrawText("LASER TEMP", 10, 100, 20, WHITE);
+                 DrawTextWithFont("LASER TEMP", 10, 100, 13, WHITE);  // Increased by 30% (was 10)
                  float heatPct = G_Player.laserHeat / G_Player.maxLaserHeat;
                  if (heatPct > 1.0f) heatPct = 1.0f;
                  Color heatCol = G_Player.laserOverheated ? RED : ORANGE;
@@ -6003,15 +6867,15 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                  DrawRectangleLines(10, 130, 200, 20, WHITE);
                  
                  // Show heat percentage
-                 DrawText(TextFormat("%.0f%%", G_Player.laserHeat), 220, 130, 18, WHITE);
+                 DrawTextWithFont(TextFormat("%.0f%%", G_Player.laserHeat), 220, 130, 12, WHITE);  // Increased by 30% (was 9)
                  
                  if (G_Player.laserOverheated) {
-                     DrawText("OVERHEAT", 220, 150, 20, RED);
+                     DrawTextWithFont("OVERHEAT", 220, 150, 13, RED);  // Increased by 30% (was 10)
                  }
             }
             
             if (laserErrorDisplayTime > 0.0f) {
-                DrawText("ERROR: NO LASER", 10, 70, 20, RED);
+                DrawTextWithFont("ERROR: NO LASER", 10, 70, 13, RED);  // Increased by 30% (was 10)
             }
             
             // Mini Map (Bottom Right)
@@ -6048,11 +6912,11 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             // Note: X is negated so when ship moves left, world moves right on minimap
             // Note: Z is negated because screen Y increases downward, but world Z forward should appear upward on minimap
             Vector2 boundTL = {
-                mapCenterX - worldBoundTL_X * mapScale,  // Negate X for correct orientation
+                mapCenterX + worldBoundTL_X * mapScale,  // Positive X for correct orientation
                 mapCenterY - worldBoundTL_Z * mapScale  // Negate Z for correct orientation
             };
             Vector2 boundBR = {
-                mapCenterX - worldBoundBR_X * mapScale,  // Negate X for correct orientation
+                mapCenterX + worldBoundBR_X * mapScale,  // Positive X for correct orientation
                 mapCenterY - worldBoundBR_Z * mapScale  // Negate Z for correct orientation
             };
             
@@ -6074,7 +6938,7 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             // Map to screen: X is negated so when ship moves left, world moves right on minimap
             // Z is negated so when ship moves forward, world moves backward on minimap
             Vector2 tubeMapPos = {
-                mapCenterX - relX * mapScale,  // Negate X for correct orientation
+                mapCenterX + relX * mapScale,  // Positive X for correct orientation
                 mapCenterY - relZ * mapScale   // Negate Z for correct orientation
             };
             
@@ -6094,7 +6958,7 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                 float dist = sqrtf(rockRelX * rockRelX + rockRelZ * rockRelZ);
                 if (dist < PROSPECT_PERIMETER) {
                     Vector2 rockMapPos = {
-                        mapCenterX - rockRelX * mapScale,  // Negate X for correct orientation
+                        mapCenterX + rockRelX * mapScale,  // Positive X for correct orientation
                         mapCenterY - rockRelZ * mapScale   // Negate Z for correct orientation
                     };
                     // Only draw if within minimap bounds
@@ -6136,6 +7000,31 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
             
             DrawTriangle(tipRot, leftRot, rightRot, BLUE);
             DrawTriangleLines(tipRot, leftRot, rightRot, WHITE);
+            
+            // Draw pause overlay if paused
+            if (g_isPaused) {
+                // Semi-transparent dark overlay
+                DrawRectangle(0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT, (Color){0, 0, 0, 180});
+                
+                // Pause text
+                const char* pauseText = "PAUSED";
+                int fontSize = 38;
+                int textWidth = MeasureTextWithFont(pauseText, fontSize);
+                int textX = (VIRTUAL_WIDTH - textWidth) / 2;
+                int textY = VIRTUAL_HEIGHT / 2 - 40;
+                
+                // Draw text with outline for visibility
+                DrawTextWithFont(pauseText, textX + 2, textY + 2, fontSize, BLACK);
+                DrawTextWithFont(pauseText, textX, textY, fontSize, YELLOW);
+                
+                // Instruction text
+                const char* instructionText = "PRESS ESC TO UNPAUSE";
+                int instFontSize = 15;
+                int instWidth = MeasureTextWithFont(instructionText, instFontSize);
+                int instX = (VIRTUAL_WIDTH - instWidth) / 2;
+                int instY = textY + fontSize + 20;
+                DrawTextWithFont(instructionText, instX, instY, instFontSize, WHITE);
+            }
             
             DrawScanlines();
             break;
@@ -6204,7 +7093,250 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
     if (!terminalTypeLoaded) {
         printf("[InitializeGame] ERROR: Failed to load terminal_type.wav from all paths!\n");
     }
+
+    // Load laser sound with multiple fallbacks
+    const char* laserSoundPaths[] = {
+        "laser.wav",
+        "Data/games/AstroMiner/laser.wav",
+        "../../games/AstroMiner/laser.wav"
+    };
+    bool laserSoundLoaded = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load laser.wav from: %s\n", laserSoundPaths[j]);
+        g_laserSound = LoadSound(laserSoundPaths[j]);
+        if (g_laserSound.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded laser.wav from: %s\n", laserSoundPaths[j]);
+            laserSoundLoaded = true;
+            SetSoundVolume(g_laserSound, 0.50f); // Reduced by ~50% from original, 25% from 0.67
+            break;
+        }
+    }
+    if (!laserSoundLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load laser.wav from all paths!\n");
+    }
+
+    // Load thruster sound with multiple fallbacks
+    const char* thrusterSoundPaths[] = {
+        "burners.wav",
+        "Data/games/AstroMiner/burners.wav",
+        "../../games/AstroMiner/burners.wav"
+    };
+    bool thrusterSoundLoaded = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load burners.wav from: %s\n", thrusterSoundPaths[j]);
+        g_thrusterSound = LoadSound(thrusterSoundPaths[j]);
+        if (g_thrusterSound.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded burners.wav from: %s\n", thrusterSoundPaths[j]);
+            thrusterSoundLoaded = true;
+            break;
+        }
+    }
+    if (!thrusterSoundLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load burners.wav from all paths!\n");
+    }
+
+    // Load sale sound with multiple fallbacks
+    const char* saleSoundPaths[] = {
+        "sale.wav",
+        "Data/games/AstroMiner/sale.wav",
+        "../../games/AstroMiner/sale.wav"
+    };
+    bool saleSoundLoaded = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load sale.wav from: %s\n", saleSoundPaths[j]);
+        g_saleSound = LoadSound(saleSoundPaths[j]);
+        if (g_saleSound.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded sale.wav from: %s\n", saleSoundPaths[j]);
+            saleSoundLoaded = true;
+            break;
+        }
+    }
+    if (!saleSoundLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load sale.wav from all paths!\n");
+    }
+
+    // Load No sound with multiple fallbacks
+    const char* noSoundPaths[] = {
+        "No.wav",
+        "Data/games/AstroMiner/No.wav",
+        "../../games/AstroMiner/No.wav"
+    };
+    bool noSoundLoaded = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load No.wav from: %s\n", noSoundPaths[j]);
+        g_noSound = LoadSound(noSoundPaths[j]);
+        if (g_noSound.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded No.wav from: %s\n", noSoundPaths[j]);
+            noSoundLoaded = true;
+            SetSoundVolume(g_noSound, 1.0f); // Set to 100% volume
+            break;
+        }
+    }
+    if (!noSoundLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load No.wav from all paths!\n");
+    }
+
+    // Load crash sound with multiple fallbacks
+    const char* crashSoundPaths[] = {
+        "crash.wav",
+        "Data/games/AstroMiner/crash.wav",
+        "../../games/AstroMiner/crash.wav"
+    };
+    bool crashSoundLoaded = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load crash.wav from: %s\n", crashSoundPaths[j]);
+        g_crashSound = LoadSound(crashSoundPaths[j]);
+        if (g_crashSound.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded crash.wav from: %s\n", crashSoundPaths[j]);
+            crashSoundLoaded = true;
+            break;
+        }
+    }
+    if (!crashSoundLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load crash.wav from all paths!\n");
+    }
+
+    // Load explode sound with multiple fallbacks
+    const char* explodeSoundPaths[] = {
+        "explode.wav",
+        "Data/games/AstroMiner/explode.wav",
+        "../../games/AstroMiner/explode.wav"
+    };
+    bool explodeSoundLoaded = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load explode.wav from: %s\n", explodeSoundPaths[j]);
+        g_explodeSound = LoadSound(explodeSoundPaths[j]);
+        if (g_explodeSound.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded explode.wav from: %s\n", explodeSoundPaths[j]);
+            explodeSoundLoaded = true;
+            break;
+        }
+    }
+    if (!explodeSoundLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load explode.wav from all paths!\n");
+    }
+
+    // Load entering station sound with multiple fallbacks
+    const char* enteringStationSoundPaths[] = {
+        "entering_station.wav",
+        "Data/games/AstroMiner/entering_station.wav",
+        "../../games/AstroMiner/entering_station.wav"
+    };
+    bool enteringStationSoundLoaded = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load entering_station.wav from: %s\n", enteringStationSoundPaths[j]);
+        g_enteringStationSound = LoadSound(enteringStationSoundPaths[j]);
+        if (g_enteringStationSound.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded entering_station.wav from: %s\n", enteringStationSoundPaths[j]);
+            enteringStationSoundLoaded = true;
+            break;
+        }
+    }
+    if (!enteringStationSoundLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load entering_station.wav from all paths!\n");
+    }
+
+    // Load collect sound with multiple fallbacks
+    const char* collectSoundPaths[] = {
+        "collect.wav",
+        "Data/games/AstroMiner/collect.wav",
+        "../../games/AstroMiner/collect.wav"
+    };
+    bool collectSoundLoaded = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load collect.wav from: %s\n", collectSoundPaths[j]);
+        g_collectSound = LoadSound(collectSoundPaths[j]);
+        if (g_collectSound.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded collect.wav from: %s\n", collectSoundPaths[j]);
+            collectSoundLoaded = true;
+            break;
+        }
+    }
+    if (!collectSoundLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load collect.wav from all paths!\n");
+    }
+
+    // Load rock sound with multiple fallbacks
+    const char* rockSoundPaths[] = {
+        "rock.wav",
+        "Data/games/AstroMiner/rock.wav",
+        "../../games/AstroMiner/rock.wav"
+    };
+    bool rockSoundLoaded = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load rock.wav from: %s\n", rockSoundPaths[j]);
+        g_rockSound = LoadSound(rockSoundPaths[j]);
+        if (g_rockSound.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded rock.wav from: %s\n", rockSoundPaths[j]);
+            rockSoundLoaded = true;
+            SetSoundVolume(g_rockSound, 0.70f); // Set to 70% volume
+            break;
+        }
+    }
+    if (!rockSoundLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load rock.wav from all paths!\n");
+    }
+
+    // Load beam-up ship sound with multiple fallbacks
+    const char* beamUpSoundPaths[] = {
+        "beam-up-ship.wav",
+        "Data/games/AstroMiner/beam-up-ship.wav",
+        "../../games/AstroMiner/beam-up-ship.wav"
+    };
+    bool beamUpSoundLoaded = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load beam-up-ship.wav from: %s\n", beamUpSoundPaths[j]);
+        g_beamUpSound = LoadSound(beamUpSoundPaths[j]);
+        if (g_beamUpSound.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded beam-up-ship.wav from: %s\n", beamUpSoundPaths[j]);
+            beamUpSoundLoaded = true;
+            break;
+        }
+    }
+    if (!beamUpSoundLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load beam-up-ship.wav from all paths!\n");
+    }
     
+    // Load launch sequence sound with multiple fallbacks
+    const char* launchSequenceSoundPaths[] = {
+        "launch-sequence.wav",
+        "Data/games/AstroMiner/launch-sequence.wav",
+        "../../games/AstroMiner/launch-sequence.wav"
+    };
+    bool launchSequenceSoundLoaded = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load launch-sequence.wav from: %s\n", launchSequenceSoundPaths[j]);
+        g_launchSequenceSound = LoadSound(launchSequenceSoundPaths[j]);
+        if (g_launchSequenceSound.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded launch-sequence.wav from: %s\n", launchSequenceSoundPaths[j]);
+            launchSequenceSoundLoaded = true;
+            break;
+        }
+    }
+    if (!launchSequenceSoundLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load launch-sequence.wav from all paths!\n");
+    }
+
+    // Load fixing-on sound with multiple fallbacks
+    const char* fixingOnSoundPaths[] = {
+        "fixing-on.wav",
+        "Data/games/AstroMiner/fixing-on.wav",
+        "../../games/AstroMiner/fixing-on.wav"
+    };
+    bool fixingOnSoundLoaded = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load fixing-on.wav from: %s\n", fixingOnSoundPaths[j]);
+        g_fixingOnSound = LoadSound(fixingOnSoundPaths[j]);
+        if (g_fixingOnSound.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded fixing-on.wav from: %s\n", fixingOnSoundPaths[j]);
+            fixingOnSoundLoaded = true;
+            break;
+        }
+    }
+    if (!fixingOnSoundLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load fixing-on.wav from all paths!\n");
+    }
+
     // Load background music (AstroMiner.mp3) with multiple fallbacks
     const char* musicPaths[] = {
         "AstroMiner.mp3",
@@ -6251,13 +7383,37 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
         printf("[InitializeGame] ERROR: Failed to load AstroMiner2.mp3 from all paths!\n");
     }
 
-    // Start playing the first track
+    // Load splash screen music (bostonpump.wav) with multiple fallbacks
+    const char* splashMusicPaths[] = {
+        "bostonpump.wav",
+        "Data/games/AstroMiner/bostonpump.wav",
+        "../../games/AstroMiner/bostonpump.wav"
+    };
+    bool splashMusicLoaded = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load bostonpump.wav from: %s\n", splashMusicPaths[j]);
+        g_splashMusic = LoadMusicStream(splashMusicPaths[j]);
+        if (g_splashMusic.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded bostonpump.wav from: %s\n", splashMusicPaths[j]);
+            splashMusicLoaded = true;
+            SetMusicVolume(g_splashMusic, 0.7f);
+            g_splashMusic.looping = true; // Loop the splash music
+            break;
+        }
+    }
+    if (!splashMusicLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load bostonpump.wav from all paths!\n");
+    }
+
+    // Start background music immediately - it will play alongside splash music
     if (musicLoaded) {
         PlayMusicStream(g_backgroundMusic);
+        SetMusicVolume(g_backgroundMusic, 0.7f);
         g_currentTrack = 0;
         printf("[InitializeGame] Background music 1 started playing (70%% volume)\n");
     } else if (musicLoaded2) {
         PlayMusicStream(g_backgroundMusic2);
+        SetMusicVolume(g_backgroundMusic2, 0.7f);
         g_currentTrack = 1;
         printf("[InitializeGame] Background music 2 started playing (70%% volume)\n");
     }
@@ -6354,9 +7510,15 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
         printf("[InitializeGame] ERROR: Failed to load bar_page.png from all paths!\n");
     }
     
-    // Generate world
-    GenerateRocksAndCollision();
-    InitCollisionGrid();
+    // Initialize asteroid fuel costs persistently (so they don't change while browsing)
+    for (int i = 0; i < 6; i++) {
+        // Depot costs: 20-50
+        g_fuelCosts[i] = GetRandomValue(20, 50);
+        
+        // Station costs (if we had separate arrays, but currently reusing logic or randomizing on keypress)
+        // To strictly follow "set and do not change", we should have arrays for all locations or 
+        // update this array when location changes.
+    }
     
     // Load scanline texture
     scanlineTx = LoadTexture("../../images/scanline.png");
@@ -6597,6 +7759,9 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
     
     // Load retro font for stats overlay (try multiple paths)
     const char* retroFontPaths[] = {
+        "PressStart2P-Regular.ttf",
+        "Data/games/AstroMiner/PressStart2P-Regular.ttf",
+        "../../PressStart2P-Regular.ttf",
         "Retro Gaming.ttf",
         "Data/Retro Gaming.ttf",
         "../../Retro Gaming.ttf",
@@ -6606,7 +7771,8 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
     
     printf("[InitializeGame] Loading retro font...\n");
     bool fontLoaded = false;
-    for (int i = 0; i < 5; i++) {
+    int numFontPaths = sizeof(retroFontPaths) / sizeof(retroFontPaths[0]);
+    for (int i = 0; i < numFontPaths; i++) {
         printf("[InitializeGame] Trying to load font from: %s\n", retroFontPaths[i]);
         retroFont = LoadFont(retroFontPaths[i]);
         if (retroFont.texture.id > 0) {
@@ -6676,7 +7842,7 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
 // ------------------------------------------------------------
 // MAIN (for standalone testing - can be removed when embedded)
 // ------------------------------------------------------------
-int main()
+int main(void)
 {
     // Set standalone mode flag BEFORE InitializeGame
     g_standalone_mode = true;

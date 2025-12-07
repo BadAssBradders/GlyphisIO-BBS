@@ -399,11 +399,9 @@ class AstroMinerSession(BaseGameSession):
         if not self.embed_module:
             return None
         
-        # Handle ESC to exit
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE:
-                self.exit_requested = True
-                return "exit"
+        # ESC is now handled by the game itself (navigation, closing modals, etc.)
+        # Only exit when the game signals it wants to exit via should_exit()
+        # (which happens when user selects QUIT GAME from the menu)
         
         # Forward keyboard events
         if event.type == pygame.KEYDOWN:
