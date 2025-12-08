@@ -1,0 +1,33 @@
+.agent/workflows/compile_astrominer.md
+Data/games/AstroMiner/GAME_REVIEW.md
+Data/games/AstroMiner/No.wav
+Data/games/AstroMiner/OFL.txt
+Data/games/AstroMiner/PressStart2P-Regular.ttf
+Data/games/AstroMiner/afterburners.flp
+Data/games/AstroMiner/astro_miner_main.cpp
+Data/games/AstroMiner/astrominer.dll
+Data/games/AstroMiner/beam-up-ship.wav
+Data/games/AstroMiner/bostonpump.wav
+Data/games/AstroMiner/burners.wav
+Data/games/AstroMiner/collect.wav
+Data/games/AstroMiner/crash.wav
+Data/games/AstroMiner/entering_station.wav
+Data/games/AstroMiner/explode.wav
+Data/games/AstroMiner/fixing-on.wav
+Data/games/AstroMiner/fixingsounds.wav
+Data/games/AstroMiner/laser.wav
+Data/games/AstroMiner/launch-sequence.wav
+Data/games/AstroMiner/radio-circuits.wav
+Data/games/AstroMiner/radio-nodes.wav
+Data/games/AstroMiner/rock.wav
+Data/games/AstroMiner/sale.wav
+Data/games/AstroMiner/screenshot000.png
+Data/games/astrominer_embed.py
+Data/games/registry.py
+sandbox media/ASTRO Stills Together.png
+sandbox media/AstroScreen1.png
+sandbox media/AstroScreen2.png
+sandbox media/AstroScreen3.png
+sandbox media/OSscreen1.png
+sandbox media/OSscreen2.png
+sandbox media/OSscreen3.png

@@ -1877,6 +1877,19 @@ class OSMode:
         if self.solitaire_game and self.solitaire_game.active:
             self.solitaire_game.draw()
     
+    def draw_tape_video(self):
+        """Draw the Datasette_Load.mp4 video (should be called last, after scanlines and overlay)."""
+        if self.tape_modal_video_playing and self.tape_modal_video_frame:
+            # Render from baseline coordinates (1363, 44)
+            video_x = int(self.datasette_baseline_x * self.scale)
+            video_y = int(self.datasette_baseline_y * self.scale)
+            
+            # Move video 50px to the right (scaled)
+            video_x += int(50 * self.scale)
+            
+            # Draw with fade alpha already applied in the surface
+            self.screen.blit(self.tape_modal_video_frame, (video_x, video_y))
+    
     def _draw_tape_modal(self):
         """Draw the tape icon modal."""
         # Modal dimensions (scaled)
@@ -2027,17 +2040,7 @@ class OSMode:
         except Exception:
             pass
         
-        # Draw video if playing (at specified Datasette position)
-        if self.tape_modal_video_playing and self.tape_modal_video_frame:
-            # Render from baseline coordinates (1363, 44)
-            video_x = int(self.datasette_baseline_x * self.scale)
-            video_y = int(self.datasette_baseline_y * self.scale)
-            
-            # Move video 50px to the right (scaled)
-            video_x += int(50 * self.scale)
-            
-            # Draw with fade alpha already applied in the surface
-            self.screen.blit(self.tape_modal_video_frame, (video_x, video_y))
+        # Note: Video drawing moved to draw_tape_video() method to be called after scanlines/overlay
     
     def _draw_clock(self):
         """Draw the BRADSONIC 69000 Health Monitor in OS mode."""

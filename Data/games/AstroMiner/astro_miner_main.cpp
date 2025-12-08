@@ -346,6 +346,7 @@ Sound g_terminalTypeSound = {0};  // Sound for terminal typing
 Sound g_laserSound = {0};         // Sound for laser firing
 Sound g_thrusterSound = {0};      // Sound for thrusters firing
 Sound g_saleSound = {0};          // Sound for selling commodities
+Sound g_fuelSound = {0};          // Sound for purchasing fuel
 Sound g_noSound = {0};            // Sound for when trying to sell commodities you don't have
 Sound g_crashSound = {0};         // Sound for when hull point is lost
 Sound g_explodeSound = {0};       // Sound for when ship is destroyed
@@ -419,6 +420,7 @@ int g_currentLocation = 0; // 0=Depot, 1=Station, 2=Halo
 bool g_showBarView = false;
 float g_barModalTimer = 0.0f; // Delay timer for modal appearance
 int g_barDrinksPurchased = 0;
+bool g_barJustOpened = false; // Flag to prevent Enter key from immediately purchasing after opening bar
 bool g_showBarRumorModal = false;
 bool g_showBarGoldCardModal = false;
 bool g_showBarGamblingModal = false;
@@ -426,16 +428,23 @@ bool g_showBarScientistModal = false;
 bool g_showBarSuccessModal = false;  // Success modal for 5 drinks reward
 bool g_showExitToMainMenuModal = false;  // Show exit to main menu confirmation modal
 float g_barModalDelayTimer = 0.0f;  // Timer for 1 second delay before showing bar modals
-int g_barModalPendingType = 0;  // 0=none, 1=rumor, 2=goldcard, 3=gambling, 4=scientist, 5=success
+int g_barModalPendingType = 0;  // 0=none, 1=rumor, 2=goldcard, 3=gambling, 4=scientist, 5=success, 6=laserUpgrade
 int g_exitModalSelection = 0;  // 0=YES, 1=NO
 bool g_showWelcomeModal = false;  // Show welcome modal when starting new game
 char g_barRumorText[512] = {0};
 char g_barGamblingText[512] = {0};
 char g_barScientistText[512] = {0};
 char g_barSuccessText[512] = {0};
+char g_barLaserUpgradeText[512] = {0};
 int g_barMenuSelection = 0; // Menu selection (varies by location)
 int g_barRandomMood = 0; // Random mood index for bar atmosphere
 int g_barMaxMenuItems = 4; // Number of menu items (varies by location)
+// Bar visit tracking for special options (3rd visit unlocks)
+int g_barVisitCounts[3] = {0, 0, 0}; // [0]=Depot, [1]=Station, [2]=Halo
+bool g_barScientistUsed = false; // Station bar scientist option used
+bool g_barStoriesUsed = false; // Halo bar stories option used
+bool g_barLaserUpgradeUsed = false; // Depot bar laser upgrade option used
+bool g_showBarLaserUpgradeModal = false; // Modal for laser upgrade
 const char* g_barMoods[] = {
     "THE AIR IS THICK WITH SMOKE AND THE SMELL OF OZONE.",
     "A ROWDY GROUP OF MINERS ARE SINGING SHANTIES IN THE CORNER.",
@@ -2551,6 +2560,9 @@ void RenderCommoditiesMarket() {
                               "SHINJUKU DEPOT MARKET";
     int headerX = 270;
     DrawTextWithFont(marketTitle, headerX, 50, 15, YELLOW);  // Moved down 20px (from 30 to 50)
+    // Draw [S]ELL indicator next to title
+    int titleWidth = MeasureTextWithFont(marketTitle, 15);
+    DrawTextWithFont("[S]ELL", headerX + titleWidth + 20, 50, 15, YELLOW);
     
     // Draw credits and cargo info (aligned with header)
     DrawTextWithFont(TextFormat("CREDITS: %d", G_Player.credits), headerX, 90, 15, GREEN);  // Moved down 20px (from 70 to 90)
@@ -2562,7 +2574,7 @@ void RenderCommoditiesMarket() {
     int maxVisible = 10;  // Show up to 10 commodities at once
 
     // Pre-calc layout so names and prices stay tight and aligned
-    int nameFontSize = 11; // Increased by 5pt (was 14)
+    int nameFontSize = 15; // Match bar modal text size (was 11)
     int maxNameWidth = 0;
     for (int i = 0; i < NUM_COMMODITIES; i++) {
         int w = MeasureTextWithFont(g_commodityNames[i], nameFontSize);
@@ -2610,11 +2622,7 @@ void RenderCommoditiesMarket() {
         snprintf(priceText, sizeof(priceText), "%dcr", buyPrices[commIdx]);
         DrawTextWithFont(priceText, priceStartX, yPos, nameFontSize, (G_Player.inventory[commIdx] > 0) ? GREEN : GRAY);
         
-        // Sell indicator positioned after price
-        if (G_Player.inventory[commIdx] > 0 && selected) {
-            int sellIndicatorX = priceStartX + MeasureTextWithFont(priceText, nameFontSize) + 25;  // 25px spacing after price (moved 10px right)
-            DrawTextWithFont("[S TO SELL]", sellIndicatorX, yPos, nameFontSize, YELLOW);
-        }
+        // Sell indicator removed - now shown in header as [S]ELL
     }
     
     // Back option aligned with list columns
@@ -2627,7 +2635,7 @@ void RenderCommoditiesMarket() {
     DrawTextWithFont("[BACK]", nameX, backY, nameFontSize, backSelected ? YELLOW : WHITE);
     
     // Instructions aligned with header
-    DrawTextWithFont("UP/DOWN: Navigate | S: Sell | ENTER: Back", headerX, RENDER_HEIGHT - 40, nameFontSize, GRAY);
+    DrawTextWithFont("UP/DOWN: Navigate | S: Sell Selected | ENTER: Back", headerX, RENDER_HEIGHT - 40, nameFontSize, GRAY);
     
     EndMode2D();
     EndTextureMode();
@@ -2899,10 +2907,10 @@ void DrawAsteroidModal(GameState* state, int* menuSelection, Vector3* shipPos, V
     
     DrawRetroWindow("ASTEROID LAUNCH", modalX, modalY, modalWidth, modalHeight);
     
-    // Get asteroid data
+    // Get asteroid data - use the variables set when A-F key was pressed
     char asteroidName = 'A' + g_selectedAsteroidIndex;
-    int prospect = g_prospectScores[g_selectedAsteroidIndex];
-    int gravity = g_gravityScores[g_selectedAsteroidIndex];
+    int prospect = g_selectedAsteroidProspect;  // Use the variable set when key was pressed
+    int gravity = g_selectedAsteroidGravity;   // Use the variable set when key was pressed
     
     // Draw asteroid name (with word wrapping support for long names)
     char titleText[64];
@@ -2932,10 +2940,14 @@ void DrawAsteroidModal(GameState* state, int* menuSelection, Vector3* shipPos, V
     
     // Note: Fuel warning is now shown in a separate modal (drawn on top of everything)
     
-    // Draw Launch and Exit buttons
+    // Draw Launch and Exit buttons - position based on text bottom with proper spacing
     int buttonWidth = 200;
     int buttonHeight = 50;
-    int buttonY = modalY + 300;
+    int buttonY = textBottomY + 50;  // Position buttons after text with 50px spacing
+    // Ensure buttons fit within modal
+    if (buttonY + buttonHeight > modalY + modalHeight - 20) {
+        buttonY = modalY + modalHeight - 70; // 20px padding from bottom
+    }
     int launchX = modalX + (modalWidth / 2) - buttonWidth - 20;
     int exitX = modalX + (modalWidth / 2) + 20;
     
@@ -3110,6 +3122,11 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
                         case 2:  // Fuel
                             G_Player.fuel += 10.0f;
                             if (G_Player.fuel > G_Player.maxFuel) G_Player.fuel = G_Player.maxFuel;
+                            // Play fuel.wav sound at 100% volume when fuel is added
+                            if (g_fuelSound.frameCount > 0) {
+                                SetSoundVolume(g_fuelSound, 1.0f); // 100% volume
+                                PlaySound(g_fuelSound);
+                            }
                             break;
                         case 3:  // Red Ship (10% better)
                             G_Player.shipColor = 1;
@@ -3161,6 +3178,11 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
                         case 2:  // Fuel
                             G_Player.fuel += 10.0f;
                             if (G_Player.fuel > G_Player.maxFuel) G_Player.fuel = G_Player.maxFuel;
+                            // Play fuel.wav sound at 100% volume when fuel is added
+                            if (g_fuelSound.frameCount > 0) {
+                                SetSoundVolume(g_fuelSound, 1.0f); // 100% volume
+                                PlaySound(g_fuelSound);
+                            }
                             break;
                         case 3:  // Red Ship (10% better)
                             G_Player.shipColor = 1;
@@ -3228,6 +3250,11 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
                     case 4:  // FUEL
                             G_Player.fuel += 10.0f;
                         if (G_Player.fuel > G_Player.maxFuel) G_Player.fuel = G_Player.maxFuel;
+                        // Play fuel.wav sound at 100% volume when fuel is added
+                        if (g_fuelSound.frameCount > 0) {
+                            SetSoundVolume(g_fuelSound, 1.0f); // 100% volume
+                            PlaySound(g_fuelSound);
+                        }
                         break;
                     case 5:  // REPAIRS - Repairs 10 hull points
                             G_Player.hull += 10.0f;
@@ -3256,8 +3283,9 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
     }
     
     // Draw modal window (centered on screen)
+    // Use taller modal if purchase failed to accommodate warning text
     int modalWidth = 600;
-    int modalHeight = 400;
+    int modalHeight = g_purchaseFailed ? 500 : 400;  // Taller when showing warning
     int modalX = (VIRTUAL_WIDTH - modalWidth) / 2;
     int modalY = (VIRTUAL_HEIGHT - modalHeight) / 2;
     
@@ -3288,17 +3316,24 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
     int textBottomY = textY;
     DrawWordWrappedText(description, modalX + 50, textY, maxDescWidth, fontSizeDesc, WHITE, &textBottomY);
     
-    // Determine button Y position based on content
-    int buttonY = modalY + 320;  // Default position
+    // Start button position after description with proper spacing
+    int buttonY = textBottomY + 40;  // Start with spacing after description
     
     // Draw warning if purchase failed (positioned below description)
     if (g_purchaseFailed) {
         int warningY = textBottomY + 20;
         int warningBottomY = warningY;
         DrawWordWrappedText(g_purchaseFailReason, modalX + 50, warningY, maxDescWidth, 18, RED, &warningBottomY);
-        // Update button position if warning pushes content down
-        buttonY = warningBottomY + 30;
-        if (buttonY > modalY + modalHeight - 70) buttonY = modalY + modalHeight - 70; // Ensure button fits
+        // Update button position if warning pushes content down - ensure generous spacing
+        buttonY = warningBottomY + 50;  // Increased spacing from 30 to 50
+    }
+    
+    // Ensure button fits within modal with proper padding (button height is 50)
+    int buttonBottom = buttonY + 50;
+    if (buttonBottom > modalY + modalHeight - 20) {
+        // If button would overflow, increase modal height or adjust position
+        // For now, position it near bottom with padding
+        buttonY = modalY + modalHeight - 70; // 20px padding from bottom
     }
     
     // Draw Purchase and Exit buttons
@@ -3380,9 +3415,8 @@ void CheckBarEvents() {
                 "PROSPERITY INCREASED FROM %d%% TO %d%%!", asteroidChar, oldProsperity, newProsperity);
         }
             
-        // Start delay timer before showing modal
-        g_barModalDelayTimer = 1.0f;
-        g_barModalPendingType = 5;  // Success modal
+        // Show success modal immediately
+        g_showBarSuccessModal = true;
     }
 }
 
@@ -3555,85 +3589,84 @@ void DrawWordWrappedText(const char* text, int x, int y, int maxWidth, int fontS
         return;
     }
     
-    int descLen = strlen(text);
     int currentY = y;
-    int lineHeight = 25;
-    char lineBuffer[256];
-    int lastSpace = -1;
-    int currentLineStart = 0;
+    int lineHeight = fontSize + 8; // Line height based on font size with spacing
+    char currentLine[512] = {0};
+    int currentLineLen = 0;
+    int textLen = (int)strlen(text);
+    int wordStart = 0;
     
-    for (int i = 0; i <= descLen; i++) {
-        if (text[i] == ' ' || text[i] == '\0' || text[i] == '\n') {
-            bool isNewline = (text[i] == '\n');
-            int len = i - currentLineStart;
-            if (len > 0) {
-                strncpy(lineBuffer, &text[currentLineStart], len);
-                lineBuffer[len] = '\0';
-            } else {
-                lineBuffer[0] = '\0';
-            }
-            
-            if (MeasureTextWithFont(lineBuffer, fontSize) > maxWidth || isNewline) {
-                int printLen = isNewline ? len : (lastSpace - currentLineStart);
-                if (!isNewline && printLen < 0) printLen = len;
-                if (printLen < 0) printLen = 0;
-                if (printLen > 255) printLen = 255;
-                
-                strncpy(lineBuffer, &text[currentLineStart], printLen);
-                lineBuffer[printLen] = '\0';
-                
-                int lineW = MeasureTextWithFont(lineBuffer, fontSize);
-                DrawTextWithFont(lineBuffer, x + (maxWidth - lineW) / 2, currentY, fontSize, color);
-                
+    for (int i = 0; i <= textLen; i++) {
+        char c = (i < textLen) ? text[i] : '\0';
+        bool isSpace = (c == ' ' || c == '\t');
+        bool isNewline = (c == '\n');
+        bool isEnd = (i == textLen);
+        
+        if (isNewline || isEnd) {
+            // End of word/line - draw current line if it has content
+            if (currentLineLen > 0) {
+                currentLine[currentLineLen] = '\0';
+                int lineWidth = MeasureTextWithFont(currentLine, fontSize);
+                DrawTextWithFont(currentLine, x + (maxWidth - lineWidth) / 2, currentY, fontSize, color);
                 currentY += lineHeight;
-                currentLineStart = isNewline ? (i + 1) : (lastSpace + 1);
-                
-                if (!isNewline) {
-                    i = lastSpace;
-                    lastSpace = -1;
-                }
-            } else {
-                lastSpace = i;
+                currentLineLen = 0;
+                currentLine[0] = '\0';
+            } else if (isNewline) {
+                // Empty line
+                currentY += lineHeight;
             }
+            wordStart = i + 1;
+        } else if (isSpace) {
+            // Space - check if adding this word would exceed maxWidth
+            if (wordStart < i) {
+                // Extract the word
+                int wordLen = i - wordStart;
+                if (wordLen > 0 && wordLen < 256) {
+                    char word[256];
+                    strncpy(word, &text[wordStart], wordLen);
+                    word[wordLen] = '\0';
+                    
+                    // Test if adding this word (with space if not first word) would exceed width
+                    char testLine[512];
+                    if (currentLineLen > 0) {
+                        snprintf(testLine, sizeof(testLine), "%s %s", currentLine, word);
+                    } else {
+                        strncpy(testLine, word, sizeof(testLine));
+                    }
+                    int testWidth = MeasureTextWithFont(testLine, fontSize);
+                    
+                    if (testWidth > maxWidth && currentLineLen > 0) {
+                        // Current line is full - draw it and start new line
+                        currentLine[currentLineLen] = '\0';
+                        int lineWidth = MeasureTextWithFont(currentLine, fontSize);
+                        DrawTextWithFont(currentLine, x + (maxWidth - lineWidth) / 2, currentY, fontSize, color);
+                        currentY += lineHeight;
+                        currentLineLen = 0;
+                        currentLine[0] = '\0';
+                    }
+                    
+                    // Add word to current line
+                    if (currentLineLen > 0 && currentLineLen < 511) {
+                        currentLine[currentLineLen++] = ' ';
+                    }
+                    if (currentLineLen + wordLen < 511) {
+                        strncpy(&currentLine[currentLineLen], word, wordLen);
+                        currentLineLen += wordLen;
+                        currentLine[currentLineLen] = '\0';
+                    }
+                }
+            }
+            wordStart = i + 1;
         }
     }
-    if (currentLineStart < descLen) {
-        int remaining = descLen - currentLineStart;
-        if (remaining > 255) remaining = 255;
-        strncpy(lineBuffer, &text[currentLineStart], remaining);
-        lineBuffer[remaining] = '\0';
-        int lineW = MeasureTextWithFont(lineBuffer, fontSize);
-        DrawTextWithFont(lineBuffer, x + (maxWidth - lineW) / 2, currentY, fontSize, color);
-        currentY += lineHeight;
-    }
+    
     if (outY) *outY = currentY;
 }
 
 // Handle bar modal input (called before drawing)
 void HandleBarModalInput() {
-    // Update bar modal delay timer
-    float dt = GetFrameTime();
-    if (g_barModalDelayTimer > 0.0f) {
-        g_barModalDelayTimer -= dt;
-        if (g_barModalDelayTimer <= 0.0f) {
-            // Timer expired - show the pending modal
-            if (g_barModalPendingType == 1) {
-                g_showBarRumorModal = true;
-            } else if (g_barModalPendingType == 2) {
-                g_showBarGoldCardModal = true;
-            } else if (g_barModalPendingType == 3) {
-                g_showBarGamblingModal = true;
-            } else if (g_barModalPendingType == 4) {
-                g_showBarScientistModal = true;
-            } else if (g_barModalPendingType == 5) {
-                g_showBarSuccessModal = true;
-            }
-            g_barModalPendingType = 0;  // Reset pending type
-        }
-    }
-    
     // Handle sub-modals first - they can be closed with ENTER/SPACE
-    if (g_showBarRumorModal || g_showBarGoldCardModal || g_showBarGamblingModal || g_showBarScientistModal || g_showBarSuccessModal) {
+    if (g_showBarRumorModal || g_showBarGoldCardModal || g_showBarGamblingModal || g_showBarScientistModal || g_showBarSuccessModal || g_showBarLaserUpgradeModal) {
         if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
             PlayTerminalTypeSound();
             g_showBarRumorModal = false;
@@ -3641,21 +3674,31 @@ void HandleBarModalInput() {
             g_showBarGamblingModal = false;
             g_showBarScientistModal = false;
             g_showBarSuccessModal = false;
-            g_barModalPendingType = 0;  // Reset pending type
-            g_barModalDelayTimer = 0.0f;  // Reset timer
+            g_showBarLaserUpgradeModal = false;
         }
         return; // Don't process main menu input when sub-modal is open
     }
     
-    // Get menu options based on location - ensure consistency
-    // Note: Removed delay timer - input should work immediately
-    int numOptions = 4; // Default for Depot and Halo
-    if (g_currentLocation == 1) {
-        numOptions = 5; // Station has 5 options
-    } else if (g_currentLocation == 2) {
-        numOptions = 4; // Halo has 4 options
-    } else {
-        numOptions = 4; // Depot has 4 options
+    // Get menu options based on location - count conditional options
+    int numOptions = 0;
+    if (g_currentLocation == 1) {  // Station
+        numOptions = 4; // Base: Buy Astro Brew, Take Space Shot, Try Your Luck, Leave Bar
+        if (g_barVisitCounts[1] >= 3 && !g_barScientistUsed) {
+            numOptions++; // Add Chat with Scientist
+        }
+    } else if (g_currentLocation == 2) {  // Halo
+        numOptions = 3; // Base: Buy Premium Drink, Network with Traders, Leave Bar
+        if (g_barVisitCounts[2] >= 3 && !g_barStoriesUsed) {
+            numOptions++; // Add Listen to Stories
+        }
+    } else {  // Depot
+        numOptions = 3; // Base: Buy Astro Brew, Take Space Shot, Leave Bar
+        if (!G_Player.hasGoldCard) {
+            numOptions++; // Add Drinks Are On Me!
+        }
+        if (g_barVisitCounts[0] >= 3 && !g_barLaserUpgradeUsed) {
+            numOptions++; // Add Laser Upgrade option
+        }
     }
     
     // Update max menu items to match current location
@@ -3687,6 +3730,17 @@ void HandleBarModalInput() {
     
     // Selection
     if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE)) {
+        // Ignore Enter key if bar was just opened (prevents accidental purchase)
+        if (g_barJustOpened && CustomIsKeyPressed(KEY_ENTER)) {
+            g_barJustOpened = false; // Clear flag for next frame
+            return; // Don't process this Enter key press
+        }
+        
+        // Clear the flag if Space is pressed (Space is always valid)
+        if (CustomIsKeyPressed(KEY_SPACE)) {
+            g_barJustOpened = false;
+        }
+        
         PlayTerminalTypeSound();
         
         // Validate selection is still in bounds before processing
@@ -3694,20 +3748,25 @@ void HandleBarModalInput() {
             return; // Invalid selection, don't process
         }
         
+        // Clear flag after processing (Enter was intentionally pressed)
+        g_barJustOpened = false;
+        
+        // Build menu structure to match selection index
         if (g_currentLocation == 1) {  // Station - Hirohito Station Bar
-            if (g_barMenuSelection == 0) { // Buy Astro Brew (5 CR)
+            int menuIdx = 0;
+            if (g_barMenuSelection == menuIdx++) { // Buy Astro Brew
                 if (G_Player.credits >= 5) {
                     G_Player.credits -= 5;
                     g_barDrinksPurchased++;
                     CheckBarEvents();
                 }
-            } else if (g_barMenuSelection == 1) { // Take Space Shot (10 CR)
+            } else if (g_barMenuSelection == menuIdx++) { // Take Space Shot
                 if (G_Player.credits >= 10) {
                     G_Player.credits -= 10;
                     g_barDrinksPurchased++;
                     CheckBarEvents();
                 }
-            } else if (g_barMenuSelection == 2) { // Try Your Luck (50 CR) - Gambling
+            } else if (g_barMenuSelection == menuIdx++) { // Try Your Luck
                 if (G_Player.credits >= 50) {
                     G_Player.credits -= 50;
                     int winAmount = GetRandomValue(0, 200);
@@ -3721,76 +3780,84 @@ void HandleBarModalInput() {
                             "YOU PLACE YOUR BET AND SPIN THE WHEEL...\n\n"
                             "BETTER LUCK NEXT TIME! YOU LOST 50 CREDITS.");
                     }
-                    // Start delay timer before showing modal
-                    g_barModalDelayTimer = 1.0f;
-                    g_barModalPendingType = 3;  // Gambling modal
+                    g_showBarGamblingModal = true;
                 }
-            } else if (g_barMenuSelection == 3) { // Chat with Scientist (FREE)
-                float boost = G_Player.thrusterBoost * 1.2f;
-                if (boost > G_Player.thrusterBoost) {
-                    G_Player.thrusterBoost = boost;
-                    snprintf(g_barScientistText, sizeof(g_barScientistText),
-                        "YOU CHAT WITH A SCIENTIST ON THEIR WAY TO A RESEARCH STATION.\n\n"
-                        "THEY SHARE SOME TIPS ON IMPROVING YOUR SHIP'S THRUSTERS.\n\n"
-                        "THRUSTER BOOST INCREASED BY 20%%!");
-                } else {
-                    snprintf(g_barScientistText, sizeof(g_barScientistText),
-                        "YOU CHAT WITH A SCIENTIST, BUT THEY HAVE NO NEW TIPS FOR YOU.");
-                }
-                // Start delay timer before showing modal
-                g_barModalDelayTimer = 1.0f;
-                g_barModalPendingType = 4;  // Scientist modal
-            } else if (g_barMenuSelection == 4) { // Leave Bar
+            } else if (g_barVisitCounts[1] >= 3 && !g_barScientistUsed && g_barMenuSelection == menuIdx++) { // Chat with Scientist
+                int boostPercent = GetRandomValue(5, 15);
+                float boostMultiplier = 1.0f + (boostPercent / 100.0f);
+                G_Player.thrusterBoost *= boostMultiplier;
+                g_barScientistUsed = true;
+                snprintf(g_barScientistText, sizeof(g_barScientistText),
+                    "YOU CHAT WITH A SCIENTIST ON THEIR WAY TO A RESEARCH STATION.\n\n"
+                    "THEY SHARE SOME TIPS ON IMPROVING YOUR SHIP'S THRUSTERS.\n\n"
+                    "THRUSTER BOOST INCREASED BY %d%%!", boostPercent);
+                g_showBarScientistModal = true;
+            } else if (g_barMenuSelection == numOptions - 1) { // Leave Bar
                 g_showBarView = false;
+                g_barJustOpened = false; // Clear flag when leaving bar
                 g_barDrinksPurchased = 0;
                 g_barMenuSelection = 0;
                 g_depotHomePage = 1;
             }
         } else if (g_currentLocation == 2) {  // Halo - Nagako's Halo Bar
-            if (g_barMenuSelection == 0) { // Buy Premium Drink (15 CR)
+            int menuIdx = 0;
+            if (g_barMenuSelection == menuIdx++) { // Buy Premium Drink
                 if (G_Player.credits >= 15) {
                     G_Player.credits -= 15;
                     g_barDrinksPurchased++;
                     CheckBarEvents();
                 }
-            } else if (g_barMenuSelection == 1) { // Network with Traders (100 CR)
+            } else if (g_barMenuSelection == menuIdx++) { // Network with Traders
                 if (G_Player.credits >= 100) {
                     G_Player.credits -= 100;
                     g_barDrinksPurchased++;
                     CheckBarEvents();
                 }
-            } else if (g_barMenuSelection == 2) { // Listen to Stories (FREE)
+            } else if (g_barVisitCounts[2] >= 3 && !g_barStoriesUsed && g_barMenuSelection == menuIdx++) { // Listen to Stories
                 g_barDrinksPurchased++;
+                g_barStoriesUsed = true;
                 CheckBarEvents();
-            } else if (g_barMenuSelection == 3) { // Leave Bar
+            } else if (g_barMenuSelection == numOptions - 1) { // Leave Bar
                 g_showBarView = false;
+                g_barJustOpened = false; // Clear flag when leaving bar
                 g_barDrinksPurchased = 0;
                 g_barMenuSelection = 0;
                 g_depotHomePage = 1;
             }
         } else {  // Depot - The Astro Bar
-            if (g_barMenuSelection == 0) { // Buy Astro Brew (5 CR)
+            int menuIdx = 0;
+            if (g_barMenuSelection == menuIdx++) { // Buy Astro Brew
                 if (G_Player.credits >= 5) {
                     G_Player.credits -= 5;
                     g_barDrinksPurchased++;
                     CheckBarEvents();
                 }
-            } else if (g_barMenuSelection == 1) { // Take Space Shot (10 CR)
+            } else if (g_barMenuSelection == menuIdx++) { // Take Space Shot
                 if (G_Player.credits >= 10) {
                     G_Player.credits -= 10;
                     g_barDrinksPurchased++;
                     CheckBarEvents();
                 }
-            } else if (g_barMenuSelection == 2) { // Drinks Are On Me! (1000 CR)
-                if (G_Player.credits >= 1000 && !G_Player.hasGoldCard) {
+            } else if (!G_Player.hasGoldCard && g_barMenuSelection == menuIdx++) { // Drinks Are On Me
+                if (G_Player.credits >= 1000) {
                     G_Player.credits -= 1000;
                     G_Player.hasGoldCard = true;
-                    // Start delay timer before showing modal
-                    g_barModalDelayTimer = 1.0f;
-                    g_barModalPendingType = 2;  // Gold card modal
+                    g_showBarGoldCardModal = true;
                 }
-            } else if (g_barMenuSelection == 3) { // Leave Bar
+            } else if (g_barVisitCounts[0] >= 3 && !g_barLaserUpgradeUsed && g_barMenuSelection == menuIdx++) { // Laser Upgrade
+                int increasePercent = GetRandomValue(5, 15);
+                float oldMaxHeat = G_Player.maxLaserHeat;
+                G_Player.maxLaserHeat += (oldMaxHeat * increasePercent / 100.0f);
+                g_barLaserUpgradeUsed = true;
+                snprintf(g_barLaserUpgradeText, sizeof(g_barLaserUpgradeText),
+                    "YOU MEET AN ENGINEER WHO'S BEEN MODIFYING MINING EQUIPMENT.\n\n"
+                    "THEY SHARE SOME ADVANCED COOLING TECHNIQUES FOR YOUR LASER.\n\n"
+                    "LASER OVERHEAT THRESHOLD INCREASED BY %d%%!\n\n"
+                    "(FROM %.0f TO %.0f)", increasePercent, oldMaxHeat, G_Player.maxLaserHeat);
+                g_showBarLaserUpgradeModal = true;
+            } else if (g_barMenuSelection == numOptions - 1) { // Leave Bar
                 g_showBarView = false;
+                g_barJustOpened = false; // Clear flag when leaving bar
                 g_barDrinksPurchased = 0;
                 g_barMenuSelection = 0;
                 g_depotHomePage = 1;
@@ -3889,14 +3956,38 @@ void DrawBarModal(int modalX, int modalY, int modalWidth, int modalHeight) {
     }
     
     if (g_showBarSuccessModal) {
-        DrawRetroWindow("SUCCESS!", modalX, modalY, modalWidth, modalHeight);
+        // Use taller modal for success message to accommodate all text
+        int successModalHeight = 550; // Increased from 450 to 550 for more space
+        int successModalY = (VIRTUAL_HEIGHT - successModalHeight) / 2;
+        DrawRetroWindow("SUCCESS!", modalX, successModalY, modalWidth, successModalHeight);
+        
+        // Position text with proper spacing from top
+        int textY = successModalY + 80; // Increased from 70 to 80 for more top padding
+        int textBottomY = textY;
+        // Text increased by 25% (12 * 1.25 = 15)
+        DrawWordWrappedText(g_barSuccessText, modalX + 50, textY, modalWidth - 100, 15, WHITE, &textBottomY);
+        
+        // Position OK button below text with generous spacing (60px gap)
+        int buttonY = textBottomY + 60; // Increased from 30 to 60 for better spacing
+        // Ensure button fits within modal with padding at bottom
+        int buttonBottom = buttonY + 50; // Button height is 50
+        if (buttonBottom > successModalY + successModalHeight - 20) {
+            // If button would overflow, position it near bottom with padding
+            buttonY = successModalY + successModalHeight - 70; // 20px padding from bottom
+        }
+        DrawButton("OK", modalX + (modalWidth - 200)/2, buttonY, 200, 50, true, 15);
+        return;
+    }
+    
+    if (g_showBarLaserUpgradeModal) {
+        DrawRetroWindow("LASER UPGRADE", modalX, modalY, modalWidth, modalHeight);
         // Center text on OK button - OK button is centered at modalX + modalWidth/2
         // Text should be centered within modalWidth - 100, starting at modalX + 50 (increased padding to prevent overlap)
         // Position text higher to avoid overlap with button
         int textY = modalY + 70;
         int textBottomY = textY;
         // Text increased by 25% (12 * 1.25 = 15)
-        DrawWordWrappedText(g_barSuccessText, modalX + 50, textY, modalWidth - 100, 15, WHITE, &textBottomY);
+        DrawWordWrappedText(g_barLaserUpgradeText, modalX + 50, textY, modalWidth - 100, 15, WHITE, &textBottomY);
         // Position OK button below text with proper spacing - font size increased by 25% (12 * 1.25 = 15)
         int buttonY = textBottomY + 30;
         if (buttonY > modalY + modalHeight - 70) buttonY = modalY + modalHeight - 70; // Ensure button fits
@@ -3907,30 +3998,40 @@ void DrawBarModal(int modalX, int modalY, int modalWidth, int modalHeight) {
     // Main Bar Menu - determine title and options based on location
     const char* barTitle;
     const char* options[6];
-    int numOptions;
+    int numOptions = 0;
     
     if (g_currentLocation == 1) {  // Station - Hirohito Station Bar
         barTitle = "HIROHITO STATION BAR";
-        options[0] = "BUY ASTRO BREW (5 CR)";
-        options[1] = "TAKE SPACE SHOT (10 CR)";
-        options[2] = "TRY YOUR LUCK (50 CR)";
-        options[3] = "CHAT WITH SCIENTIST (FREE)";
-        options[4] = "LEAVE BAR";
-        numOptions = 5;
+        options[numOptions++] = "BUY ASTRO BREW (5 CR)";
+        options[numOptions++] = "TAKE SPACE SHOT (10 CR)";
+        options[numOptions++] = "TRY YOUR LUCK (50 CR)";
+        // Conditional: Chat with Scientist - only on 3rd visit and if not used
+        if (g_barVisitCounts[1] >= 3 && !g_barScientistUsed) {
+            options[numOptions++] = "CHAT WITH SCIENTIST (FREE)";
+        }
+        options[numOptions++] = "LEAVE BAR";
     } else if (g_currentLocation == 2) {  // Halo - Nagako's Halo Bar
         barTitle = "NAGAKO'S HALO BAR";
-        options[0] = "BUY PREMIUM DRINK (15 CR)";
-        options[1] = "NETWORK WITH TRADERS (100 CR)";
-        options[2] = "LISTEN TO STORIES (FREE)";
-        options[3] = "LEAVE BAR";
-        numOptions = 4;
+        options[numOptions++] = "BUY PREMIUM DRINK (15 CR)";
+        options[numOptions++] = "NETWORK WITH TRADERS (100 CR)";
+        // Conditional: Listen to Stories - only on 3rd visit and if not used
+        if (g_barVisitCounts[2] >= 3 && !g_barStoriesUsed) {
+            options[numOptions++] = "LISTEN TO STORIES (FREE)";
+        }
+        options[numOptions++] = "LEAVE BAR";
     } else {  // Depot - The Astro Bar
         barTitle = "THE ASTRO BAR";
-        options[0] = "BUY ASTRO BREW (5 CR)";
-        options[1] = "TAKE SPACE SHOT (10 CR)";
-        options[2] = "DRINKS ARE ON ME! (1000 CR)";
-        options[3] = "LEAVE BAR";
-        numOptions = 4;
+        options[numOptions++] = "BUY ASTRO BREW (5 CR)";
+        options[numOptions++] = "TAKE SPACE SHOT (10 CR)";
+        // Conditional: Drinks Are On Me - only if no gold card
+        if (!G_Player.hasGoldCard) {
+            options[numOptions++] = "DRINKS ARE ON ME! (1000 CR)";
+        }
+        // Conditional: Laser Upgrade - only on 3rd visit and if not used
+        if (g_barVisitCounts[0] >= 3 && !g_barLaserUpgradeUsed) {
+            options[numOptions++] = "LASER COOLING UPGRADE (FREE)";
+        }
+        options[numOptions++] = "LEAVE BAR";
     }
     
     // Ensure menu selection is valid for current location
@@ -3947,15 +4048,10 @@ void DrawBarModal(int modalX, int modalY, int modalWidth, int modalHeight) {
     // Draw the main bar window
     DrawRetroWindow(barTitle, modalX, modalY, modalWidth, modalHeight);
     
-    // Mood Text - centered at top - increased by 25% (11 * 1.25 = 13.75, round to 14)
-    if (retroFont.texture.id > 0) {
-        Vector2 moodSize = MeasureTextEx(retroFont, g_barMoods[g_barRandomMood], 14.0f, 0);
-        DrawTextEx(retroFont, g_barMoods[g_barRandomMood],
-            (Vector2){(float)(modalX + (modalWidth - moodSize.x)/2), (float)(modalY + 50)},
-            14.0f, 0, LIGHTGRAY);
-    } else {
-        DrawTextWithFont(g_barMoods[g_barRandomMood], modalX + (modalWidth - MeasureTextWithFont(g_barMoods[g_barRandomMood], 14))/2, modalY + 50, 14, LIGHTGRAY);
-    }
+    // Mood Text - centered at top with word wrapping - increased by 25% (11 * 1.25 = 13.75, round to 14)
+    int moodTextY = modalY + 50;
+    int moodTextBottomY = moodTextY;
+    DrawWordWrappedText(g_barMoods[g_barRandomMood], modalX + 50, moodTextY, modalWidth - 100, 14, LIGHTGRAY, &moodTextBottomY);
     
     // Draw menu options - ensure proper spacing to avoid overlap with status bar
     int startY = modalY + 100;
@@ -4144,6 +4240,7 @@ void HandleDepotInput(GameState* state, int* menuSelection) {
             g_showShipyardShop = false;
             g_showCommoditiesMarket = false;
             g_showBarView = false;
+            g_barJustOpened = false; // Clear flag when leaving bar via page navigation
         }
         if (CustomIsKeyPressed(KEY_UP)) {
             g_depotHomePage--;
@@ -4151,6 +4248,7 @@ void HandleDepotInput(GameState* state, int* menuSelection) {
             g_showProspectAsteroids = false;
             g_showShipyardShop = false;
             g_showBarView = false;
+            g_barJustOpened = false; // Clear flag when leaving bar via page navigation
         }
     }
 }
@@ -4279,20 +4377,20 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
             return;
         } else if (g_showBarView) {
             // Close bar modals first if any are open
-            if (g_showBarRumorModal || g_showBarGoldCardModal || g_showBarGamblingModal || g_showBarScientistModal || g_showBarSuccessModal) {
+            if (g_showBarRumorModal || g_showBarGoldCardModal || g_showBarGamblingModal || g_showBarScientistModal || g_showBarSuccessModal || g_showBarLaserUpgradeModal) {
                 PlayTerminalTypeSound();
                 g_showBarRumorModal = false;
                 g_showBarGoldCardModal = false;
                 g_showBarGamblingModal = false;
                 g_showBarScientistModal = false;
                 g_showBarSuccessModal = false;
-                g_barModalPendingType = 0;  // Reset pending type
-                g_barModalDelayTimer = 0.0f;  // Reset timer
+                g_showBarLaserUpgradeModal = false;
                 return;
             }
             // Close bar view and go back to Depot_Home page 1
             PlayTerminalTypeSound();
             g_showBarView = false;
+            g_barJustOpened = false; // Clear flag when leaving bar
             g_barDrinksPurchased = 0; // Reset drinks when leaving
             g_barMenuSelection = 0; // Reset menu selection
             g_depotHomePage = 1;
@@ -4349,12 +4447,18 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
         PlayTerminalTypeSound();
         if (!g_showBarView) {
             g_showBarView = true;
+            g_barJustOpened = true; // Set flag to prevent Enter from immediately purchasing
             g_barModalTimer = 0.0f; // Start fresh delay before showing options
             g_barDrinksPurchased = 0;
             g_barMenuSelection = 0; // Reset menu selection to first item
             g_barRandomMood = GetRandomValue(0, g_numBarMoods - 1);
             
-            // Set max menu items based on current location
+            // Increment visit counter for current location
+            if (g_currentLocation >= 0 && g_currentLocation < 3) {
+                g_barVisitCounts[g_currentLocation]++;
+            }
+            
+            // Set max menu items based on current location (will be recalculated in DrawBarModal)
             if (g_currentLocation == 1) {
                 g_barMaxMenuItems = 5; // Station has 5 options
             } else {
@@ -4367,8 +4471,7 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
             g_showBarGamblingModal = false;
             g_showBarScientistModal = false;
             g_showBarSuccessModal = false;
-            g_barModalPendingType = 0;  // Reset pending type
-            g_barModalDelayTimer = 0.0f;  // Reset timer
+            g_showBarLaserUpgradeModal = false;
         }
     }
     
@@ -4536,15 +4639,11 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
     Rectangle destRect = { 0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT }; // Full virtual screen
     DrawTexturePro(viewTex, srcRect, destRect, (Vector2){0,0}, 0.0f, WHITE);
     
-    // Handle bar input FIRST (before other input handlers) when bar view is active
-    // Also process delay timer even if bar view is not active (for modals that persist)
+    // Handle bar input when bar view is active
     if (g_showBarView && g_depotHomePage == 4) {
-        // Update timer
+        // Update timer for bar menu delay
         g_barModalTimer += GetFrameTime();
-        // Handle bar input (this will process UP/DOWN/ENTER keys and delay timer)
-        HandleBarModalInput();
-    } else if (g_barModalDelayTimer > 0.0f || g_barModalPendingType > 0) {
-        // Process delay timer even if bar view is not active (for modals triggered before view closed)
+        // Handle bar input (this will process UP/DOWN/ENTER keys)
         HandleBarModalInput();
     }
     
@@ -4853,7 +4952,7 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
     // This includes sub-modals like gold card, rumor, success, etc.
     // IMPORTANT: Draw sub-modals even if bar view is not active (they can persist)
     bool hasActiveBarModal = g_showBarRumorModal || g_showBarGoldCardModal || g_showBarGamblingModal || 
-                              g_showBarScientistModal || g_showBarSuccessModal;
+                              g_showBarScientistModal || g_showBarSuccessModal || g_showBarLaserUpgradeModal;
     
     // Always draw bar modals if any are active (regardless of bar view state)
     if (hasActiveBarModal || (g_showBarView && g_depotHomePage == 4)) {
@@ -7335,6 +7434,26 @@ __declspec(dllexport) __cdecl bool InitializeGame() {
     }
     if (!fixingOnSoundLoaded) {
         printf("[InitializeGame] ERROR: Failed to load fixing-on.wav from all paths!\n");
+    }
+
+    // Load fuel sound with multiple fallbacks
+    const char* fuelSoundPaths[] = {
+        "fuel.wav",
+        "Data/games/AstroMiner/fuel.wav",
+        "../../games/AstroMiner/fuel.wav"
+    };
+    bool fuelSoundLoaded = false;
+    for (int j = 0; j < 3; j++) {
+        printf("[InitializeGame] Trying to load fuel.wav from: %s\n", fuelSoundPaths[j]);
+        g_fuelSound = LoadSound(fuelSoundPaths[j]);
+        if (g_fuelSound.frameCount > 0) {
+            printf("[InitializeGame] SUCCESS: Loaded fuel.wav from: %s\n", fuelSoundPaths[j]);
+            fuelSoundLoaded = true;
+            break;
+        }
+    }
+    if (!fuelSoundLoaded) {
+        printf("[InitializeGame] ERROR: Failed to load fuel.wav from all paths!\n");
     }
 
     // Load background music (AstroMiner.mp3) with multiple fallbacks

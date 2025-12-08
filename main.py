@@ -5234,6 +5234,21 @@ class GLYPHIS_IOBBS:
                         if self.state == "os_boot_playing":
                             self.state = "main_menu"  # Use main_menu state, OS Mode renders via os_mode_active flag
                         log_event("OSBoot video finished - OS Mode activated")
+                        
+                        # Set Datasette status to not recording
+                        if self.os_mode and hasattr(self.os_mode, 'set_recording_state'):
+                            self.os_mode.set_recording_state(False, None)
+                            log_event("Datasette status set to not recording")
+                        
+                        # Start Datasette_Load.mp4 video with same settings (position and size will be identical)
+                        if self.os_mode and hasattr(self.os_mode, '_start_tape_video'):
+                            self.os_mode._start_tape_video()
+                            log_event("Datasette_Load.mp4 video started")
+                            
+                            # Set Datasette status to Recording
+                            if hasattr(self.os_mode, 'set_recording_state'):
+                                self.os_mode.set_recording_state(True, time.time())
+                                log_event("Datasette status set to Recording")
                     else:
                         log_event("ERROR: Failed to initialize OS Mode after OSBoot video")
                         self.state = "loading"
@@ -5273,6 +5288,8 @@ class GLYPHIS_IOBBS:
                     self.os_mode.draw_scanline()
                     # Draw OS mode overlay rectangle (after scanline)
                     self.os_mode.draw_overlay()
+                    # Draw Datasette_Load.mp4 video last (after scanlines and overlay)
+                    self.os_mode.draw_tape_video()
                 elif self.scanline_image:
                     # Draw BBS scanline when not in OS mode
                     # Position it exactly where the desktop scanline goes (same as OS_Mode.py)
@@ -5359,27 +5376,34 @@ class GLYPHIS_IOBBS:
                     # OS mode not active - use normal cursor logic
                     self._update_cursor()
                 
-                # Draw black rectangles if overlay is active
-                overlay_x, overlay_y, overlay_w, overlay_h = OVERLAY_HOTSPOT
-                overlay_hotspot_rect = pygame.Rect(
-                    int(overlay_x * self.scale),
-                    int(overlay_y * self.scale),
-                    int(overlay_w * self.scale),
-                    int(overlay_h * self.scale)
-                )
+                # Draw black rectangle overlay if active (unified desktop-sized overlay, same as OS mode)
                 if self.bbs_overlay_active:
-                    # Black rectangle covering entire BBS window
-                    bbs_overlay_rect = pygame.Rect(self.bbs_x, self.bbs_y, self.bbs_width, self.bbs_height)
-                    pygame.draw.rect(self.screen, BLACK, bbs_overlay_rect)
+                    # Calculate desktop position and size (same as OS mode)
+                    baseline_desktop_x = 176
+                    baseline_desktop_y = 209
+                    desktop_x = int(baseline_desktop_x * self.scale)
+                    desktop_y = int(baseline_desktop_y * self.scale)
                     
-                    # Black rectangle covering the overlay hotspot (stretched right 20px and down 15px, scaled)
-                    stretched_hotspot_rect = pygame.Rect(
-                        int(overlay_x * self.scale),
-                        int(overlay_y * self.scale),
-                        int((overlay_w + 20) * self.scale),
-                        int((overlay_h + 15) * self.scale)
-                    )
-                    pygame.draw.rect(self.screen, BLACK, stretched_hotspot_rect)
+                    # Get desktop size (use os_mode if available, otherwise load desktop image to get size)
+                    if self.os_mode and hasattr(self.os_mode, 'desktop_size'):
+                        desktop_size = self.os_mode.desktop_size
+                    else:
+                        # Load desktop image to get its size
+                        try:
+                            desktop_path = get_data_path("OS", "Desktop-Enviroment.png")
+                            desktop_image = pygame.image.load(desktop_path)
+                            original_size = desktop_image.get_size()
+                            desktop_size = (
+                                int(original_size[0] * self.scale),
+                                int(original_size[1] * self.scale)
+                            )
+                        except Exception:
+                            # Fallback to BBS size if desktop image can't be loaded
+                            desktop_size = (self.bbs_width, self.bbs_height)
+                    
+                    # Single black rectangle matching desktop dimensions (same as OS mode overlay)
+                    overlay_rect = pygame.Rect(desktop_x, desktop_y, desktop_size[0], desktop_size[1])
+                    pygame.draw.rect(self.screen, BLACK, overlay_rect)
                 
                 # Periodically check for new emails (every 60 frames = ~1 second at 60fps)
                 self._email_check_counter += 1
