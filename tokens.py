@@ -43,6 +43,7 @@ class Tokens:
     OPS_ACCESS = "OPS_ACCESS"
     TEAM_ACCESS = "TEAM_ACCESS"
     RADIO_ACCESS = "RADIO_ACCESS"
+    RADIO_ACCESS1 = "RADIO_ACCESS1"  # Completed pirate radio tone patching
 
     # Story arc tokens referenced by content JSON
     SUSPICION = "SUSPICION"
@@ -97,6 +98,11 @@ TOKEN_METADATA: Dict[str, TokenMeta] = {
         code=Tokens.RADIO_ACCESS,
         label="RADIO_ACCESS",
         description="Approved for pirate radio transmissions",
+    ),
+    Tokens.RADIO_ACCESS1: TokenMeta(
+        code=Tokens.RADIO_ACCESS1,
+        label="RADIO_ACCESS1",
+        description="Completed pirate radio tone patching - full station access granted",
     ),
     Tokens.UNCLE_AM_1: TokenMeta(
         code=Tokens.UNCLE_AM_1,

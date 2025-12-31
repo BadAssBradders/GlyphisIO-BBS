@@ -7,6 +7,7 @@ import re
 import json
 import os
 import numpy as np
+import logging
 from typing import Dict, List, Optional, Tuple
 
 # Try to import fitz (PyMuPDF) for PDF rendering
@@ -41,6 +42,31 @@ from systems import Email, EmailDatabase, NPCResponder, EnhancedNPCResponder, To
 
 # Import OS Mode
 from OS.OS_Mode import OSMode
+# Outside BBS experiences
+from Outside_BBSs.Paper_Crane_BBS import PaperCraneBBS
+
+# Import Resolution Manager
+from systems.resolution import ResolutionManager
+
+# Try to import PirateRadioApp
+try:
+    import importlib.util
+    pirate_radio_dir = get_data_path("Pirate_Radio")
+    if pirate_radio_dir not in sys.path:
+        sys.path.insert(0, pirate_radio_dir)
+    pirate_radio_module_path = os.path.join(pirate_radio_dir, "PirateRadio.py")
+    if os.path.exists(pirate_radio_module_path):
+        spec = importlib.util.spec_from_file_location("pirate_radio_module", pirate_radio_module_path)
+        pirate_radio_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pirate_radio_module)
+        PirateRadioApp = pirate_radio_module.PirateRadioApp
+        _pirate_radio_available = True
+    else:
+        raise ImportError(f"Pirate Radio module not found at {pirate_radio_module_path}")
+except Exception as e:
+    _pirate_radio_available = False
+    PirateRadioApp = None
+    print(f"Warning: Could not import PirateRadioApp: {e}")
 
 # Try to import cv2 for video playback
 try: 
@@ -48,7 +74,7 @@ try:
     _cv2_available = True
 except ImportError:
     _cv2_available = False
-    print("Warning: cv2 (opencv-python) not available. Video playback will be disabled.")
+    logger.warning("cv2 (opencv-python) not available. Video playback will be disabled.")
 
 # Initialize mixer early (before pygame.init() for best compatibility)
 try:
@@ -58,16 +84,26 @@ try:
         channels=AUDIO_CHANNELS,
         buffer=AUDIO_BUFFER
     )
-except:
+except Exception:
     pass  # If pre_init fails, we'll try init() later
 
 # Initialize pygame
 pygame.init()
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
 _glyph_font_cache = {}
 
 
-def get_selection_glyph_font(size):
+def get_selection_glyph_font(size: int) -> pygame.font.Font:
     """Return a font that can render the selection glyph, caching per size."""
     if size in _glyph_font_cache:
         return _glyph_font_cache[size]
@@ -940,7 +976,7 @@ class GLYPHIS_IOBBS:
         self.clock = pygame.time.Clock()
         
         # FPS tracking
-        self.fps_target = 60  # Target FPS
+        self.fps_target = FPS_TARGET
         self.fps_actual = 0.0  # Actual FPS
         self.fps_frame_times = []  # List of frame times for FPS calculation
         self.fps_last_update_time = time.time()
@@ -949,25 +985,27 @@ class GLYPHIS_IOBBS:
         # This is the reference resolution where the position and size were originally set
         self.baseline_width = BASELINE_WIDTH
         self.baseline_height = BASELINE_HEIGHT
+        
+        # Initialize ResolutionManager
+        self.res_manager = ResolutionManager(self.screen_width, self.screen_height, self.baseline_width, self.baseline_height)
+        self.scale = self.res_manager.scale_factor # Maintain compatibility
+
         self.baseline_bbs_width = BBS_WIDTH
         self.baseline_bbs_height = BBS_HEIGHT
         self.baseline_bbs_x = BBS_X
         self.baseline_bbs_y = BBS_Y
         
-        # Calculate scale factor based on current screen resolution
-        # Use uniform scale to maintain aspect ratio (use minimum to ensure it fits)
-        scale_x = self.screen_width / self.baseline_width
-        scale_y = self.screen_height / self.baseline_height
-        self.scale = min(scale_x, scale_y)  # Use minimum to maintain aspect ratio and fit on screen
-        # Store scale as instance variable so we can use it for fonts, images, etc.
+        # Maintain backward compatibility, though most things should move to using res_manager eventually
+        # ...
 
         self.astro_render_mode = os.environ.get("ASTROMINER_RESOLUTION", "auto")
         
         # Scale the BBS window dimensions and position proportionally (maintaining aspect ratio)
-        self.bbs_width = int(self.baseline_bbs_width * self.scale)
-        self.bbs_height = int(self.baseline_bbs_height * self.scale)
-        self.bbs_x = int(self.baseline_bbs_x * self.scale)
-        self.bbs_y = int(self.baseline_bbs_y * self.scale)
+        self.bbs_width = self.res_manager.scale(self.baseline_bbs_width)
+        self.bbs_height = self.res_manager.scale(self.baseline_bbs_height)
+        
+        # Use coords to include potential centering padding
+        self.bbs_x, self.bbs_y = self.res_manager.coords(self.baseline_bbs_x, self.baseline_bbs_y)
         
         # General scroll offset for BBS window content (like a text document)
         # All content can be scrolled if it exceeds window height
@@ -981,7 +1019,7 @@ class GLYPHIS_IOBBS:
             if self.desktop_bg.get_width() != self.screen_width or self.desktop_bg.get_height() != self.screen_height:
                 self.desktop_bg = pygame.transform.scale(self.desktop_bg, (self.screen_width, self.screen_height))
         except Exception:
-            print("Warning: images/desktop.png not found, using black background")
+            logger.warning("images/desktop.png not found, using black background")
             self.desktop_bg = None
         
         # Create a surface for the BBS window (with alpha support for transparency)
@@ -989,6 +1027,8 @@ class GLYPHIS_IOBBS:
         self.game_freeze_active = False
         self.game_freeze_pending_capture = False
         self.game_freeze_frame = None
+        self.paper_crane_bbs: Optional[PaperCraneBBS] = None
+        self.paper_crane_return_to_os = False
         
         # Load font (scaled based on resolution)
         try:
@@ -997,8 +1037,8 @@ class GLYPHIS_IOBBS:
             self.font_medium_small = pygame.font.Font(get_data_path("Retro Gaming.ttf"), max(1, int(20 * self.scale)))
             self.font_small = pygame.font.Font(get_data_path("Retro Gaming.ttf"), int(16 * self.scale))
             self.font_tiny = pygame.font.Font(get_data_path("Retro Gaming.ttf"), int(12 * self.scale))
-        except:
-            print("Warning: Retro Gaming.ttf not found, using default font")
+        except Exception:
+            logger.warning("Retro Gaming.ttf not found, using default font")
             self.font_large = pygame.font.Font(None, int(30 * self.scale))
             self.font_medium = pygame.font.Font(None, int(22 * self.scale))
             self.font_medium_small = pygame.font.Font(None, max(1, int(20 * self.scale)))
@@ -1042,7 +1082,7 @@ class GLYPHIS_IOBBS:
                 new_height = int(self.scroll_image.get_height() * scale_factor)
                 self.scroll_image = pygame.transform.scale(self.scroll_image, (self.bbs_width, new_height))
         except Exception:
-            print("Warning: images/BBS_Scroll.png not found, skipping scroll animation")
+            logger.warning("images/BBS_Scroll.png not found, skipping scroll animation")
             # Keep loading state even if scroll image not found
         
         # Intro screen state
@@ -1105,6 +1145,7 @@ class GLYPHIS_IOBBS:
         self.inbox = []
         self.outbox = []
         self.sent = []
+        self.delayed_emails = []  # Emails waiting for delivery delay
         self.player_email = "unknown"
         
         # NPC Responder - Enhanced trait-based system
@@ -1124,6 +1165,10 @@ class GLYPHIS_IOBBS:
         # Email Database System
         self.email_db = EmailDatabase()
         self.user_state = self.load_user_state()
+        
+        # Initialize pirate_radio_app to None early (will be set up later if available)
+        self.pirate_radio_app = None
+        
         self.apply_active_user_profile()
         self._email_check_counter = 0  # Counter for periodic email checks
         
@@ -1208,6 +1253,51 @@ class GLYPHIS_IOBBS:
         self.current_game_index = 0
         self.active_game_session: Optional[BaseGameSession] = None
         
+        # Radio tools management
+        self.current_radio_index = 0
+        self.radio_tools = [
+            {
+                "name": "A.P.I RADIO PACKET SNIFFER",
+                "status": "ONLINE",
+                "description": "Intercept and decode hidden transmissions from the underground network. This tool connects to the pirate radio relay to capture encoded packets."
+            }
+        ]
+        
+        # Pirate Radio App instance (launched from BBS, positioned at desktop area)
+        # Desktop baseline coordinates (at 2560x1440 resolution)
+        self.baseline_desktop_x = 176
+        self.baseline_desktop_y = 209
+        # self.pirate_radio_app already initialized to None earlier
+        self.pirate_radio_intro_sound = None
+        if _pirate_radio_available and PirateRadioApp:
+            try:
+                desktop_x, desktop_y = self.res_manager.coords(self.baseline_desktop_x, self.baseline_desktop_y)
+                self.pirate_radio_app = PirateRadioApp(
+                    self.screen,
+                    self.res_manager,
+                    desktop_x,
+                    desktop_y
+                )
+                
+                # Pre-load the intro audio so it can play instantly on launch
+                pirate_radio_audio_path = get_data_path("Pirate_Radio", "TSW.wav")
+                if os.path.exists(pirate_radio_audio_path):
+                    self.pirate_radio_intro_sound = pygame.mixer.Sound(pirate_radio_audio_path)
+                    self.pirate_radio_intro_sound.set_volume(0.8)  # Set volume to 80%
+                    # Pass the sound reference to PirateRadio so it can stop it when needed
+                    self.pirate_radio_app.external_intro_sound = self.pirate_radio_intro_sound
+                
+                # Set up callbacks for token award and username retrieval
+                self.pirate_radio_app.on_token_award = self._award_radio_token
+                self.pirate_radio_app.get_username = self._get_player_username
+                self.pirate_radio_app.on_station_tune = self._on_pirate_station_tune
+                self.pirate_radio_app.on_station_stop = self._on_pirate_station_stop
+            except Exception as e:
+                print(f"[ERROR] Failed to initialize PirateRadioApp: {e}")
+                import traceback
+                traceback.print_exc()
+                self.pirate_radio_app = None
+        
         # Load custom mouse cursors for outside BBS window (day and night versions)
         self.mouse_hand_cursor = self._load_hand_cursor("mouse-hand-pointer.png")
         self.mouse_hand_cursor_click = self._load_hand_cursor_click("mouse-hand-pointer-click.png")
@@ -1263,6 +1353,8 @@ class GLYPHIS_IOBBS:
         
         # Radio state
         self.radio_playing = False
+        self.current_station_name: Optional[str] = None
+        self.current_frequency: Optional[int] = None
         self.current_track = "Static Transmission - Frequency Unknown"
         self.dj_text = [
             "You're listening to the underground frequency...",
@@ -1283,7 +1375,7 @@ class GLYPHIS_IOBBS:
         self.ghost_user_active = False
         self.ghost_user_step = 0
         self.ghost_user_timer = 0
-        self.ghost_user_beat_duration = 1000  # 1 second per beat (1000ms)
+        self.ghost_user_beat_duration = GHOST_USER_BEAT_DURATION
         self.ghost_user_input_blocked = False  # Block inputs during ghost user sequence
         self.inputs_disabled = False
         self.node7_completed = False  # Track if Node 7 was just completed
@@ -1300,69 +1392,69 @@ class GLYPHIS_IOBBS:
             scanline_path = get_data_path("images", "scanline.png")
             self.scanline_image = pygame.image.load(scanline_path).convert_alpha()
         except Exception:
-            print("Warning: images/scanline.png not found")
+            logger.warning("images/scanline.png not found")
             self.scanline_image = None
         
         # Initialize audio mixer for ambient track
         try:
             if not pygame.mixer.get_init():
                 try:
-                    pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
-                    print("DEBUG: Mixer initialized successfully for ambient track")
+                    pygame.mixer.init(frequency=AUDIO_FREQUENCY, size=AUDIO_SIZE, channels=AUDIO_CHANNELS, buffer=AUDIO_BUFFER)
+                    logger.debug("Mixer initialized successfully for ambient track")
                 except Exception as mixer_error:
-                    print(f"Warning: Unable to initialize mixer for ambient track: {mixer_error}")
+                    logger.warning(f"Unable to initialize mixer for ambient track: {mixer_error}")
                     self.ambient_sound = None
                     self.ambient_channel = None
                     return
             else:
-                print(f"DEBUG: Mixer already initialized: {pygame.mixer.get_init()}")
+                logger.debug(f"Mixer already initialized: {pygame.mixer.get_init()}")
             
             # Load ambient track (window-loop.wav)
             ambient_path = get_data_path("Audio", "window-loop.wav")
-            print(f"DEBUG: Looking for ambient audio file at: {ambient_path}")
-            print(f"DEBUG: File exists: {os.path.exists(ambient_path)}")
+            logger.debug(f"Looking for ambient audio file at: {ambient_path}")
+            logger.debug(f"File exists: {os.path.exists(ambient_path)}")
             
             if os.path.exists(ambient_path):
                 try:
                     self.ambient_sound = pygame.mixer.Sound(ambient_path)
-                    print(f"DEBUG: Ambient sound loaded successfully: {self.ambient_sound}")
+                    logger.debug(f"Ambient sound loaded successfully: {self.ambient_sound}")
                     # Start playing immediately - this is room ambiance, not BBS audio
                     # Initialize fade-in variables
                     self.ambient_fade_in = False
                     self.ambient_fade_start_time = None
-                    self.ambient_fade_duration = 3.0  # 3 seconds fade-in
+                    self.ambient_fade_duration = AMBIENT_FADE_DURATION
                     try:
                         # Ensure mixer is initialized before playing
                         if not pygame.mixer.get_init():
                             pygame.mixer.init()
-                        print("DEBUG: Starting ambient room track immediately with fade-in")
+                        logger.debug("Starting ambient room track immediately with fade-in")
                         self.ambient_channel = self.ambient_sound.play(loops=-1)  # Loop indefinitely
                         if self.ambient_channel:
                             self.ambient_channel.set_volume(0.0)  # Start at 0 for fade-in
                             self.ambient_playing = True
                             self.ambient_fade_in = True
                             self.ambient_fade_start_time = pygame.time.get_ticks() / 1000.0
-                            print("DEBUG: Ambient room track started, fade-in beginning at volume 0.0")
+                            logger.debug("Ambient room track started, fade-in beginning at volume 0.0")
                         else:
-                            print("DEBUG: Warning: play() returned None, no channel available")
+                            logger.debug("Warning: play() returned None, no channel available")
                             self.ambient_playing = False
                     except Exception as play_error:
-                        print(f"Warning: Failed to start ambient room track: {play_error}")
+                        logger.warning(f"Failed to start ambient room track: {play_error}")
                         import traceback
                         traceback.print_exc()
                         self.ambient_channel = None
                         self.ambient_playing = False
                 except Exception as sound_error:
-                    print(f"Warning: Failed to load window-loop.wav: {sound_error}")
+                    logger.warning(f"Failed to load window-loop.wav: {sound_error}")
                     self.ambient_sound = None
                     self.ambient_channel = None
                     self.ambient_playing = False
             else:
-                print(f"Warning: Audio/window-loop.wav not found at {ambient_path}")
+                logger.warning(f"Audio/window-loop.wav not found at {ambient_path}")
                 self.ambient_sound = None
                 self.ambient_channel = None
         except Exception as e:
-            print(f"Warning: Failed to initialize ambient audio: {e}")
+            logger.warning(f"Failed to initialize ambient audio: {e}")
             import traceback
             traceback.print_exc()
             self.ambient_sound = None
@@ -1405,7 +1497,7 @@ class GLYPHIS_IOBBS:
         
         return lines
     
-    def draw_text(self, text, font, color, x, y, max_width=None):
+    def draw_text(self, text: Optional[str], font: pygame.font.Font, color: Tuple[int, int, int], x: int, y: int, max_width: Optional[int] = None) -> int:
         """Draw text with optional word wrapping - flows like a document"""
         # Apply scroll offset (allows scrolling if content exceeds window)
         y = y + self.content_scroll_y
@@ -1426,6 +1518,55 @@ class GLYPHIS_IOBBS:
             
             return y_offset - self.content_scroll_y  # Return position without scroll offset
     
+    def _award_radio_token(self, token: str) -> None:
+        """Callback for PirateRadio app to award tokens to player."""
+        if self.inventory.add_token(token):
+            log_event(f"Awarded token {token} from Pirate Radio")
+            self.save_user_state()
+
+    def _get_player_username(self) -> str:
+        """Callback for PirateRadio app to get the player's username."""
+        return self.player_email if self.player_email not in ("unknown", "guest") else "operator"
+
+    def _initialize_radio_station_minutes(self) -> None:
+        """Initialize pirate radio station minutes at BBS launch for users with RADIO_ACCESS1."""
+        if not self.pirate_radio_app:
+            return
+        # Get current stations based on time of day
+        try:
+            from Data.Pirate_Radio.PirateRadio import NIGHT_STATIONS, DAY_STATIONS, _is_nighttime
+            stations = NIGHT_STATIONS if _is_nighttime() else DAY_STATIONS
+            # Reset the initialized flag so minutes get randomized fresh
+            self.pirate_radio_app.radio_manager.initialized = False
+            self.pirate_radio_app.radio_manager.initialize_minutes(stations)
+            log_event("Initialized Pirate Radio station minutes at BBS launch")
+        except Exception as e:
+            log_event(f"Warning: Could not initialize radio station minutes: {e}")
+
+    def _on_pirate_station_tune(self, station: Dict) -> None:
+        """Sync station metadata to the BBS UI when Pirate Radio tunes."""
+        self.radio_playing = True
+        self.current_station_name = station.get("name")
+        freq = station.get("freq")
+        self.current_frequency = int(freq) if freq else None
+
+    def _on_pirate_station_stop(self) -> None:
+        """Clear station metadata when Pirate Radio stops playback."""
+        self.radio_playing = False
+        self.current_station_name = None
+        self.current_frequency = None
+
+    def _stop_pirate_radio_audio(self, close_app: bool = True) -> None:
+        """Stop Pirate Radio playback (noise + station) when leaving the BBS surface."""
+        if self.pirate_radio_app:
+            try:
+                self.pirate_radio_app.stop_audio()
+                if close_app and self.pirate_radio_app.active:
+                    self.pirate_radio_app.close()
+            except Exception:
+                pass
+        self._on_pirate_station_stop()
+
     def _load_hand_cursor(self, filename: str) -> Optional[pygame.cursors.Cursor]:
         """Load a hand cursor image with hotspot at top-left corner"""
         path = get_data_path("images", filename)
@@ -1537,8 +1678,33 @@ class GLYPHIS_IOBBS:
         self.delete_confirmation_active = False
         self.logout_modal_active = False
         self.delete_email_modal_active = False
+        self.paper_crane_bbs = None
+        self.paper_crane_return_to_os = False
         
         log_event("BBS reset to beginning")
+
+    def _launch_paper_crane_bbs(self, return_to_os: bool = False) -> None:
+        """Enter the Paper Crane outside BBS experience."""
+        self.paper_crane_return_to_os = return_to_os
+        self.paper_crane_bbs = PaperCraneBBS(
+            self.bbs_width,
+            self.bbs_height,
+            self.scale,
+            on_exit=self._exit_paper_crane_bbs,
+        )
+        self.state = "paper_crane"
+        log_event("Routing to PAPER CRANE BBS")
+
+    def _exit_paper_crane_bbs(self) -> None:
+        """Hang up Paper Crane and return to desktop/BBS."""
+        should_return_to_os = self.paper_crane_return_to_os
+        self.paper_crane_bbs = None
+        self.paper_crane_return_to_os = False
+        self._reset_to_beginning()
+        if should_return_to_os and self.os_mode:
+            self.os_mode_active = True
+            self.os_mode.update_scale(self.scale)
+            self._update_audio_power_state()
     
     def draw_line(self, y, x1=50, x2=None):
         """Draw a horizontal separator line"""
@@ -1572,13 +1738,13 @@ class GLYPHIS_IOBBS:
         try:
             new_capture = cv2.VideoCapture(video_path)
             if not new_capture.isOpened():
-                print(f"Warning: {video_path} not found or could not be opened, using normal mode")
+                logger.warning(f"{video_path} not found or could not be opened, using normal mode")
                 new_capture.release()
                 return
         except Exception as exc:
             if new_capture:
                 new_capture.release()
-            print(f"Warning: Could not load {video_path}: {exc}, using normal mode")
+            logger.warning(f"Could not load {video_path}: {exc}, using normal mode")
             return
 
         # Set the new video capture
@@ -1663,15 +1829,20 @@ class GLYPHIS_IOBBS:
             desired_state = "astro-miner"
             base_video = "Audio-Desktop-os.mp4"
         # Treat RadioMusic same as cracker_audio_playing for video selection
-        elif cracker_audio_playing or radio_music_active:
+        # Also check for pirate radio playing
+        elif cracker_audio_playing or radio_music_active or self.radio_playing:
             desired_state = "audio-playing"
             # Check if current video is a No-Sound variant (strip -os suffix too for detection)
             base_for_no_sound_check = base_filename_for_detection.replace("-os.mp4", ".mp4")
             is_no_sound = ("No-Sound" in base_for_no_sound_check and "Audio-Desktop" in base_for_no_sound_check) or \
                          ("Audio-Desktop-No-Sound" in base_for_no_sound_check)
             
+            # For pirate radio, always use Audio-Desktop (not -os version, not No-Sound)
+            if self.radio_playing and not (cracker_audio_playing or radio_music_active):
+                # Pirate radio is playing - use Audio-Desktop.mp4 (time-aware will add night- prefix if needed)
+                base_video = "Audio-Desktop.mp4"
             # In OS Mode, swap Audio-Desktop videos to -os versions
-            if self.os_mode_active:
+            elif self.os_mode_active:
                 if is_no_sound:
                     base_video = "Audio-Desktop-No-Sound-os.mp4"
                 else:
@@ -1681,7 +1852,7 @@ class GLYPHIS_IOBBS:
                     base_video = "Audio-Desktop-No-Sound.mp4"
                 else:
                     base_video = "Audio-Desktop.mp4"
-        elif has_audio_on and not (cracker_audio_playing or radio_music_active):
+        elif has_audio_on and not (cracker_audio_playing or radio_music_active or self.radio_playing):
             # AUDIO_ON is present but music has ended - use No-Sound fallback videos
             desired_state = "audio-on-no-music"
             if self.os_mode_active:
@@ -1751,6 +1922,11 @@ class GLYPHIS_IOBBS:
         if not definition.session_factory:
             self.show_main_menu_message("Game session unavailable.")
             return
+        
+        # Stop radio when launching game from Games Menu (so game audio can play)
+        if self.pirate_radio_app:
+            self._stop_pirate_radio_audio(close_app=False)
+        
         self.active_game_session = definition.session_factory(self)
         self.state = "game_session"
         self.active_game_session.enter()
@@ -1774,13 +1950,29 @@ class GLYPHIS_IOBBS:
         self.screen.blit(self.bbs_surface, (self.bbs_x, self.bbs_y))
         pygame.display.flip()
     
-    def check_email_database(self):
+    def check_email_database(self) -> None:
         """Check email database for new emails based on tokens and add them to inbox"""
-        new_emails = self.email_db.check_and_send_emails(self.inventory, self.player_email)
+        new_emails = self.email_db.check_and_send_emails(self.inventory, self.player_email, self.inbox)
         for email in new_emails:
             self.inbox.append(email)
-        # Save sent email IDs
-        if new_emails:
+            
+        # Process delayed emails
+        current_time = time.time()
+        delivered_any = False
+        remaining_delayed = []
+        
+        for delayed in self.delayed_emails:
+            if current_time >= delayed["delivery_time"]:
+                self.inbox.append(delayed["email"])
+                delivered_any = True
+                log_event(f"Delayed email delivered: '{delayed['email'].subject}' from {delayed['email'].sender}")
+            else:
+                remaining_delayed.append(delayed)
+        
+        self.delayed_emails = remaining_delayed
+            
+        # Save user state if anything new arrived
+        if new_emails or delivered_any:
             self.save_user_state()
     
     def draw_bbs_scroll(self):
@@ -1898,11 +2090,11 @@ class GLYPHIS_IOBBS:
         try:
             # Try Courier New or similar monospace font (scaled)
             ascii_font = pygame.font.SysFont("courier", int(16 * self.scale))
-        except:
+        except Exception:
             try:
                 # Fallback to Retro Gaming if Courier not available
                 ascii_font = pygame.font.Font(get_data_path("Retro Gaming.ttf"), int(16 * self.scale))
-            except:
+            except Exception:
                 # Final fallback
                 ascii_font = self.font_small
         
@@ -2237,10 +2429,10 @@ class GLYPHIS_IOBBS:
             info_y += int(28 * self.scale)
             self.draw_text("[ EXTERNAL COMMS ]", self.font_small, ACCENT_CYAN, info_x, info_y)
             info_y += int(28 * self.scale)
-            station = getattr(self, "current_frequency", None)
-            radio_unlocked = getattr(self.inventory, "has_token", lambda *_: False)(Tokens.RADIO_ACCESS)
+            has_radio_token = getattr(self.inventory, "has_token", lambda *_: False)(Tokens.RADIO_ACCESS1)
+            station = self.current_frequency if self.radio_playing else None
             station_text = f"RADIO TUNED: {station} kHz" if station else "RADIO TUNED: -- kHz"
-            self.draw_text(station_text, self.font_small, CYAN if radio_unlocked and station else RED, info_x, info_y)
+            self.draw_text(station_text, self.font_small, CYAN if has_radio_token else RED, info_x, info_y)
             info_y += int(28 * self.scale)
 
         self._draw_footer_status()
@@ -2253,23 +2445,23 @@ class GLYPHIS_IOBBS:
             if self.main_menu_message_timer <= 0:
                 self.main_menu_message = ""
 
-    def show_main_menu_message(self, text, duration=180):
+    def show_main_menu_message(self, text: str, duration: int = 180) -> None:
         self.main_menu_message = text
         self.main_menu_message_timer = max(0, duration)
 
-    def module_required_token(self, module_name):
+    def module_required_token(self, module_name: str) -> Optional[str]:
         token = self.module_token_requirements.get(module_name)
         if token:
             return token.upper()
         return None
 
-    def is_module_locked(self, module_name):
+    def is_module_locked(self, module_name: str) -> bool:
         token = self.module_required_token(module_name)
         if not token:
             return False
         return not self.inventory.has_token(token)
 
-    def get_module_lock_hint(self, module_name):
+    def get_module_lock_hint(self, module_name: str) -> str:
         placeholder_username = self.player_email or "operative"
         default_message = f"System integrity preserved. {placeholder_username} remains outside."
         custom_message = self.module_lock_messages.get(module_name)
@@ -2513,7 +2705,7 @@ class GLYPHIS_IOBBS:
                 if test_surface.get_width() > 0:
                     wall_ascii_font = test_font
                     break
-            except:
+            except Exception:
                 continue
         if wall_ascii_font is None:
             wall_ascii_font = pygame.font.SysFont("courier", int(16 * self.scale))
@@ -3089,24 +3281,22 @@ class GLYPHIS_IOBBS:
 
             text_x = entry_rect.x + int(14 * self.scale)
             line_y = y + int(10 * self.scale)
-            self.draw_text(
+            line_y = self.draw_text(
                 f"{prefix} FROM: {email.sender}",
                 self.font_small,
                 header_color,
                 text_x,
                 line_y,
                 max_width=panel_width - int(40 * self.scale),
-            )
-            line_y += int(24 * self.scale)
-            self.draw_text(
+            ) + int(8 * self.scale)
+            line_y = self.draw_text(
                 f"SUBJECT: {email.subject}",
                 self.font_small,
                 header_color,
                 text_x,
                 line_y,
                 max_width=panel_width - int(40 * self.scale),
-            )
-            line_y += int(24 * self.scale)
+            ) + int(8 * self.scale)
             self.draw_text(f"TIME: {email.timestamp}", self.font_tiny, DARK_CYAN, text_x, line_y)
 
             y += entry_height + gap
@@ -3139,8 +3329,8 @@ class GLYPHIS_IOBBS:
         y += int(28 * self.scale)
         self.draw_text(f"TIME: {email.timestamp}", self.font_small, CYAN, panel_x, y)
         y += int(28 * self.scale)
-        self.draw_text(f"SUBJECT: {email.subject}", self.font_medium, CYAN, panel_x, y)
-        y += int(36 * self.scale)
+        self.draw_text(f"SUBJECT: {email.subject}", self.font_small, CYAN, panel_x, y)
+        y += int(28 * self.scale)
 
         separator_start = (panel_x, y)
         separator_end = (panel_x + panel_width, y)
@@ -3423,25 +3613,25 @@ class GLYPHIS_IOBBS:
 
         if _cv2_available:
             video_path = get_data_path("Videos", "IDE-START.mp4")
-            print(f"DEBUG: Playing intro video from: {video_path}")
+            logger.debug(f"Playing intro video from: {video_path}")
             self._play_ops_intro_video(video_path)
         else:
-            print("DEBUG: cv2 not available, skipping intro video")
+            logger.debug("cv2 not available, skipping intro video")
 
         # Ensure session is still valid after video playback
         if not self.active_ops_session:
-            print("ERROR: active_ops_session is None after video playback! Session may have failed to initialize.")
+            logger.error("active_ops_session is None after video playback! Session may have failed to initialize.")
             self.state = "tasks"
             return
 
-        print(f"DEBUG: Setting state to urgent_ops_session, active_ops_session={self.active_ops_session}")
+        logger.debug(f"Setting state to urgent_ops_session, active_ops_session={self.active_ops_session}")
         self.state = "urgent_ops_session"
 
     def _initialize_os_mode_if_needed(self):
         """Initialize OS mode if it hasn't been initialized yet. Used by ghost user sequence."""
         
         if self.os_mode is None:
-            print("DEBUG GHOST USER: OS Mode not initialized, initializing now...")
+            logger.debug("GHOST USER: OS Mode not initialized, initializing now...")
             try:
                 # Create callback function to reset BBS and exit OS mode
                 def reset_bbs_and_exit_os():
@@ -3476,16 +3666,16 @@ class GLYPHIS_IOBBS:
                     return []
                 
                 def save_notes(notes):
-                    print(f"[DEBUG] save_notes callback called with {len(notes)} notes")
+                    logger.debug(f"save_notes callback called with {len(notes)} notes")
                     user = self.get_active_user()
                     if user:
-                        print(f"[DEBUG] User found: {user.get('username', 'unknown')}")
+                        logger.debug(f"User found: {user.get('username', 'unknown')}")
                         user["notes"] = notes
-                        print(f"[DEBUG] Set user notes, now calling save_user_state")
+                        logger.debug("Set user notes, now calling save_user_state")
                         self.save_user_state()
-                        print(f"[DEBUG] save_user_state completed")
+                        logger.debug("save_user_state completed")
                     else:
-                        print(f"[DEBUG] No active user found!")
+                        logger.debug("No active user found!")
                 
                 def get_user_credentials():
                     user = self.get_active_user()
@@ -3540,21 +3730,19 @@ class GLYPHIS_IOBBS:
                     """Grant a token to the player."""
                     return self.grant_token(token, reason=reason)
                 
-                self.os_mode = OSMode(self.screen, self.scale, reset_bbs_and_exit_os, 
+                self.os_mode = OSMode(self.screen, self.res_manager, reset_bbs_and_exit_os, 
                                       self.bbs_x, self.bbs_y, self.bbs_width, has_token,
                                       get_recording_state, set_recording_state,
                                       get_notes, save_notes, get_user_credentials,
-                                      get_chess_stats, save_chess_stats, is_audio_streaming,
-                                      grant_token_callback, self._get_radio_music_state)
-                print("DEBUG GHOST USER: OS Mode initialized successfully")
+                                      get_chess_stats, save_chess_stats, grant_token_callback,
+                                      is_audio_streaming, self._get_radio_music_state)
+                logger.debug("GHOST USER: OS Mode initialized successfully")
                 return True
             except Exception as e:
-                print(f"ERROR GHOST USER: Failed to initialize OS Mode: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.error(f"GHOST USER: Failed to initialize OS Mode: {e}", exc_info=True)
                 return False
         else:
-            print("DEBUG GHOST USER: OS Mode already initialized")
+            logger.debug("GHOST USER: OS Mode already initialized")
             return True
 
     def _end_ops_session(self):
@@ -3570,8 +3758,8 @@ class GLYPHIS_IOBBS:
         # BUT: Block ghost user if MODEM1ST token exists (user connected via modem first)
         # Keep active_ops_session reference during ghost user sequence so we can still check if audio is playing
         if node7_just_completed and not self.inventory.has_token(Tokens.MODEM1ST):
-            print(f"DEBUG GHOST USER: Node 7 completed and confirmed! Starting ghost user sequence...")
-            print(f"DEBUG GHOST USER: Current state={self.state}, os_mode={self.os_mode}, os_mode_active={self.os_mode_active}")
+            logger.debug(f"GHOST USER: Node 7 completed and confirmed! Starting ghost user sequence...")
+            logger.debug(f"GHOST USER: Current state={self.state}, os_mode={self.os_mode}, os_mode_active={self.os_mode_active}")
             # Initialize OS mode if needed (required for ghost user sequence)
             self._initialize_os_mode_if_needed()
             self.state = "ghost_user_sequence"
@@ -3581,7 +3769,7 @@ class GLYPHIS_IOBBS:
             self.ghost_user_active = True
             # Keep active_ops_session reference so we can still check if NODE7.wav is playing
             # It will be cleared when ghost user sequence ends
-            print("DEBUG GHOST USER: Ghost user sequence initialized - will block inputs in 3 beats")
+            logger.debug("GHOST USER: Ghost user sequence initialized - will block inputs in 3 beats")
         else:
             # Only clear active_ops_session if NOT starting ghost user sequence
             self.active_ops_session = None
@@ -3749,14 +3937,19 @@ class GLYPHIS_IOBBS:
                 pygame.draw.rect(self.bbs_surface, HIGHLIGHT_BLUE, entry_rect)
                 pygame.draw.rect(self.bbs_surface, ACCENT_CYAN, entry_rect, 2)
                 color = WHITE
-                prefix = "[>]"
+                # Don't show [>] prefix for "Awaiting dispatch authorisation" task
+                if task.get("id") == "ops_standby":
+                    prefix = ""
+                else:
+                    prefix = "[>]"
             else:
                 pygame.draw.rect(self.bbs_surface, PANEL_BLUE, entry_rect, 1)
                 color = DARK_CYAN
                 prefix = "[ ]"
 
+            display_text = f"{prefix} {title}" if prefix else title
             self.draw_text(
-                f"{prefix} {title}",
+                display_text,
                 self.font_medium,
                 color,
                 entry_rect.x + int(14 * self.scale),
@@ -3858,28 +4051,80 @@ class GLYPHIS_IOBBS:
     def draw_radio_module(self):
         """Draw the Pirate Radio module"""
         self.content_scroll_y = 0
-        _, content_rect, _ = self._prepare_bbs_screen(
-            "PIRATE RADIO // SIGNAL NODE",
-            ["SPACE: toggle playback   ESC: return"],
-            include_info=False,
-            left_ratio=1.0,
+        _, modules_rect, info_rect = self._prepare_bbs_screen(
+            "PIRATE RADIO // SIGNAL INTERCEPT",
+            ["UP/DOWN: navigate tools   ENTER: launch   ESC: return"],
+            include_info=True,
         )
 
-        x = content_rect.x + int(20 * self.scale)
-        y = content_rect.y + int(20 * self.scale)
-        status = "PLAYING" if self.radio_playing else "STOPPED"
-        self.draw_text(f"Status: {status}", self.font_medium, CYAN, x, y)
-        y += int(40 * self.scale)
-        self.draw_text(f"Now Playing: {self.current_track}", self.font_small, DARK_CYAN, x, y)
-        y += int(40 * self.scale)
-        self.draw_line(y)
-        y += int(30 * self.scale)
-        
-        # DJ text (scaled)
-        self.draw_text("DJ TRANSMISSION:", self.font_small, ACCENT_CYAN, x, y)
-        y += int(30 * self.scale)
-        dj_text_width = content_rect.width - int(40 * self.scale)
-        self.draw_text(self.dj_text[self.dj_index], self.font_small, DARK_CYAN, x, y, dj_text_width)
+        tools = self.radio_tools
+        label_x = modules_rect.x + int(20 * self.scale)
+        self.draw_text("[ TOOLS ]", self.font_small, ACCENT_CYAN, label_x, modules_rect.y + int(20 * self.scale))
+
+        y = modules_rect.y + int(60 * self.scale)
+        row_height = max(int(46 * self.scale), 32)
+
+        if not tools:
+            self.draw_text(
+                "No radio tools unlocked yet. Complete relay missions to access the intercept vault.",
+                self.font_small,
+                DARK_CYAN,
+                label_x,
+                y,
+                max_width=modules_rect.width - int(40 * self.scale),
+            )
+        else:
+            for i, tool in enumerate(tools):
+                entry_rect = pygame.Rect(
+                    modules_rect.x + int(16 * self.scale),
+                    y - int(10 * self.scale),
+                    modules_rect.width - int(32 * self.scale),
+                    row_height,
+                )
+                if i == self.current_radio_index:
+                    pygame.draw.rect(self.bbs_surface, HIGHLIGHT_BLUE, entry_rect)
+                    pygame.draw.rect(self.bbs_surface, ACCENT_CYAN, entry_rect, 2)
+                    color = WHITE
+                    prefix = "[>]"
+                else:
+                    pygame.draw.rect(self.bbs_surface, PANEL_BLUE, entry_rect, 1)
+                    color = DARK_CYAN
+                    prefix = "[ ]"
+
+                self.draw_text(
+                    f"{prefix} {tool['name']}",
+                    self.font_medium_small,
+                    color,
+                    entry_rect.x + int(14 * self.scale),
+                    y,
+                )
+                y += row_height
+
+        if info_rect:
+            info_x = info_rect.x + int(20 * self.scale)
+            info_y = info_rect.y + int(20 * self.scale)
+            self.draw_text("[ TOOL DETAILS ]", self.font_small, ACCENT_CYAN, info_x, info_y)
+            info_y += int(30 * self.scale)
+
+            if tools:
+                selected = tools[self.current_radio_index]
+                self.draw_text(selected['name'], self.font_small, CYAN, info_x, info_y)
+                info_y += int(24 * self.scale)
+                status_text = selected.get("status", "--")
+                self.draw_text(f"Status: [{status_text}]", self.font_tiny, DARK_CYAN, info_x, info_y)
+                info_y += int(24 * self.scale)
+                self.draw_text("Description:", self.font_tiny, ACCENT_CYAN, info_x, info_y)
+                info_y += int(20 * self.scale)
+                self.draw_text(
+                    selected['description'],
+                    self.font_tiny,
+                    DARK_CYAN,
+                    info_x,
+                    info_y,
+                    max_width=info_rect.width - int(40 * self.scale),
+                )
+            else:
+                self.draw_text("Awaiting unlock sequence.", self.font_tiny, DARK_CYAN, info_x, info_y)
 
         self._draw_footer_status()
     
@@ -3966,20 +4211,33 @@ class GLYPHIS_IOBBS:
                         if not match:
                             # Generate response from glyphis (sysop) using enhanced trait-based system
                             player_tokens = self.inventory.get_all_tokens()
+                            active_user = self.get_active_user()
+                            current_score = active_user.get("relationship_scores", {}).get("glyphis@ciphernet.net", 0.0) if active_user else 0.0
+                            
                             response_body = self.npc.generate_response(
                                 sender_email="glyphis@ciphernet.net",
                                 email_subject=email.subject,
                                 email_body=email.body,
                                 player_tokens=player_tokens,
-                                player_username=self.player_email
+                                player_username=self.player_email,
+                                relationship_score=current_score
                             )
+                            # Update score in user profile
+                            if active_user:
+                                active_user.setdefault("relationship_scores", {})["glyphis@ciphernet.net"] = self.npc.relationship_scores.get("glyphis@ciphernet.net", 0.0)
                             response = Email(
                                 "glyphis@ciphernet.net",
                                 self.player_email,
                                 f"RE: {email.subject}",
                                 response_body
                             )
-                            self.inbox.append(response)
+                            # Add with delay (30-120 seconds)
+                            delay = random.randint(30, 120)
+                            self.delayed_emails.append({
+                                "email": response,
+                                "delivery_time": time.time() + delay
+                            })
+                            log_event(f"NPC reply scheduled (delay: {delay}s): '{response.subject}'")
                     elif self.compose_to in ["jaxkando@ciphernet.net", "rain@ciphernet.net", "uncle-am@ciphernet.net"]:
                         # Handle emails to other NPCs using enhanced trait-based system
                         self.sent.append(email)
@@ -4003,7 +4261,8 @@ class GLYPHIS_IOBBS:
                             relay_keywords = ["i agree", "i agree to be part", "agree to be part of the underground radio network",
                                             "agree to be part of the underground radio", "i'm in", "count me in",
                                             "ready to be a relay", "ready to serve as a relay", "ready to be part",
-                                            "underground radio network", "radio relay", "relay node"]
+                                            "underground radio network", "radio relay", "relay node",
+                                            "yes", "yes please", "sure", "ok", "okay", "yeah", "yep"]
                             
                             if any(keyword in email_text for keyword in relay_keywords):
                                 # Grant RADIO_ACCESS token if not already granted
@@ -4012,20 +4271,33 @@ class GLYPHIS_IOBBS:
                         
                         # Generate response using enhanced trait-based system
                         player_tokens = self.inventory.get_all_tokens()
+                        active_user = self.get_active_user()
+                        current_score = active_user.get("relationship_scores", {}).get(self.compose_to, 0.0) if active_user else 0.0
+                        
                         response_body = self.npc.generate_response(
                             sender_email=self.compose_to,
                             email_subject=email.subject,
                             email_body=email.body,
                             player_tokens=player_tokens,
-                            player_username=self.player_email
+                            player_username=self.player_email,
+                            relationship_score=current_score
                         )
+                        # Update score in user profile
+                        if active_user:
+                            active_user.setdefault("relationship_scores", {})[self.compose_to] = self.npc.relationship_scores.get(self.compose_to, 0.0)
                         response = Email(
                             self.compose_to,
                             self.player_email,
                             f"RE: {email.subject}",
                             response_body
                         )
-                        self.inbox.append(response)
+                        # Add with delay (30-120 seconds)
+                        delay = random.randint(30, 120)
+                        self.delayed_emails.append({
+                            "email": response,
+                            "delivery_time": time.time() + delay
+                        })
+                        log_event(f"NPC reply scheduled (delay: {delay}s): '{response.subject}'")
                     else:
                         # For other recipients, add to outbox
                         self.outbox.append(email)
@@ -4105,6 +4377,9 @@ class GLYPHIS_IOBBS:
                 games = self._get_unlocked_games()
                 if games:
                     self.current_game_index = (self.current_game_index - 1) % len(games)
+            elif self.state == "radio":
+                if self.radio_tools:
+                    self.current_radio_index = (self.current_radio_index - 1) % len(self.radio_tools)
             elif self.state == "inbox" or self.state == "outbox" or self.state == "sent":
                 emails = self.inbox if self.state == "inbox" else (self.outbox if self.state == "outbox" else self.sent)
                 if emails:
@@ -4138,6 +4413,9 @@ class GLYPHIS_IOBBS:
                 games = self._get_unlocked_games()
                 if games:
                     self.current_game_index = (self.current_game_index + 1) % len(games)
+            elif self.state == "radio":
+                if self.radio_tools:
+                    self.current_radio_index = (self.current_radio_index + 1) % len(self.radio_tools)
             elif self.state == "inbox" or self.state == "outbox" or self.state == "sent":
                 emails = self.inbox if self.state == "inbox" else (self.outbox if self.state == "outbox" else self.sent)
                 if emails:
@@ -4175,6 +4453,7 @@ class GLYPHIS_IOBBS:
                     self.bio_scroll_y = 0  # Reset scroll
                 elif module_name == "PIRATE RADIO":
                     self.state = "radio"
+                    self.current_radio_index = 0  # Reset selection
                 elif module_name == "LOGOUT":
                     self.prompt_logout_confirmation()
             
@@ -4187,7 +4466,6 @@ class GLYPHIS_IOBBS:
                     self.compose_subject = ""
                     self.compose_body = ""
                     self.active_field = "to"  # Start with TO field active for dropdown selection
-                    self.active_field = "subject"  # Start with subject field
                 elif self.current_module == 1:
                     self.state = "inbox"
                     self.current_module = 0
@@ -4226,6 +4504,20 @@ class GLYPHIS_IOBBS:
                 if games:
                     self.launch_game(games[self.current_game_index])
                 return
+            
+            elif self.state == "radio":
+                # Launch the selected radio tool (A.P.I app) directly from BBS
+                if self.radio_tools and self.pirate_radio_app:
+                    # Play intro audio IMMEDIATELY on Enter press (before any app init)
+                    if self.pirate_radio_intro_sound:
+                        self.pirate_radio_intro_sound.play()
+                    # Play intro every time, but skip the tone test when the token exists
+                    has_radio_token = self.inventory.has_token(Tokens.RADIO_ACCESS1)
+                    self.pirate_radio_app.skip_challenge = has_radio_token
+                    self.pirate_radio_app.force_intro_with_skip = has_radio_token
+                    self.pirate_radio_app.start()
+                else:
+                    pass
             
             elif self.state == "reading":
                 log_event("Opening reply from reading view via ENTER")
@@ -4296,6 +4588,8 @@ class GLYPHIS_IOBBS:
                     self.current_game_index = 0
                 elif self.state == "tasks":
                     self.current_task = 0
+                elif self.state == "radio":
+                    self.current_radio_index = 0
                 self.state = "main_menu"
                 self.current_module = 0
         
@@ -4334,7 +4628,7 @@ class GLYPHIS_IOBBS:
                 self.font_medium_small = pygame.font.Font(get_data_path("Retro Gaming.ttf"), max(1, int(20 * self.scale)))
                 self.font_small = pygame.font.Font(get_data_path("Retro Gaming.ttf"), int(16 * self.scale))
                 self.font_tiny = pygame.font.Font(get_data_path("Retro Gaming.ttf"), int(12 * self.scale))
-            except:
+            except Exception:
                 self.font_large = pygame.font.Font(None, int(30 * self.scale))
                 self.font_medium = pygame.font.Font(None, int(22 * self.scale))
                 self.font_medium_small = pygame.font.Font(None, max(1, int(20 * self.scale)))
@@ -4351,7 +4645,7 @@ class GLYPHIS_IOBBS:
                         scale_factor = self.bbs_width / original_scroll.get_width()
                         new_height = int(original_scroll.get_height() * scale_factor)
                         self.scroll_image = pygame.transform.scale(original_scroll, (self.bbs_width, new_height))
-                except:
+                except Exception:
                     pass  # If we can't reload, keep the existing scaled image
         
         elif event.key == pygame.K_SPACE:
@@ -4365,11 +4659,7 @@ class GLYPHIS_IOBBS:
                 # Spacebar takes us to main menu from Terminal Feed
                 self.state = "main_menu"
                 self.current_module = 0
-            elif self.state == "radio":
-                self.radio_playing = not self.radio_playing
-                if self.radio_playing:
-                    # Cycle DJ text
-                    self.dj_index = (self.dj_index + 1) % len(self.dj_text)
+            # Removed self.state == "radio" handler as it's now an app
     
     def _update_ghost_user_sequence(self):
         """Update the ghost user automation sequence after Node 7 completion."""
@@ -4380,113 +4670,113 @@ class GLYPHIS_IOBBS:
         if not hasattr(self, '_ghost_user_update_debug_counter'):
             self._ghost_user_update_debug_counter = 0
         self._ghost_user_update_debug_counter += 1
-        if self._ghost_user_update_debug_counter % 60 == 0:
-            print(f"DEBUG GHOST USER: Step={self.ghost_user_step}, elapsed={elapsed}ms, state={self.state}, os_mode_active={self.os_mode_active}, ghost_user_input_blocked={self.ghost_user_input_blocked}")
+        if self._ghost_user_update_debug_counter % DEBUG_LOG_INTERVAL == 0:
+            logger.debug(f"GHOST USER: Step={self.ghost_user_step}, elapsed={elapsed}ms, state={self.state}, os_mode_active={self.os_mode_active}, ghost_user_input_blocked={self.ghost_user_input_blocked}")
         
         # Step 0: Wait 3 beats (3 seconds) before disabling inputs
         if self.ghost_user_step == 0:
-            print(f"DEBUG GHOST USER STEP 0: Waiting 3 beats ({3 * self.ghost_user_beat_duration}ms), elapsed={elapsed}ms")
+            logger.debug(f"GHOST USER STEP 0: Waiting 3 beats ({3 * self.ghost_user_beat_duration}ms), elapsed={elapsed}ms")
             if elapsed >= 3 * self.ghost_user_beat_duration:
                 self.ghost_user_input_blocked = True
                 self.ghost_user_step = 1
                 self.ghost_user_timer = current_time
-                print("DEBUG GHOST USER: Step 0 complete - Inputs disabled, switching to OS Mode")
+                logger.debug("GHOST USER: Step 0 complete - Inputs disabled, switching to OS Mode")
         
         # Step 1: Switch to OS Mode and open Notes immediately
         elif self.ghost_user_step == 1:
-            print(f"DEBUG GHOST USER STEP 1: Activating OS Mode, os_mode_active={self.os_mode_active}, os_mode={self.os_mode}")
+            logger.debug(f"GHOST USER STEP 1: Activating OS Mode, os_mode_active={self.os_mode_active}, os_mode={self.os_mode}")
             # Ensure OS mode is initialized
             if self.os_mode is None:
-                print("DEBUG GHOST USER STEP 1: OS Mode not initialized, initializing now...")
+                logger.debug("GHOST USER STEP 1: OS Mode not initialized, initializing now...")
                 if not self._initialize_os_mode_if_needed():
-                    print("ERROR GHOST USER STEP 1: Failed to initialize OS Mode! Cannot continue!")
+                    logger.error("GHOST USER STEP 1: Failed to initialize OS Mode! Cannot continue!")
                     return  # Wait and try again next frame
             if not self.os_mode_active:
                 self.os_mode_active = True
                 if self.os_mode:
                     self.os_mode.update_scale(self.scale)
-                    print("DEBUG GHOST USER: OS Mode scale updated")
+                    logger.debug("GHOST USER: OS Mode scale updated")
                 else:
-                    print("ERROR GHOST USER: os_mode is None! Cannot activate OS Mode!")
+                    logger.error("GHOST USER: os_mode is None! Cannot activate OS Mode!")
                     return  # Wait and try again next frame
             # Update health monitor immediately
             if self.os_mode:
                 self.os_mode._set_ghost_user_health_state()
-                print("DEBUG GHOST USER: Health state set")
+                logger.debug("GHOST USER: Health state set")
             else:
-                print("ERROR GHOST USER: os_mode is None! Cannot set health state!")
+                logger.error("GHOST USER: os_mode is None! Cannot set health state!")
                 return  # Wait and try again next frame
             # Open Notes immediately when OS_Mode opens
             if self.os_mode:
                 self.os_mode._ghost_open_notes_mission()
-                print("DEBUG GHOST USER: Notes app opened immediately")
+                logger.debug("GHOST USER: Notes app opened immediately")
             else:
-                print("ERROR GHOST USER: os_mode is None! Cannot open Notes app!")
+                logger.error("GHOST USER: os_mode is None! Cannot open Notes app!")
             self.ghost_user_step = 2
             self.ghost_user_timer = current_time
-            print("DEBUG GHOST USER: Step 1 complete - OS Mode activated, Notes opened")
+            logger.debug("GHOST USER: Step 1 complete - OS Mode activated, Notes opened")
         
         # Step 2: Wait a beat or two, then update network status to DISCONNECTED
         elif self.ghost_user_step == 2:
-            print(f"DEBUG GHOST USER STEP 2: Waiting 2 beats ({self.ghost_user_beat_duration * 2}ms), elapsed={elapsed}ms")
+            logger.debug(f"GHOST USER STEP 2: Waiting 2 beats ({self.ghost_user_beat_duration * 2}ms), elapsed={elapsed}ms")
             if elapsed >= self.ghost_user_beat_duration * 2:  # Wait 2 beats
                 if self.os_mode:
                     self.os_mode._set_network_disconnected()
-                    print("DEBUG GHOST USER: Network disconnected")
+                    logger.debug("GHOST USER: Network disconnected")
                 else:
-                    print("ERROR GHOST USER: os_mode is None! Cannot disconnect network!")
+                    logger.error("GHOST USER: os_mode is None! Cannot disconnect network!")
                 self.ghost_user_step = 3
                 self.ghost_user_timer = current_time
-                print("DEBUG GHOST USER: Step 2 complete - Network disconnected")
+                logger.debug("GHOST USER: Step 2 complete - Network disconnected")
         
         # Step 3: Wait 3 seconds, then strike through point 4
         elif self.ghost_user_step == 3:
-            print(f"DEBUG GHOST USER STEP 3: Waiting 3 seconds (3000ms) before striking through point 4, elapsed={elapsed}ms")
-            if elapsed >= 3000:  # Wait 3 seconds (3000ms)
+            logger.debug(f"GHOST USER STEP 3: Waiting 3 seconds (3000ms) before striking through point 4, elapsed={elapsed}ms")
+            if elapsed >= GHOST_USER_STEP3_WAIT_TIME:
                 if self.os_mode:
                     self.os_mode._ghost_strike_through_mission_point(4)
-                    print("DEBUG GHOST USER: Point 4 struck through after 3 seconds")
+                    logger.debug("GHOST USER: Point 4 struck through after 3 seconds")
                 else:
-                    print("ERROR GHOST USER: os_mode is None! Cannot strike through point 4!")
+                    logger.error("GHOST USER: os_mode is None! Cannot strike through point 4!")
                 self.ghost_user_step = 4
                 self.ghost_user_timer = current_time
-                print("DEBUG GHOST USER: Step 3 complete - Point 4 struck through")
+                logger.debug("GHOST USER: Step 3 complete - Point 4 struck through")
         
         # Step 4: Move mouse to Datasette icon and double-click
         elif self.ghost_user_step == 4:
-            print(f"DEBUG GHOST USER STEP 4: Waiting 1 beat ({self.ghost_user_beat_duration}ms), elapsed={elapsed}ms")
+            logger.debug(f"GHOST USER STEP 4: Waiting 1 beat ({self.ghost_user_beat_duration}ms), elapsed={elapsed}ms")
             if elapsed >= self.ghost_user_beat_duration:
                 if self.os_mode:
                     self.os_mode._ghost_click_datasette_icon()
-                    print("DEBUG GHOST USER: Datasette icon clicked")
+                    logger.debug("GHOST USER: Datasette icon clicked")
                 else:
-                    print("ERROR GHOST USER: os_mode is None! Cannot click Datasette icon!")
+                    logger.error("GHOST USER: os_mode is None! Cannot click Datasette icon!")
                 self.ghost_user_step = 5
                 self.ghost_user_timer = current_time
-                print("DEBUG GHOST USER: Step 4 complete")
+                logger.debug("GHOST USER: Step 4 complete")
         
         # Step 5: Click Record Data button
         elif self.ghost_user_step == 5:
-            print(f"DEBUG GHOST USER STEP 5: Waiting 1 beat ({self.ghost_user_beat_duration}ms), elapsed={elapsed}ms")
+            logger.debug(f"GHOST USER STEP 5: Waiting 1 beat ({self.ghost_user_beat_duration}ms), elapsed={elapsed}ms")
             if elapsed >= self.ghost_user_beat_duration:
                 if self.os_mode:
                     self.os_mode._ghost_click_record_data()
-                    print("DEBUG GHOST USER: Record Data clicked")
+                    logger.debug("GHOST USER: Record Data clicked")
                 else:
-                    print("ERROR GHOST USER: os_mode is None! Cannot click Record Data!")
+                    logger.error("GHOST USER: os_mode is None! Cannot click Record Data!")
                 self.ghost_user_step = 6
                 self.ghost_user_timer = current_time
-                print("DEBUG GHOST USER: Step 5 complete")
+                logger.debug("GHOST USER: Step 5 complete")
         
         # Step 6: Close all open modals (Notes and Datasette)
         # Wait for datasette video to complete before closing modal
         elif self.ghost_user_step == 6:
-            print(f"DEBUG GHOST USER STEP 6: Waiting for video completion, elapsed={elapsed}ms")
+            logger.debug(f"GHOST USER STEP 6: Waiting for video completion, elapsed={elapsed}ms")
             if self.os_mode:
                 # Close Notes modal immediately
                 if "notes" in self.os_mode.active_modals:
                     self.os_mode.active_modals.remove("notes")
-                    print("DEBUG GHOST USER: Notes modal closed")
+                    logger.debug("GHOST USER: Notes modal closed")
                 
                 # For Datasette modal: wait for video to complete
                 if "tape" in self.os_mode.active_modals:
@@ -4494,26 +4784,26 @@ class GLYPHIS_IOBBS:
                     if self.os_mode.tape_modal_video_completed:
                         # Video finished - close modal
                         self.os_mode.active_modals.remove("tape")
-                        print("DEBUG GHOST USER: Datasette modal closed after video completion")
+                        logger.debug("GHOST USER: Datasette modal closed after video completion")
                         self.ghost_user_step = 7
                         self.ghost_user_timer = current_time
-                        print("DEBUG GHOST USER: Step 6 complete - All modals closed")
+                        logger.debug("GHOST USER: Step 6 complete - All modals closed")
                     else:
                         # Video still playing - keep modal open and wait
                         if not self.os_mode.tape_modal_video_playing:
                             # Video stopped but not marked as completed (shouldn't happen, but handle it)
-                            print("DEBUG GHOST USER: Video stopped but not completed, closing modal anyway")
+                            logger.debug("GHOST USER: Video stopped but not completed, closing modal anyway")
                             self.os_mode.active_modals.remove("tape")
                             self.ghost_user_step = 7
                             self.ghost_user_timer = current_time
                         else:
                             # Video still playing - stay in step 6 and wait
-                            print("DEBUG GHOST USER: Datasette video still playing, waiting...")
+                            logger.debug("GHOST USER: Datasette video still playing, waiting...")
                 else:
                     # No tape modal to wait for - proceed to next step
                     self.ghost_user_step = 7
                     self.ghost_user_timer = current_time
-                    print("DEBUG GHOST USER: Step 6 complete - No datasette modal to wait for")
+                    logger.debug("GHOST USER: Step 6 complete - No datasette modal to wait for")
             else:
                 # No os_mode - proceed to next step
                 self.ghost_user_step = 7
@@ -4526,25 +4816,25 @@ class GLYPHIS_IOBBS:
                 self.ghost_user_active = False
                 self.ghost_user_step = 0
                 # Don't clear active_ops_session here - let it clear when audio finishes
-                print("DEBUG GHOST USER: Sequence complete, inputs re-enabled")
+                logger.debug("GHOST USER: Sequence complete, inputs re-enabled")
 
     def run(self):
         """Main game loop"""
         running = True
         
         while running:
-            dt = self.clock.tick(60) / 1000.0
+            dt = self.clock.tick(FPS_TARGET) / 1000.0
             
             # Update FPS tracking
             current_time = time.time()
             if dt > 0:
                 frame_fps = 1.0 / dt
                 self.fps_frame_times.append(frame_fps)
-                # Keep only last 60 frames (1 second at 60fps) for smooth average
-                if len(self.fps_frame_times) > 60:
+                # Keep only last N frames for smooth average
+                if len(self.fps_frame_times) > FPS_TRACKING_WINDOW_SIZE:
                     self.fps_frame_times.pop(0)
-                # Update actual FPS every 0.5 seconds
-                if current_time - self.fps_last_update_time >= 0.5:
+                # Update actual FPS at configured interval
+                if current_time - self.fps_last_update_time >= FPS_UPDATE_INTERVAL:
                     if self.fps_frame_times:
                         self.fps_actual = sum(self.fps_frame_times) / len(self.fps_frame_times)
                     self.fps_last_update_time = current_time
@@ -4557,7 +4847,7 @@ class GLYPHIS_IOBBS:
             if self.ambient_sound:
                 # Check if channel stopped playing (shouldn't happen with loops=-1, but just in case)
                 if self.ambient_playing and self.ambient_channel and not self.ambient_channel.get_busy():
-                    print("DEBUG: Ambient track stopped unexpectedly, restarting...")
+                    logger.debug("Ambient track stopped unexpectedly, restarting...")
                     try:
                         if not pygame.mixer.get_init():
                             pygame.mixer.init()
@@ -4567,7 +4857,7 @@ class GLYPHIS_IOBBS:
                             self.ambient_fade_in = True
                             self.ambient_fade_start_time = pygame.time.get_ticks() / 1000.0
                     except Exception as e:
-                        print(f"Warning: Failed to restart ambient track: {e}")
+                        logger.warning(f"Failed to restart ambient track: {e}")
                 
                 # Update fade-in
                 if self.ambient_fade_in and self.ambient_playing and self.ambient_channel:
@@ -4581,16 +4871,17 @@ class GLYPHIS_IOBBS:
                         # Fade-in complete, set to full volume
                         self.ambient_channel.set_volume(1.0)
                         self.ambient_fade_in = False
-                        print("DEBUG: Ambient room track fade-in complete, volume at 1.0")
+                        logger.debug("Ambient room track fade-in complete, volume at 1.0")
 
             # Handle events
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
                 
+                
                 # Block all inputs during ghost user sequence (except QUIT)
                 if self.ghost_user_input_blocked:
-                    print(f"DEBUG GHOST USER: Input blocked - event type={event.type}")
+                    logger.debug(f"GHOST USER: Input blocked - event type={event.type}")
                     if event.type == pygame.QUIT:
                         running = False
                     continue
@@ -4639,6 +4930,11 @@ class GLYPHIS_IOBBS:
                 if self.documentation_viewer.visible and self.documentation_viewer.handle_event(event):
                     continue
 
+                # Handle Pirate Radio app events when active
+                if self.pirate_radio_app and self.pirate_radio_app.active:
+                    if self.pirate_radio_app.handle_event(event):
+                        continue
+
                 if self.delete_confirmation_active:
                     if event.type == pygame.KEYDOWN:
                         if event.key == pygame.K_y:
@@ -4669,126 +4965,7 @@ class GLYPHIS_IOBBS:
                 
                 # F10: Toggle OS Mode
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_F10:
-                    self.os_mode_active = not self.os_mode_active
-                    # Immediately update video state when OS Mode is toggled
-                    # This ensures the old video is stopped and the new OS-specific video starts right away
-                    self._update_audio_power_state()
-                    if self.os_mode_active:
-                        # Initialize OS mode if not already initialized
-                        if self.os_mode is None:
-                            try:
-                                # Create callback function to reset BBS and exit OS mode
-                                def reset_bbs_and_exit_os():
-                                    self._reset_to_beginning()
-                                    self.os_mode_active = False
-                                    # Immediately update video state when exiting OS Mode
-                                    # This ensures the OS video is stopped and the regular video starts right away
-                                    self._update_audio_power_state()
-                                
-                                # Create token checker callback
-                                def has_token(token):
-                                    return self.inventory.has_token(token)
-                                
-                                # Create recording state callbacks
-                                def get_recording_state():
-                                    user = self.get_active_user()
-                                    if user:
-                                        return user.get("recording", False), user.get("recording_start_time")
-                                    return False, None
-                                
-                                def set_recording_state(is_recording, start_time=None):
-                                    user = self.get_active_user()
-                                    if user:
-                                        user["recording"] = is_recording
-                                        user["recording_start_time"] = start_time
-                                        self.save_user_state()
-                                
-                                # Create notes state callbacks
-                                def get_notes():
-                                    user = self.get_active_user()
-                                    if user:
-                                        return user.get("notes", [])
-                                    return []
-                                
-                                def save_notes(notes):
-                                    print(f"[DEBUG] save_notes callback called with {len(notes)} notes")
-                                    user = self.get_active_user()
-                                    if user:
-                                        print(f"[DEBUG] User found: {user.get('username', 'unknown')}")
-                                        user["notes"] = notes
-                                        print(f"[DEBUG] Set user notes, now calling save_user_state")
-                                        self.save_user_state()
-                                        print(f"[DEBUG] save_user_state completed")
-                                    else:
-                                        print(f"[DEBUG] No active user found!")
-
-                                def get_user_credentials():
-                                    user = self.get_active_user()
-                                    if user:
-                                        return user.get("username", ""), user.get("pin", "")
-                                    return "", ""
-                                
-                                def get_chess_stats():
-                                    user = self.get_active_user()
-                                    if user:
-                                        return user.get("chess_stats", {})
-                                    return {}
-                                
-                                def save_chess_stats(stats):
-                                    user = self.get_active_user()
-                                    if user:
-                                        user["chess_stats"] = stats
-                                        self.save_user_state()
-                                
-                                def is_audio_streaming():
-                                    """Check if audio is streaming (excluding window-loop.wav ambient track)."""
-                                    # Check if CRACKER IDE audio is playing (NODE7.wav)
-                                    if self.active_ops_session:
-                                        # Check RadioMusic tag
-                                        if getattr(self.active_ops_session, "RadioMusic", False):
-                                            return True
-                                            
-                                        audio_checker = getattr(self.active_ops_session, "is_cracker_ide_audio_playing", None)
-                                        if callable(audio_checker):
-                                            try:
-                                                return bool(audio_checker())
-                                            except Exception:
-                                                pass
-                                    # Check if any other audio channels are playing (excluding ambient)
-                                    try:
-                                        # Check if mixer is initialized
-                                        if not pygame.mixer.get_init():
-                                            return False
-                                        # Get all active channels
-                                        num_channels = pygame.mixer.get_num_channels()
-                                        for i in range(num_channels):
-                                            channel = pygame.mixer.Channel(i)
-                                            if channel.get_busy():
-                                                # Check if this is not the ambient channel
-                                                if channel != self.ambient_channel:
-                                                    return True
-                                    except Exception:
-                                        pass
-                                    return False
-                                
-                                def grant_token_callback(token, reason=None):
-                                    """Grant a token to the player."""
-                                    return self.grant_token(token, reason=reason)
-                                
-                                self.os_mode = OSMode(self.screen, self.scale, reset_bbs_and_exit_os, 
-                                                      self.bbs_x, self.bbs_y, self.bbs_width, has_token,
-                                                      get_recording_state, set_recording_state,
-                                                      get_notes, save_notes, get_user_credentials,
-                                                      get_chess_stats, save_chess_stats, is_audio_streaming,
-                                                      grant_token_callback, self._get_radio_music_state)
-                            except Exception as e:
-                                print(f"Warning: Failed to initialize OS Mode: {e}")
-                                self.os_mode_active = False
-                        else:
-                            # Update scale if it changed
-                            self.os_mode.update_scale(self.scale)
-                    # Ensure cursor is visible (OS mode will handle its own cursor switching)
-                    pygame.mouse.set_visible(True)
+                    self._toggle_os_mode()
                     continue
 
                 # Handle OS Mode events
@@ -4814,6 +4991,13 @@ class GLYPHIS_IOBBS:
                     result = self.active_ops_session.handle_event(event)
                     if result == "EXIT" or self.active_ops_session.should_exit():
                         self._end_ops_session()
+                    continue
+
+                # Outside BBS (Paper Crane) input handling takes precedence
+                if self.paper_crane_bbs:
+                    if self.paper_crane_bbs.handle_event(event):
+                        continue
+                    # Swallow other inputs while Paper Crane BBS is active
                     continue
                 
                 # Handle new game prompt
@@ -4947,9 +5131,18 @@ class GLYPHIS_IOBBS:
             # Update OS Mode if active
             if self.os_mode_active and self.os_mode and not self.game_freeze_active:
                 self.os_mode.update(dt)
-                # Check if modem modal requested BBS reset and OS exit
-                if hasattr(self.os_mode, 'modem_modal_should_reset_bbs') and self.os_mode.modem_modal_should_reset_bbs:
-                    if hasattr(self.os_mode, 'modem_modal_should_exit_os') and self.os_mode.modem_modal_should_exit_os:
+                # Check if modem modal requested BBS changes and OS exit
+                if hasattr(self.os_mode, 'modem_modal_should_exit_os') and self.os_mode.modem_modal_should_exit_os:
+                    external_bbs = getattr(self.os_mode, "modem_modal_external_bbs", None)
+                    if external_bbs == "paper_crane":
+                        was_os_mode = self.os_mode_active
+                        self.os_mode_active = False
+                        self._update_audio_power_state()
+                        self.os_mode.modem_modal_should_reset_bbs = False
+                        self.os_mode.modem_modal_should_exit_os = False
+                        self.os_mode.modem_modal_external_bbs = None
+                        self._launch_paper_crane_bbs(return_to_os=was_os_mode)
+                    elif hasattr(self.os_mode, 'modem_modal_should_reset_bbs') and self.os_mode.modem_modal_should_reset_bbs:
                         self._reset_to_beginning()
                         self.os_mode_active = False
                         # Immediately update video state when exiting OS Mode
@@ -4957,6 +5150,14 @@ class GLYPHIS_IOBBS:
                         self._update_audio_power_state()
                         self.os_mode.modem_modal_should_reset_bbs = False
                         self.os_mode.modem_modal_should_exit_os = False
+            
+            if self.paper_crane_bbs and not self.game_freeze_active:
+                self.paper_crane_bbs.update(dt)
+            
+            # Update Pirate Radio app (even when minimized, to keep radio minutes ticking)
+            # This ensures radio time tracking continues while in BBS even if UI is closed
+            if self.pirate_radio_app and not self.game_freeze_active:
+                self.pirate_radio_app.update()
             
             # Run Steam API callbacks (required for achievements/stats to work)
             if hasattr(self, 'steam'):
@@ -4971,7 +5172,9 @@ class GLYPHIS_IOBBS:
                     pygame.draw.rect(self.screen, BLACK, (0, 0, self.screen_width, self.screen_height))
                 
                 # Draw current state (BBS content)
-                if self.state == "bbs_scroll":
+                if self.paper_crane_bbs:
+                    self.paper_crane_bbs.draw(self.bbs_surface)
+                elif self.state == "bbs_scroll":
                     self.draw_bbs_scroll()
                 elif self.state == "new_game_prompt":
                     self.draw_new_game_prompt()
@@ -5004,7 +5207,7 @@ class GLYPHIS_IOBBS:
                         self.active_ops_session.draw()
                     else:
                         # Session was cleared - this shouldn't happen, but log it for debugging
-                        print(f"WARNING: urgent_ops_session state but active_ops_session is None! Resetting to tasks.")
+                        logger.warning("urgent_ops_session state but active_ops_session is None! Resetting to tasks.")
                         log_event("urgent_ops_session state but active_ops_session is None - resetting to tasks")
                         self.state = "tasks"
                 elif self.state == "ghost_user_sequence":
@@ -5020,12 +5223,12 @@ class GLYPHIS_IOBBS:
                             self._ghost_user_draw_debug_counter += 1
                         else:
                             self._ghost_user_draw_debug_counter = 0
-                        if self._ghost_user_draw_debug_counter % 60 == 0:
-                            print(f"DEBUG GHOST USER DRAW: Drawing OS Mode, step={self.ghost_user_step}, os_mode_active={self.os_mode_active}")
+                        if self._ghost_user_draw_debug_counter % DEBUG_LOG_INTERVAL == 0:
+                            logger.debug(f"GHOST USER DRAW: Drawing OS Mode, step={self.ghost_user_step}, os_mode_active={self.os_mode_active}")
                     else:
                         # Fallback: draw main menu if OS mode isn't ready
                         if not hasattr(self, '_ghost_user_draw_warned'):
-                            print(f"DEBUG GHOST USER DRAW: OS mode not ready, drawing main menu (os_mode_active={self.os_mode_active}, os_mode={self.os_mode})")
+                            logger.debug(f"GHOST USER DRAW: OS mode not ready, drawing main menu (os_mode_active={self.os_mode_active}, os_mode={self.os_mode})")
                             self._ghost_user_draw_warned = True
                         self.draw_main_menu()
                 elif self.state == "login_username":
@@ -5123,8 +5326,20 @@ class GLYPHIS_IOBBS:
                 # (OSBoot video rendering moved to after OS Mode)
                 
                 # Draw OS Mode desktop environment (after BBS window and OSBoot video)
-                if self.os_mode_active and self.os_mode:
-                    self.os_mode.draw()
+                # BUT: Skip OS Mode drawing if a game session is active that doesn't use get_game_frame()
+                # (SIMULACRA_CORE draws to bbs_surface, so we need to blit bbs_surface AFTER OS Mode)
+                should_draw_os_mode = self.os_mode_active and self.os_mode
+                if should_draw_os_mode:
+                    # Check if game session uses get_game_frame (AstroMiner) - if so, OS Mode should draw
+                    # Otherwise (SIMULACRA_CORE), we'll draw OS Mode but blit BBS surface after
+                    if self.state == "game_session" and self.active_game_session:
+                        has_get_game_frame = hasattr(self.active_game_session, "get_game_frame") and callable(getattr(self.active_game_session, "get_game_frame", None))
+                        if not has_get_game_frame:
+                            # Game draws to bbs_surface - we'll blit it after OS Mode
+                            should_draw_os_mode = True  # Still draw OS Mode for background
+                    
+                    if should_draw_os_mode:
+                        self.os_mode.draw()
             else:
                 if self.game_freeze_frame:
                     self.screen.blit(self.game_freeze_frame, (0, 0))
@@ -5171,10 +5386,14 @@ class GLYPHIS_IOBBS:
             if self.state == "game_session" and self.active_game_session:
                 frame_data = getattr(self.active_game_session, "get_game_frame", None)
                 if frame_data and callable(frame_data):
+                    # AstroMiner: uses get_game_frame() to get frame to blit at desktop position
                     result = frame_data()
                     if result:
                         frame, pos = result
                         self.screen.blit(frame, pos)
+                else:
+                    # SIMULACRA_CORE: draws to bbs_surface, blit it here (after OS Mode)
+                    self.screen.blit(self.bbs_surface, (self.bbs_x, self.bbs_y))
 
             # Update and draw OSBoot video if playing (after OS Mode, before scanlines)
             if self.os_boot_video_playing and self.os_boot_video_cap:
@@ -5266,6 +5485,17 @@ class GLYPHIS_IOBBS:
                     if overlay_surface:
                         screen_pos = (self.bbs_x + offset_x, self.bbs_y + offset_y)
                         self.screen.blit(overlay_surface, screen_pos)
+
+                # Draw Pirate Radio app if active (launched from BBS, positioned at desktop area)
+                if self.pirate_radio_app and self.pirate_radio_app.active:
+                    # Draw black rectangle background to cover BBS area behind the app
+                    # Baseline coordinates: (177, 206) to (1120, 879) at 2560x1440 resolution
+                    bg_x = int(177 * self.scale)
+                    bg_y = int(206 * self.scale)
+                    bg_width = int((1120 - 177) * self.scale)  # 943 baseline width
+                    bg_height = int((879 - 206) * self.scale)  # 673 baseline height
+                    pygame.draw.rect(self.screen, BLACK, (bg_x, bg_y, bg_width, bg_height))
+                    self.pirate_radio_app.draw()
 
                 # Draw OS Mode cursor (before scanlines) if in OS mode and mouse is in desktop
                 if self.os_mode_active and self.os_mode:
@@ -5412,6 +5642,7 @@ class GLYPHIS_IOBBS:
                     self._email_check_counter = 0
             
             # Update display
+            # Draw settings modal on top of everything (letterboxing already drawn above)
             pygame.display.flip()
         
         # Save email state before quitting
@@ -5557,7 +5788,62 @@ class GLYPHIS_IOBBS:
         self.bbs_surface.blit(overlay, (0, 0))
 
         modal_width = int(self.bbs_width * 0.72)
-        modal_height = int(self.bbs_height * 0.28)
+        text_padding = int(40 * self.scale)
+        available_text_width = modal_width - text_padding * 2
+
+        # Get subject and prepare content
+        subject = ""
+        if isinstance(self.selected_email, Email) and self.selected_email.subject:
+            subject = self.selected_email.subject.strip()
+        if not subject:
+            subject = "this message"
+
+        # Wrap the delete confirmation message with subject
+        delete_message = f"Delete '{subject}'?"
+        delete_lines = self._wrap_text(delete_message, self.font_small, available_text_width)
+        
+        # Other message lines
+        other_message_lines = [
+            ("This will remove the email from your mailbox.", RED),
+            ("Press Y to confirm or N to cancel.", WHITE),
+        ]
+
+        # Calculate total content height
+        header_height = self.font_medium.get_height()
+        header_top_padding = int(20 * self.scale)
+        header_bottom_spacing = int(24 * self.scale)
+        
+        # Calculate height for wrapped delete message lines
+        delete_lines_height = sum(
+            self.font_small.get_height() + int(8 * self.scale) for _ in delete_lines
+        )
+        delete_lines_height -= int(8 * self.scale)  # Remove last spacing
+        
+        # Extra spacing after subject lines
+        extra_spacing = int(4 * self.scale)
+        
+        # Calculate height for other message lines
+        other_lines_height = sum(
+            self.font_small.get_height() + int(12 * self.scale) for _ in other_message_lines
+        )
+        other_lines_height -= int(12 * self.scale)  # Remove last spacing
+        
+        # Calculate total content height
+        total_content_height = (
+            header_top_padding +
+            header_height +
+            header_bottom_spacing +
+            delete_lines_height +
+            extra_spacing +
+            other_lines_height +
+            int(20 * self.scale)  # Bottom padding
+        )
+        
+        # Set modal height based on content, with minimum and maximum constraints
+        min_modal_height = int(self.bbs_height * 0.20)
+        max_modal_height = int(self.bbs_height * 0.70)
+        modal_height = max(min_modal_height, min(total_content_height, max_modal_height))
+        
         modal_x = (self.bbs_width - modal_width) // 2
         modal_y = (self.bbs_height - modal_height) // 2
         modal_rect = pygame.Rect(modal_x, modal_y, modal_width, modal_height)
@@ -5569,28 +5855,162 @@ class GLYPHIS_IOBBS:
         header_surface = self.font_medium.render(header_text, True, CYAN)
         header_pos = (
             modal_x + (modal_width - header_surface.get_width()) // 2,
-            modal_y + int(20 * self.scale)
+            modal_y + header_top_padding
         )
         self.bbs_surface.blit(header_surface, header_pos)
 
-        subject = ""
-        if isinstance(self.selected_email, Email) and self.selected_email.subject:
-            subject = self.selected_email.subject.strip()
-        if not subject:
-            subject = "this message"
-
-        message_lines = [
-            (f"Delete '{subject}'?", CYAN),
-            ("This will remove the email from your mailbox.", RED),
-            ("Press Y to confirm or N to cancel.", WHITE),
-        ]
-
-        line_y = header_pos[1] + header_surface.get_height() + int(24 * self.scale)
-        for text, colour in message_lines:
+        line_y = header_pos[1] + header_surface.get_height() + header_bottom_spacing
+        
+        # Render wrapped delete message lines
+        for line_text in delete_lines:
+            text_surface = self.font_small.render(line_text, True, CYAN)
+            text_x = modal_x + (modal_width - text_surface.get_width()) // 2
+            self.bbs_surface.blit(text_surface, (text_x, line_y))
+            line_y += text_surface.get_height() + int(8 * self.scale)
+        
+        # Add extra spacing after subject lines
+        line_y += extra_spacing
+        
+        # Render other message lines
+        for text, colour in other_message_lines:
             text_surface = self.font_small.render(text, True, colour)
             text_x = modal_x + (modal_width - text_surface.get_width()) // 2
             self.bbs_surface.blit(text_surface, (text_x, line_y))
             line_y += text_surface.get_height() + int(12 * self.scale)
+
+    def _toggle_os_mode(self, force_on=None):
+        """Toggle or force-enable OS Mode using the F10 hotkey flow."""
+        if force_on is None:
+            self.os_mode_active = not self.os_mode_active
+        else:
+            self.os_mode_active = bool(force_on)
+
+        if self.os_mode_active:
+            # Leaving the BBS surface; shut down Pirate Radio playback
+            self._stop_pirate_radio_audio(close_app=True)
+
+        # Immediately update video state when OS Mode is toggled
+        # This ensures the old video is stopped and the new OS-specific video starts right away
+        self._update_audio_power_state()
+
+        if self.os_mode_active:
+            # Initialize OS mode if not already initialized
+            if self.os_mode is None:
+                try:
+                    # Create callback function to reset BBS and exit OS mode
+                    def reset_bbs_and_exit_os():
+                        self._reset_to_beginning()
+                        self.os_mode_active = False
+                        # Immediately update video state when exiting OS Mode
+                        # This ensures the OS video is stopped and the regular video starts right away
+                        self._update_audio_power_state()
+                    
+                    # Create token checker callback
+                    def has_token(token):
+                        return self.inventory.has_token(token)
+                    
+                    # Create recording state callbacks
+                    def get_recording_state():
+                        user = self.get_active_user()
+                        if user:
+                            return user.get("recording", False), user.get("recording_start_time")
+                        return False, None
+                    
+                    def set_recording_state(is_recording, start_time=None):
+                        user = self.get_active_user()
+                        if user:
+                            user["recording"] = is_recording
+                            user["recording_start_time"] = start_time
+                            self.save_user_state()
+                    
+                    # Create notes state callbacks
+                    def get_notes():
+                        user = self.get_active_user()
+                        if user:
+                            return user.get("notes", [])
+                        return []
+                    
+                    def save_notes(notes):
+                        logger.debug(f"save_notes callback called with {len(notes)} notes")
+                        user = self.get_active_user()
+                        if user:
+                            logger.debug(f"User found: {user.get('username', 'unknown')}")
+                            user["notes"] = notes
+                            logger.debug("Set user notes, now calling save_user_state")
+                            self.save_user_state()
+                            logger.debug("save_user_state completed")
+                        else:
+                            logger.debug("No active user found!")
+
+                    def get_user_credentials():
+                        user = self.get_active_user()
+                        if user:
+                            return user.get("username", ""), user.get("pin", "")
+                        return "", ""
+                    
+                    def get_chess_stats():
+                        user = self.get_active_user()
+                        if user:
+                            return user.get("chess_stats", {})
+                        return {}
+                    
+                    def save_chess_stats(stats):
+                        user = self.get_active_user()
+                        if user:
+                            user["chess_stats"] = stats
+                            self.save_user_state()
+                    
+                    def is_audio_streaming():
+                        """Check if audio is streaming (excluding window-loop.wav ambient track)."""
+                        # Check if CRACKER IDE audio is playing (NODE7.wav)
+                        if self.active_ops_session:
+                            # Check RadioMusic tag
+                            if getattr(self.active_ops_session, "RadioMusic", False):
+                                return True
+                                
+                            audio_checker = getattr(self.active_ops_session, "is_cracker_ide_audio_playing", None)
+                            if callable(audio_checker):
+                                try:
+                                    return bool(audio_checker())
+                                except Exception:
+                                    pass
+                        # Check if any other audio channels are playing (excluding ambient)
+                        try:
+                            # Check if mixer is initialized
+                            if not pygame.mixer.get_init():
+                                return False
+                            # Get all active channels
+                            num_channels = pygame.mixer.get_num_channels()
+                            for i in range(num_channels):
+                                channel = pygame.mixer.Channel(i)
+                                if channel.get_busy():
+                                    # Check if this is not the ambient channel
+                                    if channel != self.ambient_channel:
+                                        return True
+                        except Exception:
+                            pass
+                        return False
+                    
+                    def grant_token_callback(token, reason=None):
+                        """Grant a token to the player."""
+                        return self.grant_token(token, reason=reason)
+                    
+                    self.os_mode = OSMode(self.screen, self.scale, reset_bbs_and_exit_os, 
+                                          self.bbs_x, self.bbs_y, self.bbs_width, has_token,
+                                          get_recording_state, set_recording_state,
+                                          get_notes, save_notes, get_user_credentials,
+                                          get_chess_stats, save_chess_stats, grant_token_callback,
+                                          is_audio_streaming, self._get_radio_music_state)
+                except Exception as e:
+                    logger.warning(f"Failed to initialize OS Mode: {e}")
+                    self.os_mode_active = False
+            else:
+                # Update scale if it changed
+                self.os_mode.update_scale(self.scale)
+
+        # Ensure cursor is visible (OS mode will handle its own cursor switching)
+        pygame.mouse.set_visible(True)
+        return self.os_mode_active
 
     def prompt_logout_confirmation(self):
         """Open the confirmation modal before exiting the application."""
@@ -5610,6 +6030,10 @@ class GLYPHIS_IOBBS:
             return
         log_event("Logout confirmed by user.")
         self.logout_modal_active = False
+        if self.inventory.has_token(Tokens.MODEM1ST):
+            log_event("MODEM1ST token detected on logout - returning to OS Mode")
+            self._toggle_os_mode(force_on=True)
+            return
         pygame.quit()
         sys.exit()
 
@@ -5772,6 +6196,7 @@ class GLYPHIS_IOBBS:
             "tokens": [],
             "inbox_emails": [],
             "username_simulacra_tcs": None,
+            "relationship_scores": {},
             "recording": False,
             "recording_start_time": None,
             "notes": [
@@ -5802,6 +6227,7 @@ class GLYPHIS_IOBBS:
                                 cleaned["sent_emails"] = list(user.get("sent_emails", []))
                                 user_tokens = [normalize_token(t) for t in user.get("tokens", [])]
                                 cleaned["tokens"] = list(sort_tokens(tok for tok in user_tokens if tok))
+                                cleaned["relationship_scores"] = user.get("relationship_scores", {})
                                 cleaned["recording"] = bool(user.get("recording", False))
                                 cleaned["recording_start_time"] = user.get("recording_start_time")
                                 # Load notes, ensure first note exists and is locked
@@ -5847,6 +6273,7 @@ class GLYPHIS_IOBBS:
                             migrated_user["sent_emails"] = list(data.get("sent_emails", []))
                             migrated_tokens = [normalize_token(t) for t in data.get("tokens", [])]
                             migrated_user["tokens"] = list(sort_tokens(tok for tok in migrated_tokens if tok))
+                            migrated_user["relationship_scores"] = data.get("relationship_scores", {})
                             migrated_user["recording"] = bool(data.get("recording", False))
                             migrated_user["recording_start_time"] = data.get("recording_start_time")
                             # Load notes, ensure first note exists and is locked
@@ -5888,7 +6315,7 @@ class GLYPHIS_IOBBS:
 
         return state
 
-    def get_active_user(self):
+    def get_active_user(self) -> Optional[Dict]:
         users = self.user_state.get("users", [])
         if not users:
             return None
@@ -5908,8 +6335,9 @@ class GLYPHIS_IOBBS:
             self.inventory.tokens = set(tok for tok in tokens if tok)
             user["tokens"] = list(sort_tokens(self.inventory.tokens))
             self.email_db.sent_email_ids = set(user.get("sent_emails", []))
-            # Recording state is already loaded in user profile, no need to restore here
-            # It will be accessed via the callbacks passed to OSMode
+            # Load delivered emails from user state (emails that were successfully delivered)
+            self.email_db.delivered_email_ids = set(user.get("delivered_emails", []))
+            self.npc.relationship_scores = user.get("relationship_scores", {}).copy()
             self.inbox = []
             for stored_email in user.get("inbox_emails", []):
                 if not isinstance(stored_email, dict):
@@ -5919,11 +6347,20 @@ class GLYPHIS_IOBBS:
                 email = Email.from_dict(email_payload)
                 if email:
                     self.inbox.append(email)
+                    # Mark as delivered since it exists in saved inbox
+                    if email.email_id:
+                        self.email_db.delivered_email_ids.add(email.email_id)
+            
+            # Initialize Pirate Radio station minutes if player has RADIO_ACCESS1
+            # (pirate_radio_app is initialized later in __init__, but attribute exists as None)
+            if self.inventory.has_token("RADIO_ACCESS1") and self.pirate_radio_app is not None:
+                self._initialize_radio_station_minutes()
         else:
             self.player_email = "unknown"
             self.player_pin = None
             self.inventory.tokens = set()
             self.email_db.sent_email_ids = set()
+            self.email_db.delivered_email_ids = set()
             self.inbox = []
 
         if self.player_pin and not self.inventory.has_token(Tokens.PIN_SET):
@@ -5954,6 +6391,8 @@ class GLYPHIS_IOBBS:
         user["pin"] = self.player_pin
         user["tokens"] = list(sort_tokens(self.inventory.tokens))
         user["sent_emails"] = sorted(self.email_db.sent_email_ids)
+        user["delivered_emails"] = sorted(self.email_db.delivered_email_ids)
+        user["relationship_scores"] = self.npc.relationship_scores.copy()
         # Preserve recording state (don't overwrite if already set)
         if "recording" not in user:
             user["recording"] = False
@@ -5986,7 +6425,7 @@ class GLYPHIS_IOBBS:
                 )
         user["inbox_emails"] = serialized_inbox
 
-    def set_active_user_index(self, index):
+    def set_active_user_index(self, index: int) -> None:
         users = self.user_state.get("users", [])
         if not users:
             return
@@ -5999,7 +6438,7 @@ class GLYPHIS_IOBBS:
         self.user_state["active_user_index"] = index
         self.apply_active_user_profile()
 
-    def get_active_user_simulacra_tcs(self):
+    def get_active_user_simulacra_tcs(self) -> Optional[int]:
         user = self.get_active_user()
         if not user:
             return None
@@ -6009,7 +6448,7 @@ class GLYPHIS_IOBBS:
         except (TypeError, ValueError):
             return None
 
-    def record_simulacra_score(self, tcs_value):
+    def record_simulacra_score(self, tcs_value: int) -> Dict:
         result = {
             "stored": None,
             "updated": False,
@@ -6042,7 +6481,7 @@ class GLYPHIS_IOBBS:
 
         return result
 
-    def find_user_index(self, username):
+    def find_user_index(self, username: str) -> Optional[int]:
         if not username:
             return None
         target = username.strip().lower()
@@ -6052,14 +6491,14 @@ class GLYPHIS_IOBBS:
                 return idx
         return None
 
-    def create_new_user_profile(self):
+    def create_new_user_profile(self) -> None:
         self.persist_active_user_profile()
         users = self.user_state.setdefault("users", [])
         users.append(self._create_blank_user())
         self.user_state["active_user_index"] = len(users) - 1
         self.apply_active_user_profile()
 
-    def save_user_state(self):
+    def save_user_state(self) -> None:
         self.persist_active_user_profile()
         users = [u for u in self.user_state.get("users", []) if u.get("username")]
 
@@ -6133,7 +6572,7 @@ class GLYPHIS_IOBBS:
                 if test_surface.get_width() > 0:
                     ascii_font = test_font
                     break
-            except:
+            except Exception:
                 continue
         # Fallback to default monospaced font if none worked
         if ascii_font is None:
@@ -6264,7 +6703,7 @@ class GLYPHIS_IOBBS:
                 if test_surface.get_width() > 0:
                     security_ascii_font = test_font
                     break
-            except:
+            except Exception:
                 continue
         if security_ascii_font is None:
             security_ascii_font = pygame.font.SysFont("courier", int(12 * self.scale))
@@ -6366,7 +6805,7 @@ class GLYPHIS_IOBBS:
                 if test_surface.get_width() > 0:
                     status_ascii_font = test_font
                     break
-            except:
+            except Exception:
                 continue
         if status_ascii_font is None:
             status_ascii_font = pygame.font.SysFont("courier", int(12 * self.scale))
@@ -6590,7 +7029,7 @@ class GLYPHIS_IOBBS:
                     self.steam.unlock_achievement(achievement_id)
         return added
 
-    def start_new_session(self):
+    def start_new_session(self) -> None:
         log_event("Starting new session")
         self.create_new_user_profile()
         self.player_email = "unknown"
@@ -6609,7 +7048,7 @@ class GLYPHIS_IOBBS:
         self.loading_progress = 0
         self.loading_complete = False
 
-    def deliver_email_to_player(self, email_id, placeholders=None):
+    def deliver_email_to_player(self, email_id: str, placeholders: Optional[Dict] = None) -> None:
         email = self.email_db.deliver_email_by_id(email_id, self.player_email, placeholders=placeholders)
         if email:
             self.inbox.append(email)

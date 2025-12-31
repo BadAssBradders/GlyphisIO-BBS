@@ -13,8 +13,6 @@ dist/
 
 # Steam
 steam_appid.txt
-# Keep steam_api.dll but ignore if you want
-# steam_api.dll
 
 # IDE
 .vscode/
@@ -33,26 +31,35 @@ sent_emails.json
 # Logs
 *.log
 
-# Adobe Premiere Pro
+# Adobe Premiere Pro & Video
 Adobe Premiere Pro Audio Previews/
 Adobe Premiere Pro Auto-Save/
 *.prproj
 *.prin
+*.mp4
+*.mov
+*.mkv
+*.avi
 
-# Build artifacts
+# Audio Files (Large)
+*.wav
+*.mp3
+*.aac
+*.flac
+
+# Build artifacts & Large Binaries
 *.spec
 *.zip
 *.exe
 *.pkg
-
-# Media files - exclude large media files to keep repo size manageable
-# Uncomment these if you want to exclude them from the repository
-# You can use Git LFS for large files if needed (see GITHUB_SETUP.md)
-*.mp4
-*.mov
-# *.wav  # Keep audio files (they're smaller)
 *.psd
 *.pkf
+*.dll
+*.so
+
+# Safety: Ignore all files larger than 50MB (if your shell supports it)
+# Note: Git doesn't natively support size-based ignore, 
+# so we list the heavy extensions above.
 
 # Temporary/test files
 Claude.py
@@ -62,4 +69,3 @@ GPT4O.py
 GPT5.py
 handshake_001.py
 retro_core_breach.py
-

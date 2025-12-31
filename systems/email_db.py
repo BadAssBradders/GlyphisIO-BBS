@@ -53,6 +53,7 @@ class EmailDatabase:
         self.inbox_emails = []
         self.outbox_templates = []
         self.sent_email_ids = set()  # Track which emails have been sent
+        self.delivered_email_ids = set()  # Track which emails were actually delivered to inbox (prevents re-sending deleted emails)
         self.load_inbox_emails()
         self.load_outbox_templates()
     
@@ -86,9 +87,20 @@ class EmailDatabase:
             print(f"Error loading emails_outbox.json: {e}")
             self.outbox_templates = []
     
-    def check_and_send_emails(self, inventory, player_email):
+    def check_and_send_emails(self, inventory, player_email, current_inbox=None):
         """Check token requirements and send emails that should be auto-sent"""
         new_emails = []
+        
+        # Helper to check if email exists in current inbox
+        def email_in_inbox(email_id):
+            if current_inbox is None:
+                return False
+            for email in current_inbox:
+                if hasattr(email, 'email_id') and email.email_id == email_id:
+                    return True
+                if isinstance(email, dict) and email.get("id") == email_id:
+                    return True
+            return False
         
         for email_data in self.inbox_emails:
             email_id = email_data.get("id")
@@ -109,6 +121,7 @@ class EmailDatabase:
                         if email:
                             new_emails.append(email)
                             self.sent_email_ids.add(email_id)
+                            self.delivered_email_ids.add(email_id)  # Mark as delivered
                             log_event(f"Delivered email '{email.subject}' from {email.sender}")
                 elif token_required == "no":
                     # No token required, send it
@@ -116,6 +129,7 @@ class EmailDatabase:
                     if email:
                         new_emails.append(email)
                         self.sent_email_ids.add(email_id)
+                        self.delivered_email_ids.add(email_id)  # Mark as delivered
                         log_event(f"Delivered email '{email.subject}' from {email.sender}")
                 continue
             
@@ -132,6 +146,7 @@ class EmailDatabase:
                         if email:
                             new_emails.append(email)
                             self.sent_email_ids.add(email_id)
+                            self.delivered_email_ids.add(email_id)  # Mark as delivered
                             log_event(f"Delivered email '{email.subject}' from {email.sender}")
                 elif token_required == "no":
                     # No token required, send it
@@ -139,6 +154,7 @@ class EmailDatabase:
                     if email:
                         new_emails.append(email)
                         self.sent_email_ids.add(email_id)
+                        self.delivered_email_ids.add(email_id)  # Mark as delivered
                         log_event(f"Delivered email '{email.subject}' from {email.sender}")
         
         if new_emails:
@@ -263,5 +279,6 @@ class EmailDatabase:
                     email.body = email.body.replace(token, replacement)
 
         self.sent_email_ids.add(email_id)
+        self.delivered_email_ids.add(email_id)  # Mark as delivered
         return email
 

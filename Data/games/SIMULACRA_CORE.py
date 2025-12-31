@@ -839,6 +839,11 @@ class SimulacraCoreGame:
         bar_y = int(220 * self.scale)
         bar_w = int(self.width - 2 * bar_x)
         bar_h = int(32 * self.scale)
+        
+        # Debug log for loading bar dimensions (once per sec)
+        if self._debug_draw_counter % 60 == 0:
+             print(f"[SIMULACRA_CORE] Loading Bar: x={bar_x}, y={bar_y}, w={bar_w}, h={bar_h}, progress={progress:.2f}")
+
         pygame.draw.rect(self.surface, self.DARK_BLUE, (bar_x, bar_y, bar_w, bar_h), 2)
         fill_w = int((bar_w - int(4 * self.scale)) * progress)
         if fill_w > 0:
@@ -849,9 +854,13 @@ class SimulacraCoreGame:
             )
 
         pct_text = f"{int(progress * 100):02d}%"
-        pct_width = self.fonts["small"].size(pct_text)[0]
-        pct_x = bar_x + (bar_w - pct_width) // 2
-        self._draw_text(pct_text, (pct_x, bar_y + bar_h + int(6 * self.scale)), "small", self.CYAN)
+        # Check if font exists before sizing
+        if "small" in self.fonts:
+             pct_width = self.fonts["small"].size(pct_text)[0]
+             pct_x = bar_x + (bar_w - pct_width) // 2
+             self._draw_text(pct_text, (pct_x, bar_y + bar_h + int(6 * self.scale)), "small", self.CYAN)
+        else:
+             print("[SIMULACRA_CORE] 'small' font missing for percentage text")
 
         hint = "Glyphis: Stand by. SIMULACRA Core will engage momentarily."
         self._draw_text(hint, (int(40 * self.scale), int(280 * self.scale)), "tiny", self.WHITE)
@@ -861,6 +870,7 @@ class SimulacraCoreGame:
             self._draw_text(special_msg, (int(40 * self.scale), int(312 * self.scale)), "small", self.GREEN)
 
     def _draw_ascii_intro(self, now):
+
         title = "SIMULACRA_CORE :: ACCESS GRANTED"
         self._draw_text(title, (int(20 * self.scale), int(40 * self.scale)), "medium", self.CYAN)
 
@@ -953,6 +963,14 @@ class SimulacraCoreGame:
     def draw(self):
         """Main draw call from the BBS loop."""
         now = pygame.time.get_ticks()
+        # Debug print every 60 frames (approx 1 sec)
+        if hasattr(self, '_debug_draw_counter'):
+             self._debug_draw_counter += 1
+        else:
+             self._debug_draw_counter = 0
+        
+        if self._debug_draw_counter % 60 == 0:
+             print(f"[SIMULACRA_CORE] Drawing... phase={self.startup_phase}, state={self.game_state}")
 
         if self.startup_phase == "loading":
             if now - self.loading_start_time >= self.loading_duration:
@@ -984,12 +1002,18 @@ class SimulacraCoreGame:
     def _draw_text(self, text, pos, font_key, color, bg_color=None):
         """Helper to draw text using the stored fonts."""
         try:
+            if font_key not in self.fonts or self.fonts[font_key] is None:
+                 if self._debug_draw_counter % 60 == 0:
+                      print(f"[SIMULACRA_CORE] Missing font: {font_key}")
+                 return pygame.Rect(pos, (10, 10))
+                 
             surface = self.fonts[font_key].render(text, True, color, bg_color)
             self.surface.blit(surface, pos)
             return surface.get_rect(topleft=pos)
         except Exception as e:
             # Fallback in case font is missing
-            print(f"Error rendering text: {e}")
+            if self._debug_draw_counter % 60 == 0:
+                 print(f"Error rendering text '{text}': {e}")
             return pygame.Rect(pos, (10, 10))
 
     def _draw_pane_border(self, rect, title):

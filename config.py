@@ -59,6 +59,22 @@ CLOSE_DURATION = 0.25
 # Email Configuration
 EMAIL_CHECK_INTERVAL = 60  # frames (at 60fps = 1 second)
 
+# Performance Configuration
+FPS_TARGET = 60  # Target frames per second
+FPS_UPDATE_INTERVAL = 0.5  # seconds between FPS updates
+FPS_TRACKING_WINDOW_SIZE = 60  # frames to track for FPS average (1 second at 60fps)
+DEBUG_LOG_INTERVAL = 60  # frames between debug log messages (1 second at 60fps)
+
+# Ghost User Sequence Configuration
+GHOST_USER_BEAT_DURATION = 1000  # milliseconds per beat (1 second)
+GHOST_USER_STEP3_WAIT_TIME = 3000  # milliseconds to wait before striking through point 4 (3 seconds)
+
+# UI Spacing
+UI_FOOTER_HEIGHT = 60  # pixels (will be scaled)
+UI_MODULE_SPACING = 60  # pixels between modules (will be scaled)
+UI_HEADER_HEIGHT = 80  # pixels for header with title (will be scaled)
+UI_HEADER_HEIGHT_NO_TITLE = 60  # pixels for header without title (will be scaled)
+
 # Module Names
 MODULE_TERMINAL_FEED = "TERMINAL FEED: THE WALL"
 MODULE_EMAIL = "EMAIL SYSTEM"

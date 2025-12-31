@@ -122,6 +122,65 @@ class SteamManager:
             log_event(f"Failed to increment Steam stat '{stat_name}': {exc}")
             return False
     
+    def upload_leaderboard_score(self, leaderboard_name: str, score: int, method: str = "KeepBest") -> bool:
+        """Upload a score to a Steam leaderboard.
+        
+        Args:
+            leaderboard_name: The leaderboard API name from Steam Partner portal (e.g., "AstroMinerLeaderboard")
+            score: The score to upload
+            method: Upload method - "KeepBest" (default), "ForceUpdate", or "None"
+            
+        Returns:
+            True if score upload was initiated successfully, False otherwise
+        """
+        if not self.is_available():
+            return False
+        
+        try:
+            # Get or create the leaderboard
+            leaderboard = self.steam_api.Leaderboards.find_or_create_leaderboard(
+                leaderboard_name,
+                "DESC",  # Sort method: DESC for descending (highest scores first)
+                "KeepBest"  # Display type: KeepBest means only best score is kept
+            )
+            
+            if leaderboard:
+                # Upload the score
+                result = leaderboard.upload_score(method, score)
+                if result:
+                    log_event(f"Steam leaderboard score uploaded: {leaderboard_name} = {score}")
+                return result
+            else:
+                log_event(f"Failed to find or create Steam leaderboard: {leaderboard_name}")
+                return False
+        except Exception as exc:
+            log_event(f"Failed to upload Steam leaderboard score '{leaderboard_name}': {exc}")
+            return False
+    
+    def get_leaderboard_entries(self, leaderboard_name: str, start: int = 1, end: int = 10) -> Optional[list]:
+        """Get leaderboard entries from Steam.
+        
+        Args:
+            leaderboard_name: The leaderboard API name
+            start: Starting rank (1-based)
+            end: Ending rank (1-based)
+            
+        Returns:
+            List of leaderboard entries, or None if failed
+        """
+        if not self.is_available():
+            return None
+        
+        try:
+            leaderboard = self.steam_api.Leaderboards.find_leaderboard(leaderboard_name)
+            if leaderboard:
+                entries = leaderboard.get_entries(start, end)
+                return entries
+            return None
+        except Exception as exc:
+            log_event(f"Failed to get Steam leaderboard entries '{leaderboard_name}': {exc}")
+            return None
+    
     def shutdown(self) -> None:
         """Shutdown Steam API. Should be called on application exit."""
         if self.is_available():

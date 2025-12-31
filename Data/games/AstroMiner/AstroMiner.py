@@ -433,21 +433,37 @@ def generate_rocks():
         gt += (TRIS_PER_ROCK - local_tri_idx)
 
 # ------------------------------------------------------------
+# ------------------------------------------------------------
 # UI & MAIN
 # ------------------------------------------------------------
+def get_ui_scale():
+    """Calculate UI scale factor based on current window size vs baseline."""
+    baseline_h = 800.0  # Baseline design height
+    current_h = float(rl.GetHeight())
+    if current_h <= 0: return 1.0
+    return current_h / baseline_h
+
 def draw_retro_window(title, x, y, w, h):
-    rl.DrawRectangle(x, y, w, h, Color(10, 15, 30, 240))
-    rl.DrawRectangleLines(x, y, w, h, Color(0, 255, 255, 255))
-    rl.DrawRectangle(x, y, w, 30, Color(0, 255, 255, 255))
-    rl.DrawText(title.encode('utf-8'), x + 10, y + 5, 20, BLACK)
+    s = get_ui_scale()
+    sx, sy, sw, sh = int(x*s), int(y*s), int(w*s), int(h*s)
+    
+    rl.DrawRectangle(sx, sy, sw, sh, Color(10, 15, 30, 240))
+    rl.DrawRectangleLines(sx, sy, sw, sh, Color(0, 255, 255, 255))
+    rl.DrawRectangle(sx, sy, sw, int(30*s), Color(0, 255, 255, 255))
+    rl.DrawText(title.encode('utf-8'), sx + int(10*s), sy + int(5*s), int(20*s), BLACK)
 
 def draw_button(text, x, y, w, h, sel):
+    s = get_ui_scale()
+    sx, sy, sw, sh = int(x*s), int(y*s), int(w*s), int(h*s)
+    
     fill = Color(0, 100, 100, 255) if sel else Color(0, 40, 40, 255)
     border = WHITE if sel else Color(0, 255, 255, 255)
-    rl.DrawRectangle(x, y, w, h, fill)
-    rl.DrawRectangleLines(x, y, w, h, border)
-    tw = rl.MeasureText(text.encode('utf-8'), 20)
-    rl.DrawText(text.encode('utf-8'), x + (w - tw)//2, y + (h - 20)//2, 20, border)
+    rl.DrawRectangle(sx, sy, sw, sh, fill)
+    rl.DrawRectangleLines(sx, sy, sw, sh, border)
+    
+    font_size = int(20 * s)
+    tw = rl.MeasureText(text.encode('utf-8'), font_size)
+    rl.DrawText(text.encode('utf-8'), sx + (sw - tw)//2, sy + (sh - font_size)//2, font_size, border)
     return sel and (rl.IsKeyPressed(KEY_ENTER) or rl.IsKeyPressed(KEY_SPACE))
 
 def reset_state(state_ref, selection_ref, new_state):
@@ -467,19 +483,25 @@ def draw_page_prospect_map(state_ref, selection_ref, ship_pos, ship_vel):
     if rl.IsKeyPressed(KEY_DOWN): sel = (sel + 1) % 15
     if rl.IsKeyPressed(KEY_UP): sel = (sel - 1 + 15) % 15
     selection_ref[0] = sel
+    
+    s = get_ui_scale()
     idx = 0
     for i in range(5):
         for j in range(3):
-            bx = 150 + i * 200; by = 150 + j * 180
-            s = (idx == sel)
-            rl.DrawCircle(bx + 50, by + 50, 40, Color(80, 80, 80, 255))
-            rl.DrawCircleLines(bx + 50, by + 50, 40, WHITE if s else DARKGRAY)
-            if draw_button("SURVEY", bx, by + 100, 100, 30, s):
+            orig_bx = 150 + i * 200
+            orig_by = 150 + j * 180
+            bx = int(orig_bx * s)
+            by = int(orig_by * s)
+            
+            sel_bool = (idx == sel)
+            rl.DrawCircle(bx + int(50*s), by + int(50*s), int(40*s), Color(80, 80, 80, 255))
+            rl.DrawCircleLines(bx + int(50*s), by + int(50*s), int(40*s), WHITE if sel_bool else DARKGRAY)
+            if draw_button("SURVEY", orig_bx, orig_by + 100, 100, 30, sel_bool):
                 ship_pos.x = 0; ship_pos.y = 60; ship_pos.z = -PROSPECT_PERIMETER
                 ship_vel.x = 0; ship_vel.y = 0; ship_vel.z = 10
                 reset_state(state_ref, selection_ref, GameState.LANDER)
             idx += 1
-    rl.DrawText(b"ARROWS to Select, ENTER to Confirm", 60, 760, 20, GRAY)
+    rl.DrawText(b"ARROWS to Select, ENTER to Confirm", int(60*s), int(760*s), int(20*s), GRAY)
 
 def draw_page_drilling(state_ref, selection_ref):
     global drill_progress
@@ -487,12 +509,20 @@ def draw_page_drilling(state_ref, selection_ref):
     draw_retro_window("DRILLING OPERATION", 300, 200, 600, 400)
     drill_progress += rl.GetFrameTime() * 20.0
     if drill_progress > 100.0: drill_progress = 100.0
-    rl.DrawText(b"DRILLING IN PROGRESS...", 450, 300, 20, WHITE)
-    rl.DrawRectangle(350, 350, 500, 40, DARKGRAY)
-    rl.DrawRectangle(350, 350, int(drill_progress * 5), 40, ORANGE)
-    rl.DrawRectangleLines(350, 350, 500, 40, WHITE)
+    
+    s = get_ui_scale()
+    rl.DrawText(b"DRILLING IN PROGRESS...", int(450*s), int(300*s), int(20*s), WHITE)
+    
+    # Progress bar
+    bar_x, bar_y = int(350*s), int(350*s)
+    bar_w, bar_h = int(500*s), int(40*s)
+    
+    rl.DrawRectangle(bar_x, bar_y, bar_w, bar_h, DARKGRAY)
+    rl.DrawRectangle(bar_x, bar_y, int(drill_progress * 5 * s), bar_h, ORANGE)
+    rl.DrawRectangleLines(bar_x, bar_y, bar_w, bar_h, WHITE)
+    
     if drill_progress >= 100.0:
-        rl.DrawText(b"SUCCESS! RESOURCES ACQUIRED.", 420, 420, 20, GREEN)
+        rl.DrawText(b"SUCCESS! RESOURCES ACQUIRED.", int(420*s), int(420*s), int(20*s), GREEN)
         if draw_button("RETURN TO SHIP", 500, 500, 200, 40, True):
             G_Player.iron += random.randint(1, 3); G_Player.cargo_filled += 1
             reset_state(state_ref, selection_ref, GameState.LANDER)
@@ -502,7 +532,8 @@ drill_progress = 0.0
 def draw_page_debris(state_ref, selection_ref):
     rl.ClearBackground(Color(5, 20, 10, 255))
     draw_retro_window("DEBRIS COLLECTION", 300, 200, 600, 400)
-    rl.DrawText(b"Collecting Debris...", 450, 300, 20, GREEN)
+    s = get_ui_scale()
+    rl.DrawText(b"Collecting Debris...", int(450*s), int(300*s), int(20*s), GREEN)
     if draw_button("FINISH", 500, 500, 200, 40, True):
         G_Player.gold += 1; G_Player.cargo_filled += 1
         reset_state(state_ref, selection_ref, GameState.LANDER)
@@ -513,12 +544,20 @@ def draw_page_depot_select(state_ref, selection_ref):
     sel = selection_ref[0]
     if rl.IsKeyPressed(KEY_RIGHT) or rl.IsKeyPressed(KEY_LEFT) or rl.IsKeyPressed(KEY_UP) or rl.IsKeyPressed(KEY_DOWN): sel = 1 if sel == 0 else 0
     selection_ref[0] = sel
+    
+    s = get_ui_scale()
     c1 = WHITE if sel == 0 else GRAY; c2 = WHITE if sel == 1 else GRAY
-    rl.DrawCircle(400, 300, 60, BLUE); rl.DrawCircleLines(400, 300, 65, c1)
-    rl.DrawText(b"ALPHA STATION", 350, 370, 20, c1)
+    
+    cx1, cy1 = int(400*s), int(300*s)
+    cx2, cy2 = int(800*s), int(400*s)
+    rad1, rad2 = int(60*s), int(40*s)
+    
+    rl.DrawCircle(cx1, cy1, rad1, BLUE); rl.DrawCircleLines(cx1, cy1, int(65*s), c1)
+    rl.DrawText(b"ALPHA STATION", int(350*s), int(370*s), int(20*s), c1)
     if draw_button("DOCK", 350, 400, 100, 30, sel == 0): reset_state(state_ref, selection_ref, GameState.DEPOT_HOME)
-    rl.DrawCircle(800, 400, 40, PURPLE); rl.DrawCircleLines(800, 400, 45, c2)
-    rl.DrawText(b"OUTPOST BETA", 750, 450, 20, c2)
+    
+    rl.DrawCircle(cx2, cy2, rad2, PURPLE); rl.DrawCircleLines(cx2, cy2, int(45*s), c2)
+    rl.DrawText(b"OUTPOST BETA", int(750*s), int(450*s), int(20*s), c2)
     draw_button("LOCKED", 750, 480, 100, 30, sel == 1)
 
 # Global variable to track depot_home page number (1-4)
@@ -584,8 +623,8 @@ def draw_page_depot_home(state_ref, selection_ref):
     if texture:
         # Draw the texture to fill the screen (or a specific area)
         # Using DrawTexturePro for better control
-        screen_width = 1200  # Window width
-        screen_height = 800  # Window height
+        screen_width = rl.GetWidth()
+        screen_height = rl.GetHeight()
         src_rect = Rectangle(0, 0, texture.width, texture.height)
         dest_rect = Rectangle(0, 0, screen_width, screen_height)
         origin = Vector2(0, 0)
@@ -597,14 +636,16 @@ def draw_page_depot_home(state_ref, selection_ref):
 def draw_page_bar(state_ref, selection_ref):
     rl.ClearBackground(BLACK)
     draw_retro_window("THE RUSTY ROCKET BAR", 200, 100, 800, 600)
-    rl.DrawText(b"Bartender: 'Careful out there, miner...'", 250, 200, 20, YELLOW)
+    s = get_ui_scale()
+    rl.DrawText(b"Bartender: 'Careful out there, miner...'", int(250*s), int(200*s), int(20*s), YELLOW)
     if draw_button("BACK", 500, 600, 200, 40, True): reset_state(state_ref, selection_ref, GameState.DEPOT_HOME)
 
 def draw_page_shipyard(state_ref, selection_ref):
     global ship_thrust_power
     rl.ClearBackground(BLACK)
     draw_retro_window("SHIPYARD", 200, 100, 800, 600)
-    rl.DrawText(b"Upgrade your thrusters and hull here.", 250, 200, 20, WHITE)
+    s = get_ui_scale()
+    rl.DrawText(b"Upgrade your thrusters and hull here.", int(250*s), int(200*s), int(20*s), WHITE)
     sel = selection_ref[0]
     if rl.IsKeyPressed(KEY_DOWN) or rl.IsKeyPressed(KEY_UP): sel = 1 if sel == 0 else 0
     selection_ref[0] = sel
@@ -619,19 +660,29 @@ def draw_page_market(state_ref, selection_ref):
     if rl.IsKeyPressed(KEY_DOWN): sel = (sel + 1) % num
     if rl.IsKeyPressed(KEY_UP): sel = (sel - 1 + num) % num
     selection_ref[0] = sel
-    rl.DrawText(f"CREDITS: {G_Player.credits}".encode(), 250, 160, 30, GREEN)
-    rl.DrawText(f"IRON ORE: {G_Player.iron}".encode(), 250, 220, 20, WHITE)
+    
+    s = get_ui_scale()
+    
+    fs_large = int(30 * s)
+    fs_med = int(20 * s)
+    
+    # Text positions need scaling too
+    rl.DrawText(f"CREDITS: {G_Player.credits}".encode(), int(250*s), int(160*s), fs_large, GREEN)
+    rl.DrawText(f"IRON ORE: {G_Player.iron}".encode(), int(250*s), int(220*s), fs_med, WHITE)
     if draw_button("SELL IRON (50cr)", 500, 210, 200, 30, sel == 0):
         if G_Player.iron > 0: G_Player.iron -= 1; G_Player.credits += 50; G_Player.cargo_filled -= 1
-    rl.DrawText(f"GOLD ORE: {G_Player.gold}".encode(), 250, 270, 20, WHITE)
+    
+    rl.DrawText(f"GOLD ORE: {G_Player.gold}".encode(), int(250*s), int(270*s), fs_med, WHITE)
     if draw_button("SELL GOLD (100cr)", 500, 260, 200, 30, sel == 1):
         if G_Player.gold > 0: G_Player.gold -= 1; G_Player.credits += 100; G_Player.cargo_filled -= 1
+    
     if draw_button("BACK", 500, 600, 200, 40, sel == 2): reset_state(state_ref, selection_ref, GameState.DEPOT_HOME)
 
 def draw_page_lodgings(state_ref, selection_ref):
     rl.ClearBackground(BLACK)
     draw_retro_window("CREW LODGINGS", 200, 100, 800, 600)
-    rl.DrawText(b"Zzz... Rested and Saved.", 350, 300, 20, BLUE)
+    s = get_ui_scale()
+    rl.DrawText(b"Zzz... Rested and Saved.", int(350*s), int(300*s), int(20*s), BLUE)
     if draw_button("BACK", 500, 600, 200, 40, True): reset_state(state_ref, selection_ref, GameState.DEPOT_HOME)
 
 def main():

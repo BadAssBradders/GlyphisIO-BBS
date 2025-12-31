@@ -82,26 +82,62 @@ class SimulacraSession(BaseGameSession):
     def __init__(self, app: "GlyphisIOBBS"):
         super().__init__(app)
         self.game: Optional[SimulacraCoreGame] = None
+        self.simcore_sound: Optional[pygame.mixer.Sound] = None
+        self.simcore_channel: Optional[pygame.mixer.Channel] = None
 
     def enter(self) -> None:
+        print("[SimulacraSession] Entering session...")
         fonts = {
             "large": self.app.font_large,
             "medium": self.app.font_medium,
             "small": self.app.font_small,
             "tiny": self.app.font_tiny,
         }
+        print(f"[SimulacraSession] Fonts: {fonts.keys()}")
+        print(f"[SimulacraSession] Scale: {self.app.scale}")
+        
         player = self.app.player_email if getattr(self.app, "player_email", None) else "operative"
         best_tcs = self.app.get_active_user_simulacra_tcs()
-        self.game = SimulacraCoreGame(
-            self.app.bbs_surface,
-            fonts,
-            self.app.scale,
-            player,
-            best_tcs=best_tcs,
-            on_new_best=self._on_new_best_tcs,
-            on_level_cleared=self._on_level_cleared,
-            get_radio_music_callback=self.app._get_radio_music_state
-        )
+        
+        try:
+            self.game = SimulacraCoreGame(
+                self.app.bbs_surface,
+                fonts,
+                self.app.scale,
+                player,
+                best_tcs=best_tcs,
+                on_new_best=self._on_new_best_tcs,
+                on_level_cleared=self._on_level_cleared,
+                get_radio_music_callback=self.app._get_radio_music_state
+            )
+            print("[SimulacraSession] Game instance created successfully.")
+        except Exception as e:
+            print(f"[SimulacraSession] ERROR creating game instance: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # Check for audio tokens and play simcore.wav if both are present
+        if self.app.inventory.has_token(Tokens.AUDIO_ON) and self.app.inventory.has_token(Tokens.LAPC1_NODE7):
+            try:
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init()
+                
+                from utils import get_data_path
+                simcore_path = get_data_path("Audio", "simcore.wav")
+                
+                if os.path.exists(simcore_path):
+                    self.simcore_sound = pygame.mixer.Sound(simcore_path)
+                    # Play at 80% volume (0.8) in a loop
+                    self.simcore_channel = self.simcore_sound.play(loops=-1)
+                    if self.simcore_channel:
+                        self.simcore_channel.set_volume(0.8)
+                        print("[SimulacraSession] Started simcore.wav at 80% volume")
+                else:
+                    print(f"[SimulacraSession] simcore.wav not found at {simcore_path}")
+            except Exception as e:
+                print(f"[SimulacraSession] Error loading simcore.wav: {e}")
+                import traceback
+                traceback.print_exc()
 
     def handle_event(self, event: pygame.event.Event) -> Optional[str]:
         if not self.game:
@@ -115,13 +151,52 @@ class SimulacraSession(BaseGameSession):
 
     def draw(self) -> None:
         if self.game:
+            # Sync surface if it changed (e.g. resize)
+            if self.game.surface != self.app.bbs_surface:
+                 print("[SimulacraSession] Syncing surface reference")
+                 self.game.surface = self.app.bbs_surface
+                 # Update dimensions if needed
+                 self.game.width = self.app.bbs_surface.get_width()
+                 self.game.height = self.app.bbs_surface.get_height()
+
             score = self.game.take_pending_score()
             if score:
                 result = self.app.record_simulacra_score(score["tcs"])
                 self.game.handle_score_persisted(result, score)
+            
+            # Debug: Check surface state before drawing
+            if hasattr(self, '_debug_draw_count'):
+                self._debug_draw_count += 1
+            else:
+                self._debug_draw_count = 0
+            
+            if self._debug_draw_count % 60 == 0:
+                surf_size = self.game.surface.get_size()
+                surf_alpha = self.game.surface.get_flags() & pygame.SRCALPHA
+                print(f"[SimulacraSession] Drawing to surface: size={surf_size}, has_alpha={bool(surf_alpha)}, surface_id={id(self.game.surface)}, bbs_surface_id={id(self.app.bbs_surface)}")
+            
             self.game.draw()
+            
+            # Debug: Sample a pixel after drawing to verify content
+            if self._debug_draw_count % 60 == 0:
+                try:
+                    # Sample center pixel
+                    center_x, center_y = surf_size[0] // 2, surf_size[1] // 2
+                    pixel = self.game.surface.get_at((center_x, center_y))
+                    print(f"[SimulacraSession] Center pixel after draw: {pixel}")
+                except Exception as e:
+                    print(f"[SimulacraSession] Error sampling pixel: {e}")
 
     def exit(self) -> None:
+        # Stop simcore.wav if playing
+        if self.simcore_channel:
+            try:
+                self.simcore_channel.stop()
+                print("[SimulacraSession] Stopped simcore.wav")
+            except Exception as e:
+                print(f"[SimulacraSession] Error stopping simcore.wav: {e}")
+            self.simcore_channel = None
+        self.simcore_sound = None
         self.game = None
 
     def _on_new_best_tcs(self, tcs_value: float) -> None:
@@ -187,12 +262,14 @@ class AstroMinerSession(BaseGameSession):
         # Desktop area position (where the game is rendered)
         self.baseline_desktop_x = 176
         self.baseline_desktop_y = 209
+        # Leaderboard tracking
+        self.last_uploaded_score = 0
+        self.score_check_counter = 0
     
     def _get_desktop_pos(self) -> Tuple[int, int]:
         """Get the desktop area position in screen coordinates."""
-        desktop_x = int(self.baseline_desktop_x * self.app.scale)
-        desktop_y = int(self.baseline_desktop_y * self.app.scale)
-        return (desktop_x, desktop_y)
+        # Use centralized ResolutionManager to ensure alignment with OSMode
+        return self.app.res_manager.coords(self.baseline_desktop_x, self.baseline_desktop_y)
 
     def _load_base_desktop_size(self) -> Tuple[int, int]:
         if getattr(self, "_base_desktop_size", None):
@@ -217,8 +294,8 @@ class AstroMinerSession(BaseGameSession):
                     width = height = None
         if width is None or height is None:
             base_w, base_h = self._load_base_desktop_size()
-            width = int(base_w * self.app.scale)
-            height = int(base_h * self.app.scale)
+            width = self.app.res_manager.scale(base_w)
+            height = self.app.res_manager.scale(base_h)
         width = max(720, width)
         height = max(480, height)
         return (width, height)
@@ -253,8 +330,26 @@ class AstroMinerSession(BaseGameSession):
             if desired_mode in ("low", "medium", "high") and hasattr(astrominer_embed, "set_resolution_mode"):
                 resolution_applied = astrominer_embed.set_resolution_mode(desired_mode)
             if not resolution_applied and hasattr(astrominer_embed, "set_render_resolution"):
-                width, height = self._get_desktop_dimensions()
-                astrominer_embed.set_render_resolution(width, height)
+                # Get desktop dimensions (where the game will be rendered)
+                # This ensures the C++ render resolution matches the final display size
+                # and maintains correct aspect ratio
+                desktop_width, desktop_height = self._get_desktop_dimensions()
+                print(f"[AstroMinerSession] Setting DLL resolution to match desktop: {desktop_width}x{desktop_height}")
+                astrominer_embed.set_render_resolution(desktop_width, desktop_height)
+            
+            # Reset game to ensure fresh start when launching from BBS
+            print("[AstroMinerSession] Resetting game to new game defaults...")
+            astrominer_embed.reset_game()
+            
+            # Set current username from BBS before initializing (ALWAYS refresh from BBS)
+            if hasattr(self.app, 'get_active_user'):
+                active_user = self.app.get_active_user()
+                if active_user and active_user.get('username'):
+                    username = active_user.get('username')
+                    print(f"[AstroMinerSession.enter] Setting username from BBS: {username}")
+                    astrominer_embed.set_username(username)
+                else:
+                    print("[AstroMinerSession.enter] WARNING: No active user or username found!")
             
             if not astrominer_embed.initialize():
                 print("Failed to initialize Astro Miner DLL")
@@ -471,6 +566,17 @@ class AstroMinerSession(BaseGameSession):
         static_update_count = getattr(self, '_update_count', 0)
         self._update_count = static_update_count + 1
         
+        # Check if mouse should be centered (for 3D lander environment)
+        if hasattr(self.embed_module, 'should_center_mouse') and self.embed_module.should_center_mouse():
+            # Center mouse in the desktop area
+            desktop_x, desktop_y = self._get_desktop_pos()
+            desktop_w, desktop_h = self._get_desktop_dimensions()
+            center_x = desktop_x + desktop_w // 2
+            center_y = desktop_y + desktop_h // 2
+            pygame.mouse.set_pos(center_x, center_y)
+            pygame.mouse.get_rel()  # Reset relative movement after centering
+            print(f"[AstroMinerSession.update] Mouse centered at ({center_x}, {center_y})")
+        
         # Set mouse delta from relative movement (this is what controls ship rotation)
         if abs(rel_x) > 0.01 or abs(rel_y) > 0.01:
             if self._update_count % 60 == 0 or (abs(rel_x) > 1.0 or abs(rel_y) > 1.0):
@@ -489,6 +595,33 @@ class AstroMinerSession(BaseGameSession):
             print(f"[AstroMinerSession.update] Frame {self._update_count}, mouse screen=({mouse_pos[0]},{mouse_pos[1]}), game=({game_pos[0]:.2f},{game_pos[1]:.2f})")
         
         self.last_mouse_pos = mouse_pos
+        
+        # Periodically refresh username from BBS (every 300 frames = ~5 seconds)
+        # This ensures username is always current even if user switches accounts
+        self.score_check_counter += 1
+        if self.score_check_counter % 300 == 0:
+            if hasattr(self.app, 'get_active_user'):
+                active_user = self.app.get_active_user()
+                if active_user and active_user.get('username'):
+                    username = active_user.get('username')
+                    if hasattr(self.embed_module, 'set_username'):
+                        self.embed_module.set_username(username)
+                        print(f"[AstroMinerSession.update] Refreshed username from BBS: {username}")
+        
+        # Check for new score and upload to Steam leaderboard (every 60 frames = ~1 second)
+        if self.score_check_counter >= 60:
+            if self.embed_module:
+                try:
+                    new_score = self.embed_module.get_last_final_score()
+                    if new_score > 0 and new_score != self.last_uploaded_score:
+                        # Upload to Steam leaderboard
+                        if hasattr(self.app, 'steam') and self.app.steam.is_available():
+                            self.app.steam.upload_leaderboard_score("AstroMinerLeaderboard", new_score)
+                            self.last_uploaded_score = new_score
+                            print(f"[AstroMinerSession] Uploaded score {new_score} to Steam leaderboard")
+                except Exception as e:
+                    # Silently fail if function doesn't exist yet (DLL not recompiled)
+                    pass
         
         # Check if game wants to exit (from menu quit option)
         if self.embed_module:
@@ -529,9 +662,20 @@ class AstroMinerSession(BaseGameSession):
         desktop_y = int(baseline_desktop_y * self.app.scale)
         
         desktop_width, desktop_height = self._get_desktop_dimensions()
+        frame_width, frame_height = self.last_frame.get_size()
         
-        if self.last_frame.get_size() != (desktop_width, desktop_height):
-            scaled_frame = pygame.transform.smoothscale(self.last_frame, (desktop_width, desktop_height))
+        # Scale preserving aspect ratio to fit within desktop dimensions
+        if (frame_width, frame_height) != (desktop_width, desktop_height):
+            # Calculate scale factors for both dimensions
+            scale_x = desktop_width / frame_width
+            scale_y = desktop_height / frame_height
+            # Use the smaller scale to fit within bounds (letterbox/pillarbox)
+            scale = min(scale_x, scale_y)
+            
+            new_width = int(frame_width * scale)
+            new_height = int(frame_height * scale)
+            
+            scaled_frame = pygame.transform.smoothscale(self.last_frame, (new_width, new_height))
         else:
             scaled_frame = self.last_frame
         

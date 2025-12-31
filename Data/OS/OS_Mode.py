@@ -134,6 +134,33 @@ except Exception as e:
     SolitaireGame = None
     print(f"Warning: Could not import SolitaireGame: {e}")
 
+# Pirate Radio App is now in a separate module
+try:
+    import sys
+    import os
+    import importlib.util
+    # Add the pirate radio directory to the path for import
+    # Get the directory containing this file (OS_Mode.py)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    os_dir = os.path.dirname(current_dir)  # Data
+    pirate_radio_dir = os.path.join(os_dir, "Pirate_Radio")
+    if pirate_radio_dir not in sys.path:
+        sys.path.insert(0, pirate_radio_dir)
+    # Import the pirate radio module
+    pirate_radio_module_path = os.path.join(pirate_radio_dir, "PirateRadio.py")
+    if os.path.exists(pirate_radio_module_path):
+        spec = importlib.util.spec_from_file_location("pirate_radio_module", pirate_radio_module_path)
+        pirate_radio_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pirate_radio_module)
+        PirateRadioApp = pirate_radio_module.PirateRadioApp
+        _pirate_radio_available = True
+    else:
+        raise ImportError(f"Pirate Radio module not found at {pirate_radio_module_path}")
+except Exception as e:
+    _pirate_radio_available = False
+    PirateRadioApp = None
+    print(f"Warning: Could not import PirateRadioApp: {e}")
+
 # Data path helper - works for both development and built executable
 def get_data_path(*path_parts):
     """
@@ -152,34 +179,22 @@ def get_data_path(*path_parts):
     return os.path.join(base_path, *path_parts)
 
 
+# Import Resolution Manager
+from systems.resolution import ResolutionManager
+
 class OSMode:
     """
     Desktop Environment OS Mode
     Renders a desktop environment with draggable icons.
     """
     
-    def __init__(self, screen: pygame.Surface, scale: float, reset_bbs_callback=None, bbs_x=None, bbs_y=None, bbs_width=None, has_token_callback=None, get_recording_state_callback=None, set_recording_state_callback=None, get_notes_callback=None, save_notes_callback=None, get_user_credentials_callback=None, get_chess_stats_callback=None, save_chess_stats_callback=None, is_audio_streaming_callback=None, grant_token_callback=None, get_radio_music_callback=None):
+    def __init__(self, screen: pygame.Surface, res_manager: ResolutionManager, reset_bbs_callback=None, bbs_x=None, bbs_y=None, bbs_width=None, has_token_callback=None, get_recording_state_callback=None, set_recording_state_callback=None, get_notes_callback=None, save_notes_callback=None, get_user_credentials_callback=None, get_chess_stats_callback=None, save_chess_stats_callback=None, grant_token_callback=None, is_audio_streaming_callback=None, get_radio_music_callback=None):
         """
         Initialize OS Mode.
-        
-        Args:
-            screen: The main screen surface to draw on
-            scale: Scale factor for proportional scaling
-            reset_bbs_callback: Optional callback function to reset BBS and exit OS mode
-            bbs_x: BBS window X position (for clock positioning)
-            bbs_y: BBS window Y position (for clock positioning)
-            bbs_width: BBS window width (for clock positioning)
-            has_token_callback: Optional callback function to check if player has a token
-            get_recording_state_callback: Optional callback to get recording state (returns (is_recording, start_time))
-            set_recording_state_callback: Optional callback to set recording state (is_recording, start_time)
-            get_notes_callback: Optional callback to get notes list
-            save_notes_callback: Optional callback to save notes list
-            grant_token_callback: Optional callback function to grant a token to the player
-            is_audio_streaming_callback: Optional callback to check if audio is streaming (returns True if audio other than window-loop.wav is playing)
-            get_radio_music_callback: Optional callback to check if RadioMusic is playing (returns True if Node7.wav is playing)
         """
         self.screen = screen
-        self.scale = scale
+        self.res_manager = res_manager
+        self.scale = res_manager.scale_factor
         self.reset_bbs_callback = reset_bbs_callback
         self.bbs_x = bbs_x
         self.bbs_y = bbs_y
@@ -219,8 +234,8 @@ class OSMode:
         self.baseline_desktop_y = 209
         
         # Scaled coordinates
-        self.desktop_x = int(self.baseline_desktop_x * self.scale)
-        self.desktop_y = int(self.baseline_desktop_y * self.scale)
+        # Use coords to include potential centering padding
+        self.desktop_x, self.desktop_y = self.res_manager.coords(self.baseline_desktop_x, self.baseline_desktop_y)
         
         # Load desktop background
         desktop_path = get_data_path("OS", "Desktop-Enviroment.png")
@@ -438,6 +453,8 @@ class OSMode:
         self.modem_modal_connection_messages = []  # List of connection messages
         self.modem_modal_message_index = 0  # Current message index
         self.modem_modal_message_timer = 0.0  # Timer for message progression
+        self.modem_modal_current_target = None  # Tracks which endpoint we are connecting to
+        self.modem_modal_external_bbs = None  # Set when routing to an outside BBS
         self.modem_modal_should_reset_bbs = False  # Flag to signal BBS reset
         self.modem_modal_should_exit_os = False  # Flag to signal OS mode exit
         self.modem_modal_connection_started = False  # Whether connection sequence has started
@@ -541,11 +558,32 @@ class OSMode:
             if not _solitaire_available:
                 print(f"Warning: Solitaire module not available. _solitaire_available={_solitaire_available}, SolitaireGame={SolitaireGame}")
         
+        # Pirate Radio App instance
+        self.pirate_radio_app = None
+        if _pirate_radio_available and PirateRadioApp:
+            try:
+                self.pirate_radio_app = PirateRadioApp(
+                    self.screen,
+                    self.res_manager,
+                    self.desktop_x,
+                    self.desktop_y
+                )
+            except Exception as e:
+                print(f"Warning: Failed to initialize PirateRadioApp: {e}")
+                self.pirate_radio_app = None
+
+    def launch_pirate_radio(self):
+        """Launch the Pirate Radio application."""
+        if self.pirate_radio_app:
+            self.pirate_radio_app.start()
+
     def handle_event(self, event: pygame.event.Event) -> bool:
         """
         Handle pygame events for OS Mode.
         Returns True if event was handled, False otherwise.
         """
+        if self.pirate_radio_app and self.pirate_radio_app.active and self.pirate_radio_app.handle_event(event):
+            return True
         if self.chess_game and self.chess_game.active and self.chess_game.handle_event(event):
             return True
         if self.solitaire_game and self.solitaire_game.active and self.solitaire_game.handle_event(event):
@@ -630,9 +668,8 @@ class OSMode:
                             
                             # If clicking on close button, handle it directly here
                             if close_btn_rect.collidepoint(mouse_x, mouse_y):
-                                # Close the modal
-                                # Reset entire OS Mode when any modal closes
-                                self._reset_os_mode()
+                                # Close only this specific modal
+                                self._close_modal(modal_name)
                                 return True
                             else:
                                 # Start dragging this modal
@@ -852,8 +889,8 @@ class OSMode:
         close_btn_y = modal_y + int(5 * self.scale)
         close_btn_rect = pygame.Rect(close_btn_x, close_btn_y, close_btn_size, close_btn_size)
         if close_btn_rect.collidepoint(mouse_x, mouse_y):
-            # Reset entire OS Mode when modal closes
-            self._reset_os_mode()
+            # Close only the tape modal
+            self._close_modal("tape")
             return True
         
         modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
@@ -939,8 +976,8 @@ class OSMode:
         close_btn_y = modal_y + int(5 * self.scale)
         close_btn_rect = pygame.Rect(close_btn_x, close_btn_y, close_btn_size, close_btn_size)
         if close_btn_rect.collidepoint(mouse_x, mouse_y):
-            # Reset entire OS Mode when modal closes
-            self._reset_os_mode()
+            # Close only the modem modal
+            self._close_modal("modem")
             return True
         
         modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
@@ -1000,14 +1037,24 @@ class OSMode:
         call_btn_rect = pygame.Rect(call_btn_x, call_btn_y, call_btn_w, call_btn_h)
         
         if call_btn_rect.collidepoint(mouse_x, mouse_y):
-            # Check if sequence matches target
-            if self.modem_modal_dialed_sequence == self.modem_modal_target_sequence:
-                # Start connection sequence
-                self.modem_modal_connection_started = True
-                self._play_modem_dial_sound()
-                self.modem_packet_sprites.clear()
-                self.modem_packet_spawn_timer = 0.0
-                self.modem_modal_connection_messages = [
+            connections = self._get_modem_connections()
+            sequence = self.modem_modal_dialed_sequence
+            if sequence in connections:
+                self._start_modem_connection(connections[sequence])
+            else:
+                # Show error message or just clear
+                self.modem_modal_dialed_sequence = ""
+            return True
+                
+        return False
+
+    def _get_modem_connections(self):
+        """Return the set of dialable connections keyed by number."""
+        connections = {
+            "0345728891": {
+                "target": "glyphis",
+                "number": "0345728891",
+                "messages": [
                     "Initializing modem connection...",
                     "Dialing 0345728891...",
                     "Establishing connection...",
@@ -1015,29 +1062,46 @@ class OSMode:
                     "Packets found!",
                     "Loading data...",
                     "Connection established!"
-                ]
-                # Per-message delays (in seconds)
-                self.modem_modal_message_delays = [
-                    2.1,  # "Initializing modem connection..."
-                    2.1,  # "Dialing 0345728891..."
-                    4.0,  # "Establishing connection..."
-                    4.0,  # "Handshaking..."
-                    3.0,  # "Packets found!"
-                    4.0,  # "Loading data..."
-                    3.0   # "Connection established!"
-                ]
-                self.modem_modal_message_index = 0
-                self.modem_modal_message_timer = 0.0
-                
-                # Grant MODEM1ST token
-                if self.grant_token:
-                    self.grant_token("MODEM1ST", "Modem connection established")
-            else:
-                # Show error message or just clear
-                self.modem_modal_dialed_sequence = ""
-            return True
-                
-        return False
+                ],
+                "delays": [2.1, 2.1, 4.0, 4.0, 3.0, 4.0, 3.0],
+                "grant_token": "MODEM1ST",
+            }
+        }
+
+        if self.has_token("PAPERCRANEBBS"):
+            connections["08277341945"] = {
+                "target": "paper_crane",
+                "number": "08277341945",
+                "messages": [
+                    "Initializing modem connection...",
+                    "Dialing 08277341945...",
+                    "Establishing connection...",
+                    "Handshaking...",
+                    "Packets found!",
+                    "Routing to PAPER CRANE...",
+                    "Connection established!"
+                ],
+                "delays": [2.1, 2.1, 4.0, 4.0, 3.0, 4.0, 3.0],
+            }
+
+        return connections
+
+    def _start_modem_connection(self, config: dict) -> None:
+        """Begin modem connection sequence for the given config."""
+        self.modem_modal_connection_started = True
+        self.modem_modal_current_target = config.get("target")
+        self.modem_modal_external_bbs = None
+        self._play_modem_dial_sound()
+        self.modem_packet_sprites.clear()
+        self.modem_packet_spawn_timer = 0.0
+        self.modem_modal_connection_messages = list(config.get("messages", []))
+        self.modem_modal_message_delays = list(config.get("delays", []))
+        self.modem_modal_message_index = 0
+        self.modem_modal_message_timer = 0.0
+
+        grant_token = config.get("grant_token")
+        if grant_token and self.grant_token:
+            self.grant_token(grant_token, "Modem connection established")
     
     def _modem_handle_keydown(self, event: pygame.event.Event) -> bool:
         """Handle keyboard input for modem modal (arrow keys, backspace)."""
@@ -1124,7 +1188,8 @@ class OSMode:
             close_btn_size
         )
         if close_btn_rect.collidepoint(mouse_x, mouse_y):
-            self._reset_os_mode()
+            # Close only the games modal
+            self._close_modal("games")
             return True
 
         modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
@@ -1383,9 +1448,8 @@ class OSMode:
             close_btn_size
         )
         if close_btn_rect.collidepoint(mouse_x, mouse_y):
-            if self.notes_modal_edit_mode:
-                self._exit_notes_edit_mode(save_changes=False)
-            self._reset_os_mode()
+            # Close only the notes modal (edit mode exit is handled in _close_modal)
+            self._close_modal("notes")
             return True
 
         modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
@@ -1690,6 +1754,10 @@ class OSMode:
     
     def update(self, dt: float):
         """Update OS Mode state (call this every frame)."""
+        # Update Pirate Radio App if active
+        if self.pirate_radio_app and self.pirate_radio_app.active:
+            self.pirate_radio_app.update()
+
         # Update cursor blink timer for notes modal
         if "notes" in self.active_modals and self.notes_modal_edit_mode:
             self.notes_modal_cursor_blink_timer += dt
@@ -1733,11 +1801,16 @@ class OSMode:
                     self.modem_modal_message_index += 1
                     self.modem_modal_message_timer = 0.0
                     if self.modem_modal_message_index >= len(self.modem_modal_connection_messages):
-                        # Connection successful - reset BBS and exit OS mode
-                        self.modem_modal_should_reset_bbs = True
-                        self.modem_modal_should_exit_os = True
-                        if self.reset_bbs_callback:
-                            self.reset_bbs_callback()
+                        # Connection successful - route based on target
+                        target = self.modem_modal_current_target
+                        if target == "paper_crane":
+                            self.modem_modal_external_bbs = "paper_crane"
+                            self.modem_modal_should_exit_os = True
+                        else:
+                            self.modem_modal_should_reset_bbs = True
+                            self.modem_modal_should_exit_os = True
+                            if self.reset_bbs_callback:
+                                self.reset_bbs_callback()
             if len(self.modem_modal_connection_messages) >= 2 and not self.network_connected:
                 if self.modem_modal_message_index >= len(self.modem_modal_connection_messages) - 2:
                     self.network_connected = True
@@ -1876,6 +1949,8 @@ class OSMode:
             self.chess_game.draw()
         if self.solitaire_game and self.solitaire_game.active:
             self.solitaire_game.draw()
+        if self.pirate_radio_app and self.pirate_radio_app.active:
+            self.pirate_radio_app.draw()
     
     def draw_tape_video(self):
         """Draw the Datasette_Load.mp4 video (should be called last, after scanlines and overlay)."""
@@ -3124,20 +3199,63 @@ class OSMode:
         return edit_btn_rect, delete_btn_rect, panel_rect
 
     def _mission_note_template(self):
+        """Generate mission note content dynamically based on player tokens."""
+        # Check if player has tokens
+        has_radio_access1 = self.has_token("RADIO_ACCESS1")
+        has_jax1 = self.has_token("JAX1")
+        
+        # Build content dynamically
+        content = (
+            "[s]1. Receive Invite from Glyphis[/s]\n"
+            "[s]2. Get onto the BBS (0345728891)[/s]\n"
+            "[s]3. Complete a technical challenge to prove yourself[/s]\n"
+            "4. Get the audio tech's help and get the first audio stream from Glyphisis_IO. Record it using the Datasette!\n"
+        )
+        
+        # Item 5: Strike through if player has JAX1
+        if has_jax1:
+            content += "[s]5. Get invited to crack some games[/s]\n"
+        else:
+            content += "5. Get invited to crack some games\n"
+        
+        # Item 6: Strike through if player has RADIO_ACCESS1
+        if has_radio_access1:
+            content += "[s]6. Obtain access to the group's Pirate Radio Stream![/s]\n"
+        else:
+            content += "6. Obtain access to the group's Pirate Radio Stream!\n"
+        
+        # Add new items 7, 8, 9
+        content += "7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.\n"
+        content += "8. Dial into at least 3 more BBS sites.\n"
+        content += "9. Crack games, play them and attempt to dominate the leaderboards\n"
+        
         return {
             "title": MISSION_NOTE_TITLE,
-            "content": MISSION_NOTE_CONTENT,
+            "content": content,
             "is_locked": True
         }
     
-    def _bbs_login_note_template(self):
-        """Generate BBS login note with current user credentials."""
+    def _get_bbs_login_note_content(self):
+        """Generate BBS login note content with current user credentials and PAPER CRANE BBS if token exists."""
         username, pin = self.get_user_credentials()
         content = f"{BBS_NAME}\n"
         content += f"Phone Number: {BBS_NUMBER}\n"
         content += f"\n"
         content += f"Username: {username if username else 'Not Set'}\n"
         content += f"Login PIN: {pin if pin else 'Not Set'}"
+        
+        # Add PAPER CRANE BBS info if player has PAPERCRANEBBS token
+        if self.has_token("PAPERCRANEBBS"):
+            content += f"\n\nPAPER CRANE BBS\n"
+            content += f"Phone Number: 08277341945\n"
+            content += f"Username: guest\n"
+            content += f"Password: origami"
+        
+        return content
+    
+    def _bbs_login_note_template(self):
+        """Generate BBS login note with current user credentials."""
+        content = self._get_bbs_login_note_content()
         return {
             "title": BBS_LOGIN_NOTE_TITLE,
             "content": content,
@@ -3202,12 +3320,7 @@ class OSMode:
                     # Update BBS login note content with current credentials (it may have changed)
                     if notes[1].get("title") == BBS_LOGIN_NOTE_TITLE:
                         # Update content to reflect current credentials
-                        username, pin = self.get_user_credentials()
-                        updated_content = f"{BBS_NAME}\n"
-                        updated_content += f"Phone Number: {BBS_NUMBER}\n"
-                        updated_content += f"\n"
-                        updated_content += f"Username: {username if username else 'Not Set'}\n"
-                        updated_content += f"Login PIN: {pin if pin else 'Not Set'}"
+                        updated_content = self._get_bbs_login_note_content()
                         if notes[1].get("content") != updated_content:
                             notes[1]["content"] = updated_content
                             changed = True
@@ -3228,7 +3341,87 @@ class OSMode:
                         notes[1]["is_locked"] = True
                         changed = True
                     
-                    # Don't overwrite mission note content - preserve user modifications like strikethroughs
+                    # Update mission note content if token status has changed (for items 5-9)
+                    # Check if tokens require content update
+                    has_radio_access1 = self.has_token("RADIO_ACCESS1")
+                    has_jax1 = self.has_token("JAX1")
+                    existing_content = notes[0].get("content", "")
+                    
+                    # Check if item 5 needs to be updated (strike through if JAX1 present)
+                    item_5_struck = "[s]5. Get invited to crack some games[/s]" in existing_content
+                    item_5_unstruck = "5. Get invited to crack some games" in existing_content and not item_5_struck
+                    
+                    # Check if item 6 needs to be updated (strike through if token present)
+                    item_6_struck = "[s]6. Obtain access to the group's Pirate Radio Stream![/s]" in existing_content
+                    item_6_unstruck = "6. Obtain access to the group's Pirate Radio Stream!" in existing_content and not item_6_struck
+                    
+                    # Check if items 7-9 exist
+                    has_item_7 = "7. Observe the Underground Radio Scene" in existing_content
+                    has_item_8 = "8. Dial into at least 3 more BBS sites" in existing_content
+                    has_item_9 = "9. Crack games, play them and attempt to dominate the leaderboards" in existing_content
+                    
+                    # Update content if needed
+                    needs_update = False
+                    updated_content = existing_content
+                    
+                    # Update item 5 strike-through status if token status changed
+                    if has_jax1 and item_5_unstruck:
+                        # Need to strike through item 5
+                        updated_content = updated_content.replace(
+                            "5. Get invited to crack some games\n",
+                            "[s]5. Get invited to crack some games[/s]\n"
+                        )
+                        needs_update = True
+                    elif not has_jax1 and item_5_struck:
+                        # Need to remove strike-through from item 5
+                        updated_content = updated_content.replace(
+                            "[s]5. Get invited to crack some games[/s]\n",
+                            "5. Get invited to crack some games\n"
+                        )
+                        needs_update = True
+                    
+                    # Update item 6 strike-through status if token status changed
+                    if has_radio_access1 and item_6_unstruck:
+                        # Need to strike through item 6
+                        updated_content = updated_content.replace(
+                            "6. Obtain access to the group's Pirate Radio Stream!\n",
+                            "[s]6. Obtain access to the group's Pirate Radio Stream![/s]\n"
+                        )
+                        needs_update = True
+                    elif not has_radio_access1 and item_6_struck:
+                        # Need to remove strike-through from item 6
+                        updated_content = updated_content.replace(
+                            "[s]6. Obtain access to the group's Pirate Radio Stream![/s]\n",
+                            "6. Obtain access to the group's Pirate Radio Stream!\n"
+                        )
+                        needs_update = True
+                    
+                    # Add items 7-9 if they don't exist
+                    if not has_item_7 or not has_item_8 or not has_item_9:
+                        # Remove any existing items 7-9 to avoid duplicates
+                        lines = updated_content.split('\n')
+                        filtered_lines = []
+                        for line in lines:
+                            if not (line.strip().startswith("7. ") or 
+                                   line.strip().startswith("[s]7. ") or
+                                   line.strip().startswith("8. ") or 
+                                   line.strip().startswith("[s]8. ") or
+                                   line.strip().startswith("9. ") or 
+                                   line.strip().startswith("[s]9. ")):
+                                filtered_lines.append(line)
+                        
+                        # Add items 7-9 at the end
+                        updated_content = '\n'.join(filtered_lines)
+                        if updated_content and not updated_content.endswith('\n'):
+                            updated_content += '\n'
+                        updated_content += "7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.\n"
+                        updated_content += "8. Dial into at least 3 more BBS sites.\n"
+                        updated_content += "9. Crack games, play them and attempt to dominate the leaderboards\n"
+                        needs_update = True
+                    
+                    if needs_update:
+                        notes[0]["content"] = updated_content
+                        changed = True
 
         # Enforce max of 10 notes
         if len(notes) > 10:
@@ -3269,12 +3462,7 @@ class OSMode:
         # Use existing BBS login note if found, otherwise create new one with current credentials
         if existing_bbs_login_note:
             # Update content with current credentials (they may have changed)
-            username, pin = self.get_user_credentials()
-            updated_content = f"{BBS_NAME}\n"
-            updated_content += f"Phone Number: {BBS_NUMBER}\n"
-            updated_content += f"\n"
-            updated_content += f"Username: {username if username else 'Not Set'}\n"
-            updated_content += f"Login PIN: {pin if pin else 'Not Set'}"
+            updated_content = self._get_bbs_login_note_content()
             sanitized.append({
                 "title": existing_bbs_login_note.get("title", BBS_LOGIN_NOTE_TITLE),
                 "content": updated_content,
@@ -4403,6 +4591,38 @@ class OSMode:
         except Exception as e:
             print(f"Warning: Failed to save icon positions: {e}")
     
+    def _close_modal(self, modal_name: str):
+        """Close a specific modal and perform necessary cleanup."""
+        if modal_name not in self.active_modals:
+            return
+        
+        # Remove modal from active set
+        self.active_modals.discard(modal_name)
+        
+        # Remove modal position
+        if modal_name in self.modal_positions:
+            del self.modal_positions[modal_name]
+        
+        # Stop dragging if this modal was being dragged
+        if self.modal_dragging == modal_name:
+            self.modal_dragging = None
+            self.modal_drag_offset = (0, 0)
+        
+        # Modal-specific cleanup
+        if modal_name == "tape":
+            # Stop video if modal is closed (but keep recording flag)
+            if not self.tape_recording:
+                self._stop_tape_video()
+        elif modal_name == "modem":
+            # Don't reset modem state when closing - allow reconnection
+            # Just stop any active dial sound
+            self._stop_modem_dial_sound()
+        elif modal_name == "notes":
+            # Exit edit mode if active
+            if self.notes_modal_edit_mode:
+                self._exit_notes_edit_mode(save_changes=False)
+        # Other modals don't need special cleanup
+    
     def _reset_os_mode(self):
         """Reset OS Mode to its initial state - resets icons, modals, and all state."""
         # Reset all modals
@@ -4426,6 +4646,8 @@ class OSMode:
         self.modem_modal_message_index = 0
         self.modem_modal_message_timer = 0.0
         self.modem_modal_connection_started = False
+        self.modem_modal_current_target = None
+        self.modem_modal_external_bbs = None
         self.modem_modal_should_reset_bbs = False
         self.modem_modal_should_exit_os = False
         self.modem_terminal_rect = None

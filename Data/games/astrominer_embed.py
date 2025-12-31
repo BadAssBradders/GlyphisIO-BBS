@@ -233,6 +233,61 @@ def initialize() -> bool:
         except (AttributeError, OSError, TypeError) as e:
             _dll._has_should_exit = False
             print(f"Note: Could not set up ShouldExit function: {e}")
+        
+        # Try to set up GetLastFinalScore function (optional)
+        _dll._has_get_score = False
+        try:
+            get_score_func = getattr(_dll, 'GetLastFinalScore', None)
+            if get_score_func is not None:
+                _dll.GetLastFinalScore.restype = ctypes.c_int
+                _dll.GetLastFinalScore.argtypes = []
+                _dll._has_get_score = True
+        except (AttributeError, OSError, TypeError) as e:
+            _dll._has_get_score = False
+        
+        # Try to set up SetUsername function (optional)
+        _dll._has_set_username = False
+        try:
+            set_username_func = getattr(_dll, 'SetUsername', None)
+            if set_username_func is not None:
+                _dll.SetUsername.restype = None
+                _dll.SetUsername.argtypes = [ctypes.c_char_p]
+                _dll._has_set_username = True
+        except (AttributeError, OSError, TypeError) as e:
+            _dll._has_set_username = False
+        
+        # Try to set up ResetGame function (optional)
+        _dll._has_reset_game = False
+        try:
+            reset_game_func = getattr(_dll, 'ResetGame', None)
+            if reset_game_func is not None:
+                _dll.ResetGame.restype = None
+                _dll.ResetGame.argtypes = []
+                _dll._has_reset_game = True
+        except (AttributeError, OSError, TypeError) as e:
+            _dll._has_reset_game = False
+        
+        # Try to set up ShouldCenterMouse function (optional)
+        _dll._has_center_mouse = False
+        try:
+            center_mouse_func = getattr(_dll, 'ShouldCenterMouse', None)
+            if center_mouse_func is not None:
+                _dll.ShouldCenterMouse.restype = ctypes.c_bool
+                _dll.ShouldCenterMouse.argtypes = []
+                _dll._has_center_mouse = True
+        except (AttributeError, OSError, TypeError) as e:
+            _dll._has_center_mouse = False
+
+        # Optional cleanup hook so the BBS can tear down the DLL cleanly
+        _dll._has_cleanup = False
+        try:
+            cleanup_func = getattr(_dll, 'CleanupGame', None)
+            if cleanup_func is not None:
+                _dll.CleanupGame.restype = None
+                _dll.CleanupGame.argtypes = []
+                _dll._has_cleanup = True
+        except (AttributeError, OSError, TypeError):
+            _dll._has_cleanup = False
             
         print("Astro Miner initialized successfully")
         return True
@@ -374,7 +429,55 @@ def should_exit():
             return False
     return False
 
+def get_last_final_score() -> int:
+    """Get the last final score calculated (0 if no score yet)."""
+    if _dll and hasattr(_dll, '_has_get_score') and _dll._has_get_score:
+        try:
+            return _dll.GetLastFinalScore()
+        except Exception:
+            return 0
+    return 0
+
+def set_username(username: str) -> bool:
+    """Set the current BBS username for leaderboard entries."""
+    if _dll and hasattr(_dll, '_has_set_username') and _dll._has_set_username:
+        try:
+            # Convert string to bytes for c_char_p
+            username_bytes = username.encode('utf-8')
+            _dll.SetUsername(username_bytes)
+            return True
+        except Exception as e:
+            print(f"[astrominer_embed] Failed to set username: {e}")
+            return False
+    return False
+
+def reset_game() -> bool:
+    """Reset all player stats to new game defaults. Call this when launching from BBS."""
+    if _dll and hasattr(_dll, '_has_reset_game') and _dll._has_reset_game:
+        try:
+            _dll.ResetGame()
+            print("[astrominer_embed] Game reset - all stats reset to new game defaults")
+            return True
+        except Exception as e:
+            print(f"[astrominer_embed] Failed to reset game: {e}")
+            return False
+    return False
+
+def should_center_mouse() -> bool:
+    """Check if the mouse should be centered (for 3D lander environment)."""
+    if _dll and hasattr(_dll, '_has_center_mouse') and _dll._has_center_mouse:
+        try:
+            return _dll.ShouldCenterMouse()
+        except Exception:
+            return False
+    return False
+
 def cleanup():
     """Cleanup resources."""
     global _dll
+    try:
+        if _dll and hasattr(_dll, "_has_cleanup") and _dll._has_cleanup:
+            _dll.CleanupGame()
+    except Exception as exc:
+        print(f"[astrominer_embed] CleanupGame failed: {exc}")
     _dll = None
