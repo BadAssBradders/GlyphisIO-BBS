@@ -213,6 +213,18 @@ class EnhancedNPCResponder:
             # Fallback to generic response
             return self._generic_response(email_subject, email_body)
         
+        # Special handling for Jaxkando cracking questline
+        if character.name == "jaxkando":
+            # If player has JAX token (read "Targets Acquired") but not JAX1,
+            # send a special response asking if they want to help with game cracking
+            if "JAX" in player_tokens and "JAX1" not in player_tokens:
+                return self._handle_jax_cracking_offer(character, player_username)
+            
+            # If player has JAX1 (agreed to help) but hasn't cracked ASTROMINER yet,
+            # direct them to the cracking challenge in Urgent Ops
+            if "JAX1" in player_tokens and "ASTROMINER" not in player_tokens:
+                return self._handle_jax_cracking_ready(character, player_username)
+        
         # Normalize input text
         full_text = f"{email_subject} {email_body}".lower()
         
@@ -1076,6 +1088,77 @@ class EnhancedNPCResponder:
             ])
         return "Message received."
 
+    def _handle_jax_cracking_offer(self, character: CharacterProfile, player_username: str) -> str:
+        """Handle Jaxkando's special offer when player has JAX token but not JAX1"""
+        responses = [
+            f"YO {player_username.upper()}! I saw you checked out my post on The Wall!\n\n"
+            f"Look, I need help cracking some games. It's dangerous work - we're breaking protection systems, "
+            f"which is definitely illegal. But Glyphis says you can be trusted, and I trust Glyphis.\n\n"
+            f"The first one is ASTRO MINER and it's AMAZING! It's this incredible 3D space mining sim where you "
+            f"pilot a lander through the Oort Cloud, mine asteroids, trade commodities, and build your mining empire! "
+            f"The physics are insane - realistic gravity that changes per asteroid, laser beam mining, and the trading "
+            f"economy is deep. You can upgrade your ship, visit different stations like Shinjuku Depot and Hirohito Station, "
+            f"and it's just SO GOOD! Seriously, this game deserves to be played!\n\n"
+            f"So... want to help me crack some games? Just reply with 'yeah', 'yes', 'I'll do it' or whatever. "
+            f"If you're in, I'll hook you up with the hex editor and we can get started!\n\n"
+            f"-jaxkando",
+            
+            f"HEY {player_username.upper()}! You read my post about the games that need cracking!\n\n"
+            f"Here's the deal - I need someone to help me break these protection systems. It's risky and illegal, "
+            f"no doubt about it. But Glyphis told me you're solid, and that's good enough for me.\n\n"
+            f"OH MAN, the first game is ASTRO MINER and it's INCREDIBLE! Picture this: you're flying a mining lander "
+            f"through asteroid fields in the Oort Cloud, using laser beams to extract valuable commodities, building your "
+            f"mining operation across multiple stations. The 3D physics are mind-blowing - dynamic gravity systems, realistic "
+            f"lander controls, and this whole trading economy where you buy and sell resources. There's ship upgrades, different "
+            f"locations with increasing difficulty, and it's just PERFECT! This game is too good to stay locked up!\n\n"
+            f"Interested? Just say yes, yeah, I'll do it, or anything like that and we'll get you set up!\n\n"
+            f"-jaxkando",
+            
+            f"{player_username.upper()}! Good to hear from you!\n\n"
+            f"I saw you checked The Wall - that post about the games that need cracking. I'm looking for help, "
+            f"but I need to be straight with you: what we'd be doing is illegal. Breaking copy protection, "
+            f"cracking games... it's against the law.\n\n"
+            f"But listen - the first game is ASTRO MINER, and it's absolutely BRILLIANT! It's a 3D space mining simulation "
+            f"set in the Oort Cloud where you pilot a lander, mine asteroids with laser beams, trade commodities, and build "
+            f"your mining empire. The game has realistic physics, dynamic gravity that varies by asteroid, a comprehensive "
+            f"trading economy, ship customization, and multiple challenging locations. It's the cutting edge of space simulation "
+            f"and it's just SO FUN! Games like this should be free for everyone to experience!\n\n"
+            f"But Glyphis vouched for you, and I trust Glyphis completely. So if you're up for it, just reply "
+            f"with yes, yeah, I'll do it, or similar. Let me know!\n\n"
+            f"-jaxkando"
+        ]
+        return random.choice(responses)
+    
+    def _handle_jax_cracking_ready(self, character: CharacterProfile, player_username: str) -> str:
+        """Handle Jaxkando's response when player has JAX1 but hasn't cracked ASTROMINER yet"""
+        responses = [
+            f"YO {player_username.upper()}! You're all signed up to help crack games!\n\n"
+            f"I've got the ASTRO MINER cracking session ready for you in URGENT OPS! Head over there and look for the "
+            f"ASTRO MINER CRACKER challenge. We're gonna load the game into RAM piece by piece - splash screen, "
+            f"that HAUNTING soundtrack, the 3D assets, and then BYPASS THE COPY PROTECTION!\n\n"
+            f"The Bradsonic's 500MB of RAM makes this SUPER easy - we stream the whole game in, no discs needed!\n\n"
+            f"Go check URGENT OPS and let's DO THIS!\n\n"
+            f"-jaxkando",
+            
+            f"HEY {player_username.upper()}! Ready to crack some games?!\n\n"
+            f"I've set up the ASTRO MINER cracking challenge in URGENT OPS for you! It's a 4-node job:\n"
+            f"1. Load the gorgeous splash screen into RAM\n"
+            f"2. Stream that incredible haunting soundtrack\n"
+            f"3. Load the 3D ship and asteroid assets\n"
+            f"4. NOP out the copy protection and BOOM - game unlocked!\n\n"
+            f"Fire up URGENT OPS and look for the cracker! Pro tip: hit up Pirate Radio for some tunes while you work!\n\n"
+            f"-jaxkando",
+            
+            f"{player_username.upper()}! Perfect timing!\n\n"
+            f"The ASTRO MINER cracking session is all prepped and waiting for you in URGENT OPS! "
+            f"We're gonna use the Bradsonic's insane RAM to stream the whole game in - just like how the machine "
+            f"streams radio waves. No tapes, no discs, just pure streaming goodness!\n\n"
+            f"Head to URGENT OPS and fire up the ASTRO MINER CRACKER. I'll be in the chat to help!\n\n"
+            f"LET'S CRACK THIS THING AND PLAY THE HELL OUT OF IT!\n\n"
+            f"-jaxkando"
+        ]
+        return random.choice(responses)
+    
     def _generic_response(self, email_subject: str, email_body: str) -> str:
         """Fallback generic response if character not found"""
         return "Your message has been received and logged."

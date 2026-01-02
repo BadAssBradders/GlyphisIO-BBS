@@ -43,7 +43,13 @@ from systems import Email, EmailDatabase, NPCResponder, EnhancedNPCResponder, To
 # Import OS Mode
 from OS.OS_Mode import OSMode
 # Outside BBS experiences
-from Outside_BBSs.Paper_Crane_BBS import PaperCraneBBS
+from Outside_BBSs.PaperCraneBBS.Paper_Crane_BBS import PaperCraneBBS
+try:
+    from Outside_BBSs.EchoChamberBBS.EchoChamber import EchoChamberBBS
+    _echo_chamber_available = True
+except ImportError:
+    _echo_chamber_available = False
+    EchoChamberBBS = None
 
 # Import Resolution Manager
 from systems.resolution import ResolutionManager
@@ -1029,6 +1035,8 @@ class GLYPHIS_IOBBS:
         self.game_freeze_frame = None
         self.paper_crane_bbs: Optional[PaperCraneBBS] = None
         self.paper_crane_return_to_os = False
+        self.echo_chamber_bbs = None
+        self.echo_chamber_return_to_os = False
         
         # Load font (scaled based on resolution)
         try:
@@ -1055,6 +1063,7 @@ class GLYPHIS_IOBBS:
         
         # New Game prompt state
         self.new_game_prompt_selection = False  # False = No, True = Yes
+        self.quit_confirm_selection = False    # False = No, True = Yes
         
         # OS Boot video state
         self.os_boot_video_playing = False
@@ -1073,6 +1082,7 @@ class GLYPHIS_IOBBS:
         self.scroll_pause_frames = 0  # Frames remaining in pause
         self.scroll_pause_y = int(660 * self.scale)  # Y position where pause occurs (bottom of image, scaled)
         self.scroll_pause_triggered = False  # Track if pause has been triggered
+        self.scroll_final_paused = False  # Track if we're in final paused state with text overlay
         try:
             scroll_path = get_data_path("images", "BBS_Scroll.png")
             self.scroll_image = pygame.image.load(scroll_path).convert_alpha()
@@ -1317,6 +1327,18 @@ class GLYPHIS_IOBBS:
                 "token_required": Tokens.LAPC1_BRIEF,
                 "launch_method": "_start_lapc1_driver_challenge",
                 "status": "Press ENTER to launch the IDE.",
+            },
+            {
+                "id": "ops_astrominer_crack",
+                "title": "Crack ASTRO MINER // CRACKER-PARROT IDE",
+                "description": (
+                    "Load ASTRO MINER into RAM and bypass the copy protection! "
+                    "Stream the splash screen, haunting soundtrack, and 3D assets, "
+                    "then NOP out the protection loop. Jaxkando is standing by to help!"
+                ),
+                "token_required": Tokens.JAX2,
+                "launch_method": "_start_astrominer_challenge",
+                "status": "Press ENTER to crack this game!",
             },
         ]
         self.visible_ops_tasks: List[dict] = []
@@ -1653,6 +1675,7 @@ class GLYPHIS_IOBBS:
         self.scroll_y = None  # Will be set to start below screen
         self.scroll_pause_frames = 0
         self.scroll_pause_triggered = False
+        self.scroll_final_paused = False
         
         # Reset intro state
         self.intro_timer = 0
@@ -1680,6 +1703,8 @@ class GLYPHIS_IOBBS:
         self.delete_email_modal_active = False
         self.paper_crane_bbs = None
         self.paper_crane_return_to_os = False
+        self.echo_chamber_bbs = None
+        self.echo_chamber_return_to_os = False
         
         log_event("BBS reset to beginning")
 
@@ -1700,6 +1725,32 @@ class GLYPHIS_IOBBS:
         should_return_to_os = self.paper_crane_return_to_os
         self.paper_crane_bbs = None
         self.paper_crane_return_to_os = False
+        self._reset_to_beginning()
+        if should_return_to_os and self.os_mode:
+            self.os_mode_active = True
+            self.os_mode.update_scale(self.scale)
+            self._update_audio_power_state()
+
+    def _launch_echo_chamber_bbs(self, return_to_os: bool = False) -> None:
+        """Enter the Echo Chamber outside BBS experience."""
+        if not _echo_chamber_available or EchoChamberBBS is None:
+            log_event("Echo Chamber BBS not available")
+            return
+        self.echo_chamber_return_to_os = return_to_os
+        self.echo_chamber_bbs = EchoChamberBBS(
+            self.bbs_width,
+            self.bbs_height,
+            self.scale,
+            on_exit=self._exit_echo_chamber_bbs,
+        )
+        self.state = "echo_chamber"
+        log_event("Routing to ECHO CHAMBER BBS")
+
+    def _exit_echo_chamber_bbs(self) -> None:
+        """Hang up Echo Chamber and return to desktop/BBS."""
+        should_return_to_os = self.echo_chamber_return_to_os
+        self.echo_chamber_bbs = None
+        self.echo_chamber_return_to_os = False
         self._reset_to_beginning()
         if should_return_to_os and self.os_mode:
             self.os_mode_active = True
@@ -1991,43 +2042,127 @@ class GLYPHIS_IOBBS:
             # Calculate bottom of image
             image_bottom = self.scroll_y + img_height
             
-            # Check if we're in pause state
-            if self.scroll_pause_frames > 0:
-                # Pause - don't scroll, just draw
+            # Check if we're in final paused state
+            if self.scroll_final_paused:
+                # Draw the scroll image at the final paused position
                 self.bbs_surface.blit(self.scroll_image, (0, self.scroll_y))
-                self.scroll_pause_frames -= 1
-                # After pause completes, end animation - go to intro (press any key)
-                if self.scroll_pause_frames == 0:
-                    self.state = "intro"
-                    self.scroll_y = None
-                    self.scroll_pause_frames = 0
-                    self.scroll_pause_triggered = False
             else:
-                # Draw the scroll image at the current scroll position
-                # Image scrolls upward (classic BBS style - content appears from bottom)
-                self.bbs_surface.blit(self.scroll_image, (0, self.scroll_y))
-                
-                # Check if bottom of image has reached or just passed the pause line
-                # Only trigger once, when the bottom reaches 868 or below
-                if not self.scroll_pause_triggered and image_bottom <= self.scroll_pause_y:
-                    # Start pause - set to 20 frames
-                    self.scroll_pause_frames = 20
-                    self.scroll_pause_triggered = True
+                # Check if we're in temporary pause state
+                if self.scroll_pause_frames > 0:
+                    # Temporary pause - don't scroll, just draw
+                    self.bbs_surface.blit(self.scroll_image, (0, self.scroll_y))
+                    self.scroll_pause_frames -= 1
+                    # After pause completes, enter final paused state
+                    if self.scroll_pause_frames == 0:
+                        self.scroll_final_paused = True
                 else:
-                    # Update scroll position (scroll upward) only if not paused
-                    if not self.scroll_pause_triggered:
-                        self.scroll_y -= self.scroll_speed
+                    # Draw the scroll image at the current scroll position
+                    # Image scrolls upward (classic BBS style - content appears from bottom)
+                    self.bbs_surface.blit(self.scroll_image, (0, self.scroll_y))
                     
-                    # Check if scroll is complete (image has scrolled completely off the top)
-                    # This is a fallback in case pause doesn't trigger
-                    if self.scroll_y + img_height <= 0:
-                        self.state = "intro"
-                        self.scroll_y = None
-                        self.scroll_pause_frames = 0
-                        self.scroll_pause_triggered = False
+                    # Check if bottom of image has reached or just passed the pause line
+                    # Only trigger once, when the bottom reaches pause_y or below
+                    if not self.scroll_pause_triggered and image_bottom <= self.scroll_pause_y:
+                        # Start temporary pause - set to 20 frames
+                        self.scroll_pause_frames = 20
+                        self.scroll_pause_triggered = True
+                    else:
+                        # Update scroll position (scroll upward) only if not paused
+                        if not self.scroll_pause_triggered:
+                            self.scroll_y -= self.scroll_speed
+                        
+                        # Check if scroll is complete (image has scrolled completely off the top)
+                        # This is a fallback in case pause doesn't trigger
+                        if self.scroll_y + img_height <= 0:
+                            self.scroll_final_paused = True
+                            self.scroll_pause_frames = 0
+                            self.scroll_pause_triggered = False
         else:
-            # If no image, skip directly to intro (press any key screen)
-            self.state = "intro"
+            # If no image, skip directly to login
+            self._advance_from_scroll_to_login()
+    
+    def _draw_intro_text_overlay(self):
+        """Draw the intro text overlay on top of the paused scroll image"""
+        # "WELCOME TO OUR BBS" text
+        welcome_text = "WELCOME TO OUR BBS"
+        welcome_width = self.font_medium.size(welcome_text)[0]
+        welcome_x = (self.bbs_width - welcome_width) // 2
+        welcome_y = int(200 * self.scale)
+        self.draw_text(welcome_text, self.font_medium, CYAN, welcome_x, welcome_y)
+        
+        # Subtitle - next line under welcome
+        subtitle_y = welcome_y + int(35 * self.scale)
+        subtitle_text = "ROOT ACCESS FOR THE FORGOTTEN"
+        subtitle_width = self.font_small.size(subtitle_text)[0]
+        subtitle_x = (self.bbs_width - subtitle_width) // 2
+        self.draw_text(subtitle_text, self.font_small, DARK_CYAN, subtitle_x, subtitle_y)
+        
+        # System operators list
+        sysop_y = subtitle_y + int(50 * self.scale)
+        sysop_lines = [
+            "sysop: glyphis",
+            "taskmaster: rain",
+            "gamesmaster: jaxkando",
+            "pinky: uncle-am"
+        ]
+        
+        for line in sysop_lines:
+            line_width = self.font_small.size(line)[0]
+            line_x = (self.bbs_width - line_width) // 2
+            self.draw_text(line, self.font_small, DARK_CYAN, line_x, sysop_y)
+            sysop_y += int(25 * self.scale)
+        
+        # Instructions at bottom
+        instruction_y = self.bbs_height - int(50 * self.scale)
+        instruction_text = "Press SPACE to continue..."
+        instruction_width = self.font_small.size(instruction_text)[0]
+        instruction_x = (self.bbs_width - instruction_width) // 2
+        self.draw_text(instruction_text, self.font_small, DARK_CYAN, instruction_x, instruction_y)
+    
+    def _advance_from_scroll_to_login(self):
+        """Advance from scroll state to login/auth (same logic as intro state)"""
+        active_user = self.get_active_user()
+        if active_user and active_user.get("username"):
+            # Check if user has MODEM1ST token - if so, skip OS mode and go to normal BBS flow
+            has_modem1st = self.inventory.has_token(Tokens.MODEM1ST)
+            if has_modem1st:
+                # User has MODEM1ST - go to normal BBS flow (loading screen, then accreditation, PIN, etc.)
+                log_event("MODEM1ST token detected - skipping OS mode, proceeding to normal BBS flow")
+                self.state = "loading"
+            else:
+                # Check for special OS Boot condition: LAPC1_NODE7 + AUDIO_ON
+                has_node7 = self.inventory.has_token(Tokens.LAPC1_NODE7)
+                has_audio_on = self.inventory.has_token(Tokens.AUDIO_ON)
+                
+                if has_node7 and has_audio_on:
+                    # Play OSBoot.mp4 and go directly to OS Mode
+                    if _cv2_available:
+                        video_path = get_data_path("OS", "OSBoot.mp4")
+                        log_event("Playing OS Boot video - Node 7 complete, launching OS Mode")
+                        self._play_ops_intro_video(video_path)
+                    
+                    # Initialize and activate OS Mode directly
+                    self._initialize_os_mode_if_needed()
+                    self.os_mode_active = True
+                    return
+            
+            # Normal path - go to login/auth
+            self.state = "login_username"
+            self.login_input = ""
+            self.login_error = ""
+            self.login_message = ""
+        else:
+            # No user - go to username creation (which leads to pin)
+            self.state = "login_username"
+            self.login_input = ""
+            self.login_error = ""
+            self.login_message = ""
+        
+        # Reset scroll state
+        self.scroll_y = None
+        self.scroll_pause_frames = 0
+        self.scroll_pause_triggered = False
+        self.scroll_final_paused = False
     
     def draw_new_game_prompt(self):
         """Draw the new game prompt modal centered on full screen with no border"""
@@ -2068,22 +2203,64 @@ class GLYPHIS_IOBBS:
         instruction_x = modal_x + (modal_w - instruction_surface.get_width()) // 2
         instruction_y = modal_y + int(150 * self.scale)
         self.screen.blit(instruction_surface, (instruction_x, instruction_y))
+
+    def draw_quit_confirm(self):
+        """Draw the quit confirmation modal centered on full screen with no border"""
+        # Fill screen with solid black rectangle (ensures complete coverage)
+        pygame.draw.rect(self.screen, BLACK, (0, 0, self.screen_width, self.screen_height))
+        
+        # Modal dimensions (scaled)
+        modal_w = int(600 * self.scale)
+        modal_h = int(200 * self.scale)
+        # Center on entire screen (not just BBS window)
+        modal_x = (self.screen_width - modal_w) // 2
+        modal_y = (self.screen_height - modal_h) // 2
+        
+        # Draw modal background (black, no border)
+        modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
+        pygame.draw.rect(self.screen, BLACK, modal_rect)
+        
+        # Title text
+        title_text = "QUIT?"
+        title_surface = self.font_large.render(title_text, True, CYAN)
+        title_x = modal_x + (modal_w - title_surface.get_width()) // 2
+        title_y = modal_y + int(30 * self.scale)
+        self.screen.blit(title_surface, (title_x, title_y))
+        
+        # Selection text (Yes/No)
+        selection_text = "Yes" if self.quit_confirm_selection else "No"
+        GREEN = (0, 255, 0)
+        selection_color = GREEN if self.quit_confirm_selection else RED
+        selection_surface = self.font_medium.render(selection_text, True, selection_color)
+        selection_x = modal_x + (modal_w - selection_surface.get_width()) // 2
+        selection_y = modal_y + int(90 * self.scale)
+        self.screen.blit(selection_surface, (selection_x, selection_y))
+        
+        # Instructions
+        instruction_text = "LEFT/RIGHT to change    ENTER to confirm"
+        instruction_surface = self.font_small.render(instruction_text, True, DARK_CYAN)
+        instruction_x = modal_x + (modal_w - instruction_surface.get_width()) // 2
+        instruction_y = modal_y + int(150 * self.scale)
+        self.screen.blit(instruction_surface, (instruction_x, instruction_y))
     
     def draw_intro_screen(self):
         """Draw the intro screen with ANSI art"""
         self.bbs_surface.fill(BLACK)
         
-        # ANSI art for "GLYPHIS"
+        # ANSI art for "GLYPHIS_IO"
         # Using monospace rendering for proper alignment
         ascii_art = [
-            " _____ _             _     _       _       ",
-            "|  __ \\ |           | |   (_)     (_)      ",
-            "| |  \\/ |_   _ _ __ | |__  _ ___   _  ___ ",
-            "| | __| | | | | '_ \\| '_ \\| / __| | |/ _ \\",
-            "| |_\\ \\ | |_| | |_) | | | | \\__ \\ | | (_) |",
-            " \\____/_|\\__, | .__/|_| |_|_|___/ |_|\\___/",
-            "          __/ | |                          ",
-            "         |___/|_|                          "
+            " █████████  █████       █████ █████ ███████████  █████   █████ █████  █████████            █████    ███████   ",
+            " ███▒▒▒▒▒███▒▒███       ▒▒███ ▒▒███ ▒▒███▒▒▒▒▒███▒▒███   ▒▒███ ▒▒███  ███▒▒▒▒▒███          ▒▒███   ███▒▒▒▒▒███ ",
+            "███     ▒▒▒  ▒███        ▒▒███ ███   ▒███    ▒███ ▒███    ▒███  ▒███ ▒███    ▒▒▒            ▒███  ███     ▒▒███",
+            "▒███          ▒███         ▒▒█████    ▒██████████  ▒███████████  ▒███ ▒▒█████████            ▒███ ▒███      ▒███",
+            "▒███    █████ ▒███          ▒▒███     ▒███▒▒▒▒▒▒   ▒███▒▒▒▒▒███  ▒███  ▒▒▒▒▒▒▒▒███           ▒███ ▒███      ▒███",
+            "▒▒███  ▒▒███  ▒███      █    ▒███     ▒███         ▒███    ▒███  ▒███  ███    ▒███           ▒███ ▒▒███     ███ ",
+            " ▒▒█████████  ███████████    █████    █████        █████   █████ █████▒▒█████████  █████████ █████ ▒▒▒███████▒  ",
+            "  ▒▒▒▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒▒▒    ▒▒▒▒▒    ▒▒▒▒▒        ▒▒▒▒▒   ▒▒▒▒▒ ▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒ ▒▒▒▒▒    ▒▒▒▒▒▒▒    ",
+            "                                                                                                                ",
+            "                                                                                                                ",
+            "                                                                                                                "
         ]
         
         # Use a monospace font for ASCII art to ensure proper alignment
@@ -2210,6 +2387,7 @@ class GLYPHIS_IOBBS:
                 self.scroll_y = None  # Will be set to start below screen
                 self.scroll_pause_frames = 0
                 self.scroll_pause_triggered = False
+                self.scroll_final_paused = False
     
     def _draw_background_grid(self):
         stripe_step = max(10, int(24 * self.scale))
@@ -3372,6 +3550,14 @@ class GLYPHIS_IOBBS:
         self._draw_footer_status()
 
     def _on_email_marked_read(self, email):
+        # Grant JAX2 when reading Jaxkando's cracking offer email
+        # This happens when player has JAX (read the post) but not JAX2 yet
+        sender = getattr(email, "sender", None)
+        if sender == "jaxkando@ciphernet.net":
+            if (self.inventory.has_token(Tokens.JAX) and 
+                not self.inventory.has_token(Tokens.JAX2)):
+                self.grant_token(Tokens.JAX2, reason="read Jaxkando's cracking offer - challenge unlocked!")
+        
         email_id = getattr(email, "email_id", None)
         if not email_id:
             return
@@ -3408,11 +3594,18 @@ class GLYPHIS_IOBBS:
         has_modem1st = self.inventory.has_token(Tokens.MODEM1ST)
         hide_cracker_ide = has_node7 and has_modem1st
         
+        # Hide ASTRO MINER challenge if already completed
+        hide_astrominer = self.inventory.has_token(Tokens.ASTROMINER)
+
         for task in self.urgent_ops_task_definitions:
             # Skip CRACKER IDE task if both tokens are present
             if hide_cracker_ide and task.get("id") == "ops_lapc1_driver":
                 continue
             
+            # Skip ASTRO MINER task if already cracked
+            if hide_astrominer and task.get("id") == "ops_astrominer_crack":
+                continue
+
             token = task.get("token_required")
             if token and not self.inventory.has_token(token):
                 continue
@@ -3551,6 +3744,11 @@ class GLYPHIS_IOBBS:
                         cap.release()
                         pygame.quit()
                         sys.exit()
+                    elif event.type == pygame.KEYDOWN:
+                        if event.key in (pygame.K_ESCAPE, pygame.K_F10):
+                            log_event(f"Intro video skipped by user (key: {pygame.key.name(event.key)})")
+                            cap.release()
+                            return
 
                 elapsed = time.time() - last_time
                 if elapsed < frame_delay:
@@ -3625,6 +3823,66 @@ class GLYPHIS_IOBBS:
             return
 
         logger.debug(f"Setting state to urgent_ops_session, active_ops_session={self.active_ops_session}")
+        self.state = "urgent_ops_session"
+
+    def _start_astrominer_challenge(self):
+        """Launch the ASTRO MINER cracking challenge."""
+        if self.active_ops_session:
+            return
+
+        try:
+            from Urgent_Ops.CRACKER_IDE_AstroMiner_Challenge import (
+                CRACKER_IDE_AstroMiner_Challenge,
+            )
+        except Exception as exc:
+            log_event(f"Failed to import ASTRO MINER challenge: {exc}")
+            self.show_main_menu_message("Unable to load ASTRO MINER CRACKER module.")
+            return
+
+        fonts = {
+            "large": self.font_large,
+            "medium": self.font_medium,
+            "small": self.font_small,
+            "tiny": self.font_tiny,
+        }
+        player = self.player_email if self.player_email not in (None, "", "unknown") else "operative"
+
+        try:
+            def has_token(token):
+                return self.inventory.has_token(token)
+            
+            def remove_token(token):
+                if self.inventory.remove_token(token):
+                    log_event(f"Removed token {token} due to ASTRO MINER CRACKER reset")
+                    self.save_user_state()
+            
+            self.active_ops_session = CRACKER_IDE_AstroMiner_Challenge(
+                self.bbs_surface,
+                fonts,
+                self.scale,
+                player,
+                token_checker=has_token,
+                token_remover=remove_token,
+            )
+        except Exception as exc:
+            self.active_ops_session = None
+            log_event(f"Error launching ASTRO MINER challenge: {exc}")
+            self.show_main_menu_message("ASTRO MINER CRACKER initialisation failed.")
+            return
+
+        if _cv2_available:
+            video_path = get_data_path("Videos", "IDE-START.mp4")
+            logger.debug(f"Playing intro video from: {video_path}")
+            self._play_ops_intro_video(video_path)
+        else:
+            logger.debug("cv2 not available, skipping intro video")
+
+        if not self.active_ops_session:
+            logger.error("active_ops_session is None after video playback!")
+            self.state = "tasks"
+            return
+
+        logger.debug(f"Setting state to urgent_ops_session for ASTRO MINER, active_ops_session={self.active_ops_session}")
         self.state = "urgent_ops_session"
 
     def _initialize_os_mode_if_needed(self):
@@ -3735,7 +3993,8 @@ class GLYPHIS_IOBBS:
                                       get_recording_state, set_recording_state,
                                       get_notes, save_notes, get_user_credentials,
                                       get_chess_stats, save_chess_stats, grant_token_callback,
-                                      is_audio_streaming, self._get_radio_music_state)
+                                      is_audio_streaming, self._get_radio_music_state,
+                                      self._stop_pirate_radio_audio)
                 logger.debug("GHOST USER: OS Mode initialized successfully")
                 return True
             except Exception as e:
@@ -4243,17 +4502,30 @@ class GLYPHIS_IOBBS:
                         self.sent.append(email)
                         log_event(f"Email sent to {self.compose_to} | Subject: '{email.subject}'")
                         
-                        # Check for help-related keywords (for Jaxkando volunteering)
+                        # Check for affirmative replies to Jaxkando's cracking offer (JAX token present but not JAX1)
                         if self.compose_to == "jaxkando@ciphernet.net":
                             email_text = (email.subject + " " + email.body).lower()
-                            help_keywords = ["i want to help", "i'd like to help", "i would like to help", 
-                                            "help", "crack games", "crack games for you", "help with games",
-                                            "help cracking", "want to help", "like to help", "volunteer"]
                             
-                            if any(keyword in email_text for keyword in help_keywords):
-                                # Grant JAX1 token if not already granted
-                                if not self.inventory.has_token(Tokens.JAX1):
-                                    self.grant_token(Tokens.JAX1, reason="volunteered to help Jaxkando crack games")
+                            # If player has JAX token (read the post) but not JAX1, check for affirmative replies
+                            if self.inventory.has_token(Tokens.JAX) and not self.inventory.has_token(Tokens.JAX1):
+                                affirmative_keywords = ["yes", "yeah", "yep", "yup", "i'll do it", "i will do it", 
+                                                       "count me in", "i'm in", "let's do it", "sure", "ok", "okay",
+                                                       "i want to help", "i'd like to help", "i would like to help",
+                                                       "help", "crack games", "help with games", "help cracking"]
+                                
+                                if any(keyword in email_text for keyword in affirmative_keywords):
+                                    # Grant JAX1 token
+                                    self.grant_token(Tokens.JAX1, reason="agreed to help Jaxkando crack games")
+                            # Legacy check for old help keywords (backwards compatibility)
+                            else:
+                                help_keywords = ["i want to help", "i'd like to help", "i would like to help", 
+                                                "help", "crack games", "crack games for you", "help with games",
+                                                "help cracking", "want to help", "like to help", "volunteer"]
+                                
+                                if any(keyword in email_text for keyword in help_keywords):
+                                    # Grant JAX1 token if not already granted
+                                    if not self.inventory.has_token(Tokens.JAX1):
+                                        self.grant_token(Tokens.JAX1, reason="volunteered to help Jaxkando crack games")
                         
                         # Check for radio relay agreement (for uncle-am)
                         if self.compose_to == "uncle-am@ciphernet.net":
@@ -4291,8 +4563,11 @@ class GLYPHIS_IOBBS:
                             f"RE: {email.subject}",
                             response_body
                         )
-                        # Add with delay (30-120 seconds)
-                        delay = random.randint(30, 120)
+                        # Add with delay - Jaxkando replies faster (excited gamer energy!)
+                        if self.compose_to == "jaxkando@ciphernet.net":
+                            delay = random.randint(15, 60)  # Jax is quick!
+                        else:
+                            delay = random.randint(30, 120)
                         self.delayed_emails.append({
                             "email": response,
                             "delivery_time": time.time() + delay
@@ -4532,6 +4807,11 @@ class GLYPHIS_IOBBS:
                         self.post_scroll_y = 0  # Reset scroll when opening post
                         # Mark as read when viewing
                         self.posts[self.current_post]["read"] = True
+                        # Grant JAX token when reading "Targets Acquired" post
+                        post_id = self.posts[self.current_post].get("id")
+                        if post_id == "mtf_games_cracking_jaxkando":
+                            if not self.inventory.has_token(Tokens.JAX):
+                                self.grant_token(Tokens.JAX, reason="read the 'Targets Acquired' post from The Wall")
             
         elif event.key == pygame.K_LEFT:
             # Navigate to previous team member
@@ -4649,12 +4929,12 @@ class GLYPHIS_IOBBS:
                     pass  # If we can't reload, keep the existing scaled image
         
         elif event.key == pygame.K_SPACE:
-            if self.state == "bbs_scroll":
-                # Spacebar skips scroll animation and moves to next page (intro screen)
-                self.state = "intro"
-                self.scroll_y = None
-                self.scroll_pause_frames = 0
-                self.scroll_pause_triggered = False
+            if self.state == "bbs_scroll" and self.scroll_final_paused:
+                # Spacebar advances from paused scroll state to login/auth
+                self._advance_from_scroll_to_login()
+            elif self.state == "bbs_scroll":
+                # Spacebar skips scroll animation and goes directly to login/auth
+                self._advance_from_scroll_to_login()
             elif self.state == "front_post":
                 # Spacebar takes us to main menu from Terminal Feed
                 self.state = "main_menu"
@@ -4885,121 +5165,30 @@ class GLYPHIS_IOBBS:
                     if event.type == pygame.QUIT:
                         running = False
                     continue
-                
-                # Check for hotspot clicks
-                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    mouse_x, mouse_y = pygame.mouse.get_pos()
-                    
-                    # Reset hotspot (scaled from baseline coordinates)
-                    reset_x, reset_y, reset_w, reset_h = RESET_HOTSPOT
-                    reset_hotspot_rect = pygame.Rect(
-                        int(reset_x * self.scale),
-                        int(reset_y * self.scale),
-                        int(reset_w * self.scale),
-                        int(reset_h * self.scale)
-                    )
-                    if reset_hotspot_rect.collidepoint(mouse_x, mouse_y):
-                        self._reset_to_beginning()
+
+                # Handle quit confirm prompt
+                if self.state == "quit_confirm" and event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_LEFT or event.key == pygame.K_RIGHT:
+                        # Toggle between Yes and No
+                        self.quit_confirm_selection = not self.quit_confirm_selection
                         continue
-                    
-                    # Overlay toggle hotspot (scaled from baseline coordinates)
-                    overlay_x, overlay_y, overlay_w, overlay_h = OVERLAY_HOTSPOT
-                    overlay_hotspot_rect = pygame.Rect(
-                        int(overlay_x * self.scale),
-                        int(overlay_y * self.scale),
-                        int(overlay_w * self.scale),
-                        int(overlay_h * self.scale)
-                    )
-                    if overlay_hotspot_rect.collidepoint(mouse_x, mouse_y):
-                        # If OS mode is active, toggle OS mode overlay instead
-                        if self.os_mode_active and self.os_mode:
-                            self.os_mode.toggle_overlay()
+                    elif event.key == pygame.K_RETURN:
+                        if self.quit_confirm_selection:
+                            # Yes - Quit the application
+                            log_event("Quit confirmed - exiting application")
+                            running = False
+                            break
                         else:
-                            self.bbs_overlay_active = not self.bbs_overlay_active
-                        continue
-                
-                # F12 quits the program
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_F12:
-                    running = False
-                    break
-
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_F4:
-                    self.documentation_viewer.toggle_visibility()
-                    continue
-
-                if self.documentation_viewer.visible and self.documentation_viewer.handle_event(event):
-                    continue
-
-                # Handle Pirate Radio app events when active
-                if self.pirate_radio_app and self.pirate_radio_app.active:
-                    if self.pirate_radio_app.handle_event(event):
+                            # No - Return to previous state
+                            log_event("Quit cancelled - returning to game")
+                            # We'll try to guess it or just set it to main_menu.
+                            # If we were in OS Mode, return there instead
+                            if self.os_mode_active:
+                                self.state = "os_mode"
+                            else:
+                                self.state = "main_menu"
                         continue
 
-                if self.delete_confirmation_active:
-                    if event.type == pygame.KEYDOWN:
-                        if event.key == pygame.K_y:
-                            self.confirm_delete_user()
-                        elif event.key in (pygame.K_n, pygame.K_ESCAPE):
-                            self.cancel_delete_user()
-                    continue
-
-                if self.logout_modal_active:
-                    if event.type == pygame.KEYDOWN:
-                        if event.key == pygame.K_y:
-                            self.confirm_logout()
-                        elif event.key in (pygame.K_n, pygame.K_ESCAPE):
-                            self.cancel_logout_modal()
-                    continue
-
-                if self.delete_email_modal_active:
-                    if event.type == pygame.KEYDOWN:
-                        if event.key == pygame.K_y:
-                            self.confirm_delete_email()
-                        elif event.key in (pygame.K_n, pygame.K_ESCAPE):
-                            self.cancel_delete_email_modal()
-                    continue
-
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
-                    self.prompt_delete_user()
-                    continue
-                
-                # F10: Toggle OS Mode
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_F10:
-                    self._toggle_os_mode()
-                    continue
-
-                # Handle OS Mode events
-                if self.os_mode_active and self.os_mode:
-                    # ESC to exit OS mode
-                    if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                        self.os_mode_active = False
-                        # Immediately update video state when exiting OS Mode
-                        # This ensures the OS video is stopped and the regular video starts right away
-                        self._update_audio_power_state()
-                        pygame.mouse.set_visible(True)
-                        continue
-                    if self.os_mode.handle_event(event):
-                        continue
-
-                if self.state == "game_session" and self.active_game_session:
-                    result = self.active_game_session.handle_event(event)
-                    if result == "exit" or self.active_game_session.should_exit():
-                        self.end_game_session()
-                    continue
-
-                if self.state == "urgent_ops_session" and self.active_ops_session:
-                    result = self.active_ops_session.handle_event(event)
-                    if result == "EXIT" or self.active_ops_session.should_exit():
-                        self._end_ops_session()
-                    continue
-
-                # Outside BBS (Paper Crane) input handling takes precedence
-                if self.paper_crane_bbs:
-                    if self.paper_crane_bbs.handle_event(event):
-                        continue
-                    # Swallow other inputs while Paper Crane BBS is active
-                    continue
-                
                 # Handle new game prompt
                 if self.state == "new_game_prompt" and event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_LEFT or event.key == pygame.K_RIGHT:
@@ -5041,6 +5230,128 @@ class GLYPHIS_IOBBS:
                                 # Normal path - proceed to loading screen
                                 self.state = "loading"
                         continue
+
+                if self.delete_confirmation_active:
+                    if event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_y:
+                            self.confirm_delete_user()
+                        elif event.key in (pygame.K_n, pygame.K_ESCAPE):
+                            self.cancel_delete_user()
+                    continue
+
+                if self.logout_modal_active:
+                    if event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_y:
+                            self.confirm_logout()
+                        elif event.key in (pygame.K_n, pygame.K_ESCAPE):
+                            self.cancel_logout_modal()
+                    continue
+
+                if self.delete_email_modal_active:
+                    if event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_y:
+                            self.confirm_delete_email()
+                        elif event.key in (pygame.K_n, pygame.K_ESCAPE):
+                            self.cancel_delete_email_modal()
+                    continue
+
+                # Check for hotspot clicks
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    mouse_x, mouse_y = pygame.mouse.get_pos()
+                    
+                    # Reset hotspot (scaled from baseline coordinates)
+                    reset_x, reset_y, reset_w, reset_h = RESET_HOTSPOT
+                    reset_hotspot_rect = pygame.Rect(
+                        int(reset_x * self.scale),
+                        int(reset_y * self.scale),
+                        int(reset_w * self.scale),
+                        int(reset_h * self.scale)
+                    )
+                    if reset_hotspot_rect.collidepoint(mouse_x, mouse_y):
+                        self.state = "quit_confirm"
+                        self.quit_confirm_selection = False
+                        continue
+                    
+                    # Overlay toggle hotspot (scaled from baseline coordinates)
+                    overlay_x, overlay_y, overlay_w, overlay_h = OVERLAY_HOTSPOT
+                    overlay_hotspot_rect = pygame.Rect(
+                        int(overlay_x * self.scale),
+                        int(overlay_y * self.scale),
+                        int(overlay_w * self.scale),
+                        int(overlay_h * self.scale)
+                    )
+                    if overlay_hotspot_rect.collidepoint(mouse_x, mouse_y):
+                        # If OS mode is active, toggle OS mode overlay instead
+                        if self.os_mode_active and self.os_mode:
+                            self.os_mode.toggle_overlay()
+                        else:
+                            self.bbs_overlay_active = not self.bbs_overlay_active
+                        continue
+                
+                # F12 quits the program
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_F12:
+                    running = False
+                    break
+
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_F4:
+                    self.documentation_viewer.toggle_visibility()
+                    continue
+
+                if self.documentation_viewer.visible and self.documentation_viewer.handle_event(event):
+                    continue
+
+                # Handle Pirate Radio app events when active
+                if self.pirate_radio_app and self.pirate_radio_app.active:
+                    if self.pirate_radio_app.handle_event(event):
+                        continue
+
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
+                    self.prompt_delete_user()
+                    continue
+                
+                # F10: Toggle OS Mode
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_F10:
+                    self._toggle_os_mode()
+                    continue
+
+                # Handle OS Mode events
+                if self.os_mode_active and self.os_mode:
+                    # ESC to exit OS mode
+                    if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                        self.os_mode_active = False
+                        # Immediately update video state when exiting OS Mode
+                        # This ensures the OS video is stopped and the regular video starts right away
+                        self._update_audio_power_state()
+                        pygame.mouse.set_visible(True)
+                        continue
+                    if self.os_mode.handle_event(event):
+                        continue
+
+                if self.state == "game_session" and self.active_game_session:
+                    result = self.active_game_session.handle_event(event)
+                    if result == "exit" or self.active_game_session.should_exit():
+                        self.end_game_session()
+                    continue
+
+                if self.state == "urgent_ops_session" and self.active_ops_session:
+                    result = self.active_ops_session.handle_event(event)
+                    if result == "EXIT" or self.active_ops_session.should_exit():
+                        self._end_ops_session()
+                    continue
+
+                # Handle Outside BBS (Paper Crane) input handling takes precedence
+                if self.paper_crane_bbs:
+                    if self.paper_crane_bbs.handle_event(event):
+                        continue
+                    # Swallow other inputs while Paper Crane BBS is active
+                    continue
+
+                # Handle Outside BBS (Echo Chamber) input handling takes precedence
+                if self.echo_chamber_bbs:
+                    if self.echo_chamber_bbs.handle_event(event):
+                        continue
+                    # Swallow other inputs while Echo Chamber BBS is active
+                    continue
                 
                 # Handle intro screen - advance on any keypress to authentication
                 if self.state == "intro" and event.type == pygame.KEYDOWN:
@@ -5142,6 +5453,14 @@ class GLYPHIS_IOBBS:
                         self.os_mode.modem_modal_should_exit_os = False
                         self.os_mode.modem_modal_external_bbs = None
                         self._launch_paper_crane_bbs(return_to_os=was_os_mode)
+                    elif external_bbs == "echo_chamber":
+                        was_os_mode = self.os_mode_active
+                        self.os_mode_active = False
+                        self._update_audio_power_state()
+                        self.os_mode.modem_modal_should_reset_bbs = False
+                        self.os_mode.modem_modal_should_exit_os = False
+                        self.os_mode.modem_modal_external_bbs = None
+                        self._launch_echo_chamber_bbs(return_to_os=was_os_mode)
                     elif hasattr(self.os_mode, 'modem_modal_should_reset_bbs') and self.os_mode.modem_modal_should_reset_bbs:
                         self._reset_to_beginning()
                         self.os_mode_active = False
@@ -5153,6 +5472,9 @@ class GLYPHIS_IOBBS:
             
             if self.paper_crane_bbs and not self.game_freeze_active:
                 self.paper_crane_bbs.update(dt)
+            
+            if self.echo_chamber_bbs and not self.game_freeze_active:
+                self.echo_chamber_bbs.update(dt)
             
             # Update Pirate Radio app (even when minimized, to keep radio minutes ticking)
             # This ensures radio time tracking continues while in BBS even if UI is closed
@@ -5167,17 +5489,17 @@ class GLYPHIS_IOBBS:
             if not self.game_freeze_active:
                 self.bbs_surface.fill(BLACK)
                 
-                # For new_game_prompt: Fill entire screen with solid black rectangle FIRST (before any other rendering)
-                if self.state == "new_game_prompt":
+                # For new_game_prompt/quit_confirm: Fill entire screen with solid black rectangle FIRST (before any other rendering)
+                if self.state in ("new_game_prompt", "quit_confirm"):
                     pygame.draw.rect(self.screen, BLACK, (0, 0, self.screen_width, self.screen_height))
                 
                 # Draw current state (BBS content)
                 if self.paper_crane_bbs:
                     self.paper_crane_bbs.draw(self.bbs_surface)
+                elif self.echo_chamber_bbs:
+                    self.echo_chamber_bbs.draw(self.bbs_surface)
                 elif self.state == "bbs_scroll":
                     self.draw_bbs_scroll()
-                elif self.state == "new_game_prompt":
-                    self.draw_new_game_prompt()
                 elif self.state == "intro":
                     self.draw_intro_screen()
                     # No auto-advance - wait for keypress only
@@ -5252,9 +5574,9 @@ class GLYPHIS_IOBBS:
                     self.draw_logout_modal()
                 
                 # Draw BBS window first (before desktop background)
-                if self.state == "new_game_prompt":
-                    # New Game Prompt: Skip all background/video rendering - already filled with black
-                    # The draw_new_game_prompt() function handles all rendering
+                if self.state in ("new_game_prompt", "quit_confirm"):
+                    # New Game Prompt / Quit Confirm: Skip all background/video rendering - already filled with black
+                    # The drawing functions handle all rendering
                     pass
                 elif self.state == "os_boot_playing":
                     # OSBoot video playing - render desktop video and OSBoot video (no BBS window)
@@ -5328,7 +5650,7 @@ class GLYPHIS_IOBBS:
                 # Draw OS Mode desktop environment (after BBS window and OSBoot video)
                 # BUT: Skip OS Mode drawing if a game session is active that doesn't use get_game_frame()
                 # (SIMULACRA_CORE draws to bbs_surface, so we need to blit bbs_surface AFTER OS Mode)
-                should_draw_os_mode = self.os_mode_active and self.os_mode
+                should_draw_os_mode = self.os_mode_active and self.os_mode and self.state not in ("new_game_prompt", "quit_confirm")
                 if should_draw_os_mode:
                     # Check if game session uses get_game_frame (AstroMiner) - if so, OS Mode should draw
                     # Otherwise (SIMULACRA_CORE), we'll draw OS Mode but blit BBS surface after
@@ -5498,7 +5820,11 @@ class GLYPHIS_IOBBS:
                     self.pirate_radio_app.draw()
 
                 # Draw OS Mode cursor (before scanlines) if in OS mode and mouse is in desktop
-                if self.os_mode_active and self.os_mode:
+                # But always show system cursor when an outside BBS is active
+                if self.paper_crane_bbs or self.echo_chamber_bbs:
+                    # Outside BBS is active - always show system cursor
+                    pygame.mouse.set_visible(True)
+                elif self.os_mode_active and self.os_mode:
                     mouse_x, mouse_y = pygame.mouse.get_pos()
                     if self.os_mode.is_mouse_in_desktop(mouse_x, mouse_y):
                         # Draw OS cursor as sprite (under scanlines)
@@ -5510,9 +5836,9 @@ class GLYPHIS_IOBBS:
                         pygame.mouse.set_visible(True)
                 
                 # Draw scanline overlay (BBS scanline when not in OS mode, desktop scanline when in OS mode)
-                # Skip scanlines for new_game_prompt state
-                if self.state == "new_game_prompt":
-                    pass  # No scanlines on new game prompt
+                # Skip scanlines for new_game_prompt/quit_confirm state
+                if self.state in ("new_game_prompt", "quit_confirm"):
+                    pass  # No scanlines on prompts
                 elif self.os_mode_active and self.os_mode:
                     # Draw desktop scanline in OS mode (over cursor)
                     self.os_mode.draw_scanline()
@@ -5550,8 +5876,8 @@ class GLYPHIS_IOBBS:
                     # Position at desktop coordinates (not BBS coordinates)
                     self.screen.blit(scanline_scaled, (desktop_x, desktop_y))
 
-                # Draw mouse coordinates (skip during new_game_prompt)
-                if self.state != "new_game_prompt":
+                # Draw mouse coordinates (skip during new_game_prompt/quit_confirm)
+                if self.state not in ("new_game_prompt", "quit_confirm"):
                     mouse_x, mouse_y = pygame.mouse.get_pos()
                     mouse_text = f"Mouse: {mouse_x}, {mouse_y}"
                     mouse_surface = self.font_tiny.render(mouse_text, True, CYAN)
@@ -5577,7 +5903,33 @@ class GLYPHIS_IOBBS:
                 self.documentation_viewer.apply_cursor()
                 
                 # Update cursor based on mouse position (only for areas outside OS desktop)
-                if self.os_mode_active and self.os_mode:
+                if self.paper_crane_bbs or self.echo_chamber_bbs:
+                    # Outside BBS is active - show cursor everywhere, use hand cursor outside BBS window
+                    mouse_x, mouse_y = pygame.mouse.get_pos()
+                    if not self._is_mouse_in_bbs_window():
+                        # Mouse is outside BBS window - use hand cursor (same as OS mode outside desktop)
+                        is_night = _is_tokyo_nighttime()
+                        mouse_buttons = pygame.mouse.get_pressed()
+                        
+                        if is_night:
+                            if mouse_buttons[0] and self.mouse_hand_cursor_click_night:
+                                cursor_to_use = self.mouse_hand_cursor_click_night
+                            else:
+                                cursor_to_use = self.mouse_hand_cursor_night
+                        else:
+                            if mouse_buttons[0] and self.mouse_hand_cursor_click:
+                                cursor_to_use = self.mouse_hand_cursor_click
+                            else:
+                                cursor_to_use = self.mouse_hand_cursor
+                        
+                        if cursor_to_use:
+                            try:
+                                pygame.mouse.set_cursor(cursor_to_use)
+                            except Exception:
+                                pass
+                    # If mouse is inside BBS window, cursor visibility is already set to True above
+                    # and we don't need to hide it (unlike normal BBS mode)
+                elif self.os_mode_active and self.os_mode:
                     # OS mode is active - cursor drawing is handled above (before scanlines)
                     # Only update system cursor when mouse is outside desktop
                     mouse_x, mouse_y = pygame.mouse.get_pos()
@@ -5603,7 +5955,7 @@ class GLYPHIS_IOBBS:
                             except Exception:
                                 pass
                 else:
-                    # OS mode not active - use normal cursor logic
+                    # OS mode not active and no outside BBS - use normal cursor logic
                     self._update_cursor()
                 
                 # Draw black rectangle overlay if active (unified desktop-sized overlay, same as OS mode)
@@ -5640,6 +5992,12 @@ class GLYPHIS_IOBBS:
                 if self._email_check_counter >= 60:
                     self.check_email_database()
                     self._email_check_counter = 0
+
+            # Draw full-screen prompts last over everything
+            if self.state == "new_game_prompt":
+                self.draw_new_game_prompt()
+            elif self.state == "quit_confirm":
+                self.draw_quit_confirm()
             
             # Update display
             # Draw settings modal on top of everything (letterboxing already drawn above)
@@ -5885,10 +6243,6 @@ class GLYPHIS_IOBBS:
         else:
             self.os_mode_active = bool(force_on)
 
-        if self.os_mode_active:
-            # Leaving the BBS surface; shut down Pirate Radio playback
-            self._stop_pirate_radio_audio(close_app=True)
-
         # Immediately update video state when OS Mode is toggled
         # This ensures the old video is stopped and the new OS-specific video starts right away
         self._update_audio_power_state()
@@ -6000,7 +6354,8 @@ class GLYPHIS_IOBBS:
                                           get_recording_state, set_recording_state,
                                           get_notes, save_notes, get_user_credentials,
                                           get_chess_stats, save_chess_stats, grant_token_callback,
-                                          is_audio_streaming, self._get_radio_music_state)
+                                          is_audio_streaming, self._get_radio_music_state,
+                                          self._stop_pirate_radio_audio)
                 except Exception as e:
                     logger.warning(f"Failed to initialize OS Mode: {e}")
                     self.os_mode_active = False

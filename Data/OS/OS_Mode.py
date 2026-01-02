@@ -187,8 +187,9 @@ class OSMode:
     Desktop Environment OS Mode
     Renders a desktop environment with draggable icons.
     """
+    persisted_network_connected = False  # Persist connection state across OS Mode instances
     
-    def __init__(self, screen: pygame.Surface, res_manager: ResolutionManager, reset_bbs_callback=None, bbs_x=None, bbs_y=None, bbs_width=None, has_token_callback=None, get_recording_state_callback=None, set_recording_state_callback=None, get_notes_callback=None, save_notes_callback=None, get_user_credentials_callback=None, get_chess_stats_callback=None, save_chess_stats_callback=None, grant_token_callback=None, is_audio_streaming_callback=None, get_radio_music_callback=None):
+    def __init__(self, screen: pygame.Surface, res_manager: ResolutionManager, reset_bbs_callback=None, bbs_x=None, bbs_y=None, bbs_width=None, has_token_callback=None, get_recording_state_callback=None, set_recording_state_callback=None, get_notes_callback=None, save_notes_callback=None, get_user_credentials_callback=None, get_chess_stats_callback=None, save_chess_stats_callback=None, grant_token_callback=None, is_audio_streaming_callback=None, get_radio_music_callback=None, stop_radio_audio_callback=None):
         """
         Initialize OS Mode.
         """
@@ -210,6 +211,9 @@ class OSMode:
         self.grant_token = grant_token_callback or (lambda token, reason=None: False)
         self.is_audio_streaming = is_audio_streaming_callback or (lambda: False)
         self.get_radio_music = get_radio_music_callback or (lambda: False)
+        self.stop_radio_audio = stop_radio_audio_callback or (lambda close_app=True: None)
+        self.modem_tone_sounds: Dict[str, Optional[pygame.mixer.Sound]] = {}
+        self._load_modem_tone_sounds()
         
         # LAPC-1 Audio Output Stream visualizer state
         self.audio_stream_pixels: List[Dict[str, Any]] = []  # List of pixel rain drops
@@ -386,8 +390,8 @@ class OSMode:
         self.last_click_pos = None
         self.double_click_threshold = 0.5  # seconds
         
-        # Modal state - support multiple modals open at once
-        self.active_modals = set()  # Set of active modal names: {"tape", "modem", etc.}
+        # Modal state - maintain z-ordered list (bottom -> top)
+        self.active_modals: List[str] = []
         self.modal_positions = {}  # Dict mapping modal name to (x, y) position
         self.modal_dragging = None  # Currently dragging modal name, or None
         self.modal_drag_offset = (0, 0)  # Offset from mouse to modal top-left when dragging
@@ -436,6 +440,7 @@ class OSMode:
         self.notes_modal_content_cursor_aim_x: Optional[int] = None
         self.notes_modal_hitboxes = {}  # Cached rects for click handling
         self.notes_modal_message = ""
+        self.notes_modal_view_scroll = 0  # Scroll position for note view mode
         
         # Documentation viewer position (baseline 2560x1440)
         self.docs_viewer_baseline_x = 1547
@@ -471,7 +476,9 @@ class OSMode:
             COLOR_MAGENTA,
             COLOR_TEAL
         ]
-        self.network_connected = False
+        self.network_connected = OSMode.persisted_network_connected
+        self.modem_modal_error_message = ""
+        self.modem_modal_error_timer = 0.0
         
         # Games modal state
         self.games_icon_defs = [
@@ -600,8 +607,9 @@ class OSMode:
                 new_x = self.mouse_pos[0] - self.modal_drag_offset[0]
                 new_y = self.mouse_pos[1] - self.modal_drag_offset[1]
                 
-                # Get modal size
+                # Get modal size (clamped to match actual drawn size)
                 modal_w, modal_h = self._get_modal_size(self.modal_dragging)
+                modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
                 
                 # Constrain to desktop boundaries
                 new_x = max(self.desktop_rect.left, 
@@ -647,11 +655,27 @@ class OSMode:
                 mouse_x, mouse_y = event.pos
                 current_time = time.time()
                 
-                # Check if clicking on a modal title bar for dragging (but exclude close buttons)
-                # Check modals in reverse order (top-most first) to handle close buttons correctly
-                for modal_name in reversed(list(self.active_modals)):
+                # Focus the top-most modal under the click (like a real OS)
+                focused_modal = None
+                for modal_name in reversed(self.active_modals):
                     modal_x, modal_y = self.modal_positions.get(modal_name, (0, 0))
                     modal_w, modal_h = self._get_modal_size(modal_name)
+                    # Apply clamping to match the actual drawn modal size
+                    modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
+                    modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
+                    if modal_rect.collidepoint(mouse_x, mouse_y):
+                        focused_modal = modal_name
+                        break
+                if focused_modal:
+                    self._focus_modal(focused_modal)
+                
+                # Check if clicking on a modal title bar for dragging (but exclude close buttons)
+                # Check modals in reverse order (top-most first) to handle close buttons correctly
+                for modal_name in reversed(self.active_modals.copy()):
+                    modal_x, modal_y = self.modal_positions.get(modal_name, (0, 0))
+                    modal_w, modal_h = self._get_modal_size(modal_name)
+                    # Apply clamping to match the actual drawn modal size
+                    modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
                     if modal_w > 0 and modal_h > 0:
                         title_bar_rect = pygame.Rect(
                             modal_x,
@@ -660,6 +684,8 @@ class OSMode:
                             self.modal_title_bar_height
                         )
                         if title_bar_rect.collidepoint(mouse_x, mouse_y):
+                            # Bring the clicked modal to the front
+                            self._focus_modal(modal_name)
                             # Check if clicking on close button first (exclude from dragging)
                             close_btn_size = int(20 * self.scale)
                             close_btn_x = modal_x + modal_w - close_btn_size - int(5 * self.scale)
@@ -727,13 +753,8 @@ class OSMode:
                                 modal_name = "notes"
                             
                             if modal_name:
-                                # Add modal to active set
-                                self.active_modals.add(modal_name)
-                                # Set initial position if not already set
-                                if modal_name not in self.modal_positions:
-                                    modal_w, modal_h = self._get_modal_size(modal_name)
-                                    modal_x, modal_y = self._get_modal_position(modal_w, modal_h, modal_name)
-                                    self.modal_positions[modal_name] = (modal_x, modal_y)
+                                # Activate modal and bring it to front
+                                self._open_modal(modal_name)
                             
                             # Reset double-click tracking
                             self.last_click_time = 0.0
@@ -758,7 +779,7 @@ class OSMode:
                 # Handle modal button clicks (check modals in reverse order for top-most first)
                 # Only check modals if we didn't click on an icon
                 if not icon_clicked:
-                    for modal_name in reversed(list(self.active_modals)):
+                    for modal_name in reversed(self.active_modals.copy()):
                         if modal_name == "tape":
                             if self._handle_tape_modal_click(mouse_x, mouse_y):
                                 return True
@@ -793,20 +814,33 @@ class OSMode:
                         return True
         
         elif event.type == pygame.KEYDOWN:
-            if "notes" in self.active_modals and self.notes_modal_edit_mode:
-                if self._notes_handle_keydown(event):
-                    return True
-            elif "modem" in self.active_modals and not self.modem_modal_connection_started:
-                if self._modem_handle_keydown(event):
-                    return True
+            # Handle keyboard input for modals in z-order (top-most first)
+            for modal_name in reversed(self.active_modals):
+                if modal_name == "notes":
+                    if self.notes_modal_edit_mode:
+                        if self._notes_handle_keydown(event):
+                            return True
+                    else:
+                        # Handle scrolling in view mode
+                        if self._notes_handle_view_scroll(event):
+                            return True
+                    break  # Notes modal captured focus but didn't handle key
+                elif modal_name == "modem" and not self.modem_modal_connection_started:
+                    if self._modem_handle_keydown(event):
+                        return True
+                    break  # Modem modal captured focus but didn't handle key
 
         elif event.type == pygame.TEXTINPUT:
-            if "notes" in self.active_modals and self.notes_modal_edit_mode:
-                if self._notes_handle_textinput(event.text):
-                    return True
-            elif "modem" in self.active_modals and not self.modem_modal_connection_started:
-                if self._modem_handle_textinput(event.text):
-                    return True
+            # Handle text input for modals in z-order (top-most first)
+            for modal_name in reversed(self.active_modals):
+                if modal_name == "notes" and self.notes_modal_edit_mode:
+                    if self._notes_handle_textinput(event.text):
+                        return True
+                    break  # Notes modal captured focus but didn't handle text
+                elif modal_name == "modem" and not self.modem_modal_connection_started:
+                    if self._modem_handle_textinput(event.text):
+                        return True
+                    break  # Modem modal captured focus but didn't handle text
         
         return False
     
@@ -821,7 +855,7 @@ class OSMode:
         elif modal_name == "modem":
             # Modem dimensions (increased height for larger terminal)
             modal_w = int(340 * self.scale)
-            modal_h = int(600 * self.scale) + self.modal_title_bar_height
+            modal_h = int(680 * self.scale) + self.modal_title_bar_height
         elif modal_name == "notes":
             # Notes modal dimensions
             modal_w = int(700 * self.scale)
@@ -861,6 +895,26 @@ class OSMode:
         modal_y = max(self.desktop_y + margin, min(modal_y, max_y))
         
         return (modal_x, modal_y)
+    
+    def _focus_modal(self, modal_name: str):
+        """Bring a modal to the front of the z-order."""
+        if modal_name not in self.active_modals:
+            return
+        
+        self.active_modals = [name for name in self.active_modals if name != modal_name]
+        self.active_modals.append(modal_name)
+    
+    def _open_modal(self, modal_name: str):
+        """Ensure a modal is active, positioned, and top-most."""
+        if modal_name not in self.active_modals:
+            self.active_modals.append(modal_name)
+        # Always bring to front when (re)opening
+        self._focus_modal(modal_name)
+        
+        if modal_name not in self.modal_positions:
+            modal_w, modal_h = self._get_modal_size(modal_name)
+            modal_x, modal_y = self._get_modal_position(modal_w, modal_h, modal_name)
+            self.modal_positions[modal_name] = (modal_x, modal_y)
     
     def _clamp_modal_to_desktop(self, modal_w: int, modal_h: int) -> Tuple[int, int]:
         """Clamp modal dimensions to fit within desktop boundaries."""
@@ -984,10 +1038,6 @@ class OSMode:
         if not modal_rect.collidepoint(mouse_x, mouse_y):
             return False
         
-        # Don't handle clicks if connection sequence has started
-        if self.modem_modal_connection_started:
-            return False
-            
         gap = int(20 * self.scale)
         terminal_h = int(200 * self.scale)  # Updated to match drawing code (was 120)
         terminal_y = modal_y + self.modal_title_bar_height + gap
@@ -999,7 +1049,29 @@ class OSMode:
         # Calculate centering for dial pad matching _draw_modem_modal
         dial_width = 3 * button_size + 2 * button_spacing
         dial_start_x = modal_x + (modal_w - dial_width) // 2
+
+        # CONNECT and DISCONNECT buttons side by side (matching drawing code)
+        action_btn_y = dial_start_y + 4 * (button_size + button_spacing) + int(5 * self.scale)
+        action_btn_h = int(48 * self.scale)  # Button height (increased by 25%)
+        action_btn_spacing = int(8 * self.scale)
+        action_btn_w = (dial_width - action_btn_spacing) // 2
         
+        call_btn_x = dial_start_x
+        call_btn_y = action_btn_y
+        call_btn_w = action_btn_w
+        call_btn_h = action_btn_h
+        
+        disconnect_btn_x = dial_start_x + action_btn_w + action_btn_spacing
+        disconnect_btn_y = action_btn_y
+        disconnect_btn_rect = pygame.Rect(disconnect_btn_x, disconnect_btn_y, action_btn_w, action_btn_h)
+
+        # When connection is active/connecting, only DISCONNECT remains clickable
+        if self.modem_modal_connection_started:
+            if disconnect_btn_rect.collidepoint(mouse_x, mouse_y):
+                self._disconnect_network()
+                return True
+            return False
+
         # Dial pad buttons: 1-9, *, 0, #
         dial_buttons = [
             ["1", "2", "3"],
@@ -1027,23 +1099,31 @@ class OSMode:
                         )
                         self.modem_modal_cursor_position += 1
                         self.modem_modal_cursor_blink_timer = 0.0  # Reset cursor blink
+                        self._play_modem_key_tone(button_label)
                     return True
         
-        # CALL button
-        call_btn_y = dial_start_y + 4 * (button_size + button_spacing) + int(5 * self.scale)
-        call_btn_w = dial_width
-        call_btn_h = int(40 * self.scale)
-        call_btn_x = dial_start_x
+        # CONNECT button
         call_btn_rect = pygame.Rect(call_btn_x, call_btn_y, call_btn_w, call_btn_h)
         
         if call_btn_rect.collidepoint(mouse_x, mouse_y):
+            if self.network_connected:
+                self._show_modem_error("DISCONNECT BEFORE CONNECTING")
+                return True
             connections = self._get_modem_connections()
             sequence = self.modem_modal_dialed_sequence
             if sequence in connections:
                 self._start_modem_connection(connections[sequence])
+            elif sequence:
+                # Show error message for invalid number (don't clear to allow correction)
+                self._show_modem_error("INVALID NUMBER")
             else:
-                # Show error message or just clear
-                self.modem_modal_dialed_sequence = ""
+                # No number entered
+                self._show_modem_error("ENTER A NUMBER")
+            return True
+
+        # DISCONNECT button (same width under CONNECT)
+        if disconnect_btn_rect.collidepoint(mouse_x, mouse_y):
+            self._disconnect_network()
             return True
                 
         return False
@@ -1084,6 +1164,22 @@ class OSMode:
                 "delays": [2.1, 2.1, 4.0, 4.0, 3.0, 4.0, 3.0],
             }
 
+        if self.has_token("ECHOCHAMBER"):
+            connections["0757421989"] = {
+                "target": "echo_chamber",
+                "number": "0757421989",
+                "messages": [
+                    "Initializing modem connection...",
+                    "Dialing 0757421989...",
+                    "Establishing connection...",
+                    "Handshaking...",
+                    "Packets found!",
+                    "Routing to ECHO CHAMBER...",
+                    "Connection established!"
+                ],
+                "delays": [2.1, 2.1, 4.0, 4.0, 3.0, 4.0, 3.0],
+            }
+
         return connections
 
     def _start_modem_connection(self, config: dict) -> None:
@@ -1102,9 +1198,77 @@ class OSMode:
         grant_token = config.get("grant_token")
         if grant_token and self.grant_token:
             self.grant_token(grant_token, "Modem connection established")
+
+    def _load_modem_tone_sounds(self) -> None:
+        """Preload modem keypad tones (0-9, *, #) if available."""
+        labels = [str(i) for i in range(10)] + ["*", "#"]
+        for label in labels:
+            try:
+                path = get_data_path("Audio", f"{label}.wav")
+                if os.path.exists(path):
+                    self.modem_tone_sounds[label] = pygame.mixer.Sound(path)
+                else:
+                    self.modem_tone_sounds[label] = None
+            except Exception:
+                self.modem_tone_sounds[label] = None
+
+    def _play_modem_key_tone(self, label: str) -> None:
+        """Play the keypad tone for the given label if available."""
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+        except Exception:
+            return
+        sound = self.modem_tone_sounds.get(label)
+        if sound:
+            try:
+                sound.play()
+            except Exception:
+                pass
+
+    def _disconnect_network(self) -> None:
+        """Tear down network link and stop any radio audio."""
+        self.network_connected = False
+        OSMode.persisted_network_connected = False
+        self.modem_modal_dialed_sequence = ""
+        self.modem_modal_cursor_position = 0
+        self.modem_modal_cursor_blink_timer = 0.0
+        self.modem_modal_connection_started = False
+        self.modem_modal_connection_messages = []
+        self.modem_modal_message_index = 0
+        self.modem_modal_message_timer = 0.0
+        self.modem_modal_current_target = None
+        self.modem_modal_external_bbs = None
+        self.modem_packet_sprites.clear()
+        self.modem_wave_phase = 0.0
+        self.modem_packet_spawn_timer = 0.0
+        self._stop_modem_dial_sound()
+
+        # Stop OS-mode Pirate Radio app if running
+        if self.pirate_radio_app:
+            try:
+                self.pirate_radio_app.stop_audio()
+                if self.pirate_radio_app.active:
+                    self.pirate_radio_app.close()
+            except Exception:
+                pass
+
+        # Notify host to halt BBS-level pirate radio audio
+        try:
+            self.stop_radio_audio(close_app=True)
+        except Exception:
+            pass
+
+    def _show_modem_error(self, message: str, duration: float = 3.0) -> None:
+        """Display a transient message in the modem console."""
+        self.modem_modal_error_message = message
+        self.modem_modal_error_timer = duration
     
     def _modem_handle_keydown(self, event: pygame.event.Event) -> bool:
-        """Handle keyboard input for modem modal (arrow keys, backspace)."""
+        """Handle keyboard input for modem modal (arrow keys, backspace, enter).
+        
+        Returns True to consume the event when the modem modal has focus.
+        """
         if self.modem_modal_connection_started:
             return False
         
@@ -1151,11 +1315,37 @@ class OSMode:
                 )
                 self.modem_modal_cursor_blink_timer = 0.0  # Reset cursor blink
             return True
+        elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            # Enter key triggers the CONNECT action
+            if self.network_connected:
+                self._show_modem_error("DISCONNECT BEFORE CONNECTING")
+            else:
+                connections = self._get_modem_connections()
+                sequence = self.modem_modal_dialed_sequence
+                if sequence in connections:
+                    self._start_modem_connection(connections[sequence])
+                elif sequence:
+                    # Show error for invalid number
+                    self._show_modem_error("INVALID NUMBER")
+            return True
+        elif event.key == pygame.K_ESCAPE:
+            # Escape clears the dialed sequence
+            if self.modem_modal_dialed_sequence:
+                self.modem_modal_dialed_sequence = ""
+                self.modem_modal_cursor_position = 0
+                self.modem_modal_cursor_blink_timer = 0.0
+            return True
         
-        return False
+        # Consume other common keys to prevent them from triggering other handlers
+        # while the modem modal has focus
+        return True
     
     def _modem_handle_textinput(self, text: str) -> bool:
-        """Handle text input for modem modal (numbers only)."""
+        """Handle text input for modem modal (numbers only).
+        
+        Returns True to consume the event and prevent it from bubbling up
+        to other handlers, even for invalid characters.
+        """
         if self.modem_modal_connection_started:
             return False
         
@@ -1170,9 +1360,11 @@ class OSMode:
                 )
                 self.modem_modal_cursor_position += 1
                 self.modem_modal_cursor_blink_timer = 0.0  # Reset cursor blink
-            return True
+                self._play_modem_key_tone(text)
         
-        return False
+        # Always return True when modem modal is active to consume the event
+        # and prevent keyboard input from triggering other handlers
+        return True
     
     def _handle_games_modal_click(self, mouse_x: int, mouse_y: int) -> bool:
         """Handle clicks within the games modal."""
@@ -1467,6 +1659,9 @@ class OSMode:
                 else:
                     if self.notes_modal_edit_mode:
                         self._exit_notes_edit_mode(save_changes=False)
+                    # Reset scroll when switching notes
+                    if self.notes_modal_current_tab != index:
+                        self.notes_modal_view_scroll = 0
                     self.notes_modal_current_tab = index
                 return True
 
@@ -1758,6 +1953,12 @@ class OSMode:
         if self.pirate_radio_app and self.pirate_radio_app.active:
             self.pirate_radio_app.update()
 
+        # Decay modem modal error message timer
+        if self.modem_modal_error_message:
+            self.modem_modal_error_timer = max(0.0, self.modem_modal_error_timer - dt)
+            if self.modem_modal_error_timer <= 0:
+                self.modem_modal_error_message = ""
+
         # Update cursor blink timer for notes modal
         if "notes" in self.active_modals and self.notes_modal_edit_mode:
             self.notes_modal_cursor_blink_timer += dt
@@ -1806,6 +2007,9 @@ class OSMode:
                         if target == "paper_crane":
                             self.modem_modal_external_bbs = "paper_crane"
                             self.modem_modal_should_exit_os = True
+                        elif target == "echo_chamber":
+                            self.modem_modal_external_bbs = "echo_chamber"
+                            self.modem_modal_should_exit_os = True
                         else:
                             self.modem_modal_should_reset_bbs = True
                             self.modem_modal_should_exit_os = True
@@ -1814,6 +2018,7 @@ class OSMode:
             if len(self.modem_modal_connection_messages) >= 2 and not self.network_connected:
                 if self.modem_modal_message_index >= len(self.modem_modal_connection_messages) - 2:
                     self.network_connected = True
+                    OSMode.persisted_network_connected = True
             self._update_modem_packet_effect(dt)
         else:
             self.modem_packet_sprites.clear()
@@ -1934,8 +2139,8 @@ class OSMode:
         # Draw LAPC-1 Audio Output Stream visualizer (on same layer as health monitor)
         self._draw_lapc1_audio_stream_visualizer()
         
-        # Draw all active modals (in order they were opened)
-        for modal_name in list(self.active_modals):
+        # Draw all active modals in z-order (bottom -> top)
+        for modal_name in self.active_modals:
             if modal_name == "tape":
                 self._draw_tape_modal()
             elif modal_name == "modem":
@@ -2147,9 +2352,9 @@ class OSMode:
         except Exception:
             return
         
-        # Format clock as hh:mm:ss mm-dd-yyyy
+        # Format clock as hh:mm:ss mm-dd-1989
         now = datetime.now()
-        clock_text = now.strftime("%H:%M:%S %m-%d-%Y")
+        clock_text = now.strftime("%H:%M:%S %m-%d-1989")
         
         # Check LAPC-1 Soundcard status (check for AUDIO_ON token which means all 7 nodes complete)
         lapc1_activated = self.has_token("AUDIO_ON")
@@ -2676,8 +2881,10 @@ class OSMode:
                 lines_to_render = [
                     "READY FOR INPUT...",
                     "Dialed: ",  # Will be drawn with cursor in special handling
-                    "Press CALL to connect."
+                    "Press CONNECT to connect."
                 ]
+                if self.modem_modal_error_message:
+                    lines_to_render.append(self.modem_modal_error_message)
             else:
                 lines_to_render = [
                     "BRADSONIC NETLINK 69000",
@@ -2745,18 +2952,32 @@ class OSMode:
             self.screen.blit(status_text, (terminal_x + char_width, terminal_y + terminal_h - status_font.get_height() - int(6 * self.scale)))
         else:
             status_font = pygame.font.Font(None, max(int(14 * self.scale), 11))
-            status_text = status_font.render("  Awaiting CALL command.", True, COLOR_TEAL)
+            status_text = status_font.render("  Awaiting CONNECT command.", True, COLOR_TEAL)
             self.screen.blit(status_text, (terminal_x, terminal_y + terminal_h - status_font.get_height() - int(6 * self.scale)))
         
-        # Draw Dial Pad
+        # Dial/control area positions
         dial_start_y = terminal_y + terminal_h + gap
         button_size = int(42 * self.scale)
         button_spacing = int(10 * self.scale)
-        
-        # Calculate centering for dial pad
         dial_width = 3 * button_size + 2 * button_spacing
         dial_start_x = modal_x + (modal_w - dial_width) // 2
         
+        # CONNECT and DISCONNECT buttons side by side
+        action_btn_y = dial_start_y + 4 * (button_size + button_spacing) + int(5 * self.scale)
+        action_btn_h = int(48 * self.scale)  # Button height (increased by 25%)
+        action_btn_spacing = int(8 * self.scale)  # Space between buttons
+        action_btn_w = (dial_width - action_btn_spacing) // 2  # Half width minus spacing
+        
+        call_btn_x = dial_start_x
+        call_btn_y = action_btn_y
+        call_btn_w = action_btn_w
+        call_btn_h = action_btn_h
+        
+        disconnect_btn_x = dial_start_x + action_btn_w + action_btn_spacing
+        disconnect_btn_y = action_btn_y
+        disconnect_btn_rect = pygame.Rect(disconnect_btn_x, disconnect_btn_y, action_btn_w, action_btn_h)
+
+        # Dial pad buttons (always visible)
         dial_buttons = [
             ["1", "2", "3"],
             ["4", "5", "6"],
@@ -2764,47 +2985,66 @@ class OSMode:
             ["*", "0", "#"]
         ]
         
-        if not self.modem_modal_connection_started:
-            for row_idx, row in enumerate(dial_buttons):
-                for col_idx, button_label in enumerate(row):
-                    btn_x = dial_start_x + col_idx * (button_size + button_spacing)
-                    btn_y = dial_start_y + row_idx * (button_size + button_spacing)
-                    btn_rect = pygame.Rect(btn_x, btn_y, button_size, button_size)
-                    
+        for row_idx, row in enumerate(dial_buttons):
+            for col_idx, button_label in enumerate(row):
+                btn_x = dial_start_x + col_idx * (button_size + button_spacing)
+                btn_y = dial_start_y + row_idx * (button_size + button_spacing)
+                btn_rect = pygame.Rect(btn_x, btn_y, button_size, button_size)
+                
+                # Dim buttons when connection is in progress
+                if self.modem_modal_connection_started:
+                    is_hovered = False
+                    btn_color = (15, 25, 40)  # Dimmed color
+                else:
                     is_hovered = self.hovered_button == ("modem", f"dial_{button_label}")
                     btn_color = (35, 65, 110) if is_hovered else (25, 35, 60)
+                
+                pygame.draw.rect(self.screen, btn_color, btn_rect, border_radius=8)
+                pygame.draw.rect(self.screen, COLOR_CYAN, btn_rect, 2 if is_hovered else 1, border_radius=8)
+                
+                try:
+                    font = pygame.font.Font(None, max(int(24 * self.scale), 16))
+                    text_surface = font.render(button_label, True, COLOR_CYAN)
+                    text_rect = text_surface.get_rect(center=btn_rect.center)
+                    self.screen.blit(text_surface, text_rect)
+                except Exception:
+                    pass
                     
-                    pygame.draw.rect(self.screen, btn_color, btn_rect, border_radius=8)
-                    pygame.draw.rect(self.screen, COLOR_CYAN, btn_rect, 2 if is_hovered else 1, border_radius=8)
-                    
-                    try:
-                        font = pygame.font.Font(None, max(int(24 * self.scale), 16))
-                        text_surface = font.render(button_label, True, COLOR_CYAN)
-                        text_rect = text_surface.get_rect(center=btn_rect.center)
-                        self.screen.blit(text_surface, text_rect)
-                    except Exception:
-                        pass
-                        
-            # Call Button
-            call_btn_y = dial_start_y + 4 * (button_size + button_spacing) + int(5 * self.scale)
-            call_btn_w = dial_width
-            call_btn_h = int(40 * self.scale)
-            call_btn_x = dial_start_x
-            call_btn_rect = pygame.Rect(call_btn_x, call_btn_y, call_btn_w, call_btn_h)
-            
+        # CONNECT Button (always visible)
+        call_btn_rect = pygame.Rect(call_btn_x, call_btn_y, call_btn_w, call_btn_h)
+        
+        # Dim button when connection is in progress
+        if self.modem_modal_connection_started:
+            is_hovered = False
+            btn_color = (5, 20, 10)  # Dimmed color
+        else:
             is_hovered = self.hovered_button == ("modem", "call")
             btn_color = (20, 60, 40) if is_hovered else (10, 35, 20)
-            
-            pygame.draw.rect(self.screen, btn_color, call_btn_rect, border_radius=8)
-            pygame.draw.rect(self.screen, COLOR_NEON_GREEN, call_btn_rect, 2 if is_hovered else 1, border_radius=8)
-            
-            try:
-                font = pygame.font.Font(None, max(int(20 * self.scale), 14))
-                text = font.render("CONNECT", True, COLOR_NEON_GREEN)
-                text_rect = text.get_rect(center=call_btn_rect.center)
-                self.screen.blit(text, text_rect)
-            except Exception:
-                pass
+        
+        pygame.draw.rect(self.screen, btn_color, call_btn_rect, border_radius=8)
+        pygame.draw.rect(self.screen, COLOR_NEON_GREEN, call_btn_rect, 2 if is_hovered else 1, border_radius=8)
+        
+        try:
+            font = pygame.font.Font(None, max(int(16 * self.scale), 11))  # Reduced text size by 10%
+            text = font.render("CONNECT", True, COLOR_NEON_GREEN)
+            text_rect = text.get_rect(center=call_btn_rect.center)
+            self.screen.blit(text, text_rect)
+        except Exception:
+            pass
+
+        # DISCONNECT button
+        is_disconnect_hovered = self.hovered_button == ("modem", "disconnect")
+        btn_disconnect_color = (60, 20, 20) if is_disconnect_hovered else (35, 15, 15)
+        pygame.draw.rect(self.screen, btn_disconnect_color, disconnect_btn_rect, border_radius=8)
+        pygame.draw.rect(self.screen, COLOR_RED, disconnect_btn_rect, 2 if is_disconnect_hovered else 1, border_radius=8)
+
+        try:
+            font = pygame.font.Font(None, max(int(16 * self.scale), 11))  # Match CONNECT font size
+            text = font.render("HANG-UP", True, COLOR_RED)
+            text_rect = text.get_rect(center=disconnect_btn_rect.center)
+            self.screen.blit(text, text_rect)
+        except Exception:
+            pass
 
     def _draw_games_modal(self):
         """Draw the games library modal."""
@@ -3239,7 +3479,7 @@ class OSMode:
         """Generate BBS login note content with current user credentials and PAPER CRANE BBS if token exists."""
         username, pin = self.get_user_credentials()
         content = f"{BBS_NAME}\n"
-        content += f"Phone Number: {BBS_NUMBER}\n"
+        content += f"Dial-in: (03) 45 72 88 91\n"
         content += f"\n"
         content += f"Username: {username if username else 'Not Set'}\n"
         content += f"Login PIN: {pin if pin else 'Not Set'}"
@@ -3247,9 +3487,14 @@ class OSMode:
         # Add PAPER CRANE BBS info if player has PAPERCRANEBBS token
         if self.has_token("PAPERCRANEBBS"):
             content += f"\n\nPAPER CRANE BBS\n"
-            content += f"Phone Number: 08277341945\n"
+            content += f"Dial-in: (082) 77 34 19 45\n"
             content += f"Username: guest\n"
             content += f"Password: origami"
+        
+        # Add ECHO CHAMBER BBS info if player has ECHOCHAMBER token
+        if self.has_token("ECHOCHAMBER"):
+            content += f"\n\nECHO CHAMBER BBS\n"
+            content += f"Dial-in: (07) 57 42 19 89"
         
         return content
     
@@ -3545,6 +3790,8 @@ class OSMode:
         self.notes_modal_dragging_selection = False
         self.notes_modal_content_cursor_aim_x = None
         self.notes_modal_message = ""
+        # Reset scroll when exiting edit mode
+        self.notes_modal_view_scroll = 0
 
     def _notes_active_text(self) -> Tuple[str, int, Tuple[int, int]]:
         if self.notes_modal_edit_field == "title":
@@ -3959,6 +4206,26 @@ class OSMode:
 
         return False
 
+    def _notes_handle_view_scroll(self, event: pygame.event.Event) -> bool:
+        """Handle scrolling in notes view mode (when not editing)."""
+        if self.notes_modal_edit_mode:
+            return False
+        
+        if event.key in (pygame.K_UP, pygame.K_w):
+            self.notes_modal_view_scroll = max(0, self.notes_modal_view_scroll - 1)
+            return True
+        if event.key in (pygame.K_DOWN, pygame.K_s):
+            self.notes_modal_view_scroll += 1
+            return True
+        if event.key == pygame.K_PAGEUP:
+            self.notes_modal_view_scroll = max(0, self.notes_modal_view_scroll - 5)
+            return True
+        if event.key == pygame.K_PAGEDOWN:
+            self.notes_modal_view_scroll += 5
+            return True
+        
+        return False
+
     def _notes_handle_textinput(self, text_input: str) -> bool:
         """Handle TEXTINPUT events while editing notes."""
         if not self.notes_modal_edit_mode:
@@ -4170,6 +4437,123 @@ class OSMode:
             if y > max_height:
                 return
 
+    def _rich_text_to_lines(self, text: str, body_font: pygame.font.Font, bold_font: pygame.font.Font, 
+                            max_width: int) -> List[Dict[str, Any]]:
+        """Convert rich text into a list of line dictionaries for scrolling."""
+        lines: List[Dict[str, Any]] = []
+        line_height = body_font.get_height() + int(4 * self.scale)
+        
+        for paragraph in text.split("\n"):
+            if not paragraph.strip():
+                # Empty line
+                lines.append({
+                    "segments": [],
+                    "line_height": line_height
+                })
+                continue
+                
+            segments = self._parse_markup_segments(paragraph)
+            current_line_segments: List[Dict[str, Any]] = []
+            x = 0
+            
+            for segment in segments:
+                segment_text = segment["text"]
+                seg_font = bold_font if segment["bold"] else body_font
+                
+                while segment_text:
+                    remaining_width = max_width - x
+                    if remaining_width <= 0:
+                        # Start new line
+                        if current_line_segments:
+                            lines.append({
+                                "segments": current_line_segments.copy(),
+                                "line_height": line_height
+                            })
+                        current_line_segments = []
+                        x = 0
+                        remaining_width = max_width
+                    
+                    fit_chars = self._measure_text_fit(seg_font, segment_text, remaining_width)
+                    if fit_chars <= 0:
+                        # Word doesn't fit, start new line
+                        if current_line_segments:
+                            lines.append({
+                                "segments": current_line_segments.copy(),
+                                "line_height": line_height
+                            })
+                        current_line_segments = []
+                        x = 0
+                        continue
+                    
+                    chunk = segment_text[:fit_chars]
+                    segment_text = segment_text[fit_chars:]
+                    
+                    # Measure chunk width
+                    chunk_surface = seg_font.render(chunk, True, COLOR_WHITE)
+                    chunk_width = chunk_surface.get_width()
+                    
+                    current_line_segments.append({
+                        "text": chunk,
+                        "font": seg_font,
+                        "bold": segment["bold"],
+                        "strike": segment["strike"],
+                        "highlight": segment["highlight"],
+                        "x": x,
+                        "width": chunk_width
+                    })
+                    
+                    x += chunk_width
+                    
+                    if segment_text:
+                        # Start new line for remaining text
+                        if current_line_segments:
+                            lines.append({
+                                "segments": current_line_segments.copy(),
+                                "line_height": line_height
+                            })
+                        current_line_segments = []
+                        x = 0
+            
+            # Add final line for this paragraph
+            if current_line_segments:
+                lines.append({
+                    "segments": current_line_segments.copy(),
+                    "line_height": line_height
+                })
+        
+        return lines
+
+    def _draw_scroll_indicator(self, surface: pygame.Surface, rect: pygame.Rect, 
+                               start_line: int, visible_lines: int, total_lines: int) -> None:
+        """Draw a scroll indicator with pink scroll bar."""
+        if total_lines <= visible_lines:
+            return
+        
+        # Calculate bar geometry
+        max_scroll = total_lines - visible_lines
+        scroll_pct = start_line / max_scroll if max_scroll > 0 else 0
+        
+        bar_w = int(4 * self.scale)
+        bar_h = int(30 * self.scale)
+        
+        track_h = rect.height - int(20 * self.scale)
+        available_track = track_h - bar_h
+        
+        bar_x = rect.right - bar_w - int(4 * self.scale)
+        bar_y = rect.y + int(10 * self.scale) + int(scroll_pct * available_track)
+        
+        # Pink color (Hot Pink similar to PaperCraneBBS)
+        COLOR_PINK = (255, 105, 180)
+        
+        # Draw the handle (pink scroll bar)
+        pygame.draw.rect(surface, COLOR_PINK, (bar_x, bar_y, bar_w, bar_h), 0, border_radius=2)
+        
+        # Optional: draw a very faint track line
+        track_surf = pygame.Surface((1, track_h), pygame.SRCALPHA)
+        pygame.draw.line(track_surf, (COLOR_PINK[0], COLOR_PINK[1], COLOR_PINK[2], 40), 
+                         (0, 0), (0, track_h), 1)
+        surface.blit(track_surf, (bar_x + bar_w // 2, rect.y + int(10 * self.scale)))
+
     def _create_new_note(self):
         """Create a new note and immediately enter edit mode."""
         notes = self._load_user_notes()
@@ -4209,7 +4593,7 @@ class OSMode:
         self.notes_modal_current_tab = min(self.notes_modal_current_tab, len(notes) - 1)
 
     def _draw_note_view(self, note: Dict, content_area_rect: pygame.Rect, modal_x: int, modal_y: int, modal_w: int) -> None:
-        """Draw note content in view mode (not editing)."""
+        """Draw note content in view mode (not editing) with scrolling support."""
         gap = int(10 * self.scale)
         text_x = content_area_rect.x + gap
         text_y = content_area_rect.y + gap
@@ -4230,26 +4614,85 @@ class OSMode:
         # Draw title
         title_surface = title_font.render(note.get("title", "Untitled"), True, COLOR_CYAN)
         self.screen.blit(title_surface, (text_x, text_y))
-        text_y += title_surface.get_height() + gap
+        title_height = title_surface.get_height() + gap
+        text_y += title_height
 
-        available_width = content_area_rect.width - gap * 2
-        max_y = content_area_rect.bottom - gap
+        # Calculate available space for content (accounting for title and button panel)
+        button_panel_height = int(45 * self.scale) if not note.get("is_locked", False) else 0
+        available_width = content_area_rect.width - gap * 2 - int(10 * self.scale)  # Extra space for scrollbar
+        content_start_y = text_y
+        content_available_height = content_area_rect.bottom - content_start_y - button_panel_height - gap
+        
         try:
             bold_font = pygame.font.SysFont("Segoe Script", body_font_size, bold=True)
         except Exception:
             bold_font = pygame.font.Font(None, body_font_size)
             bold_font.set_bold(True)
 
+        # Convert rich text to lines
         note_content = self._resolve_note_tokens(note.get("content", ""))
-        self._render_rich_text(
-            note_content,
-            body_font,
-            bold_font,
-            text_x,
-            text_y,
-            available_width,
-            max_y
+        all_lines = self._rich_text_to_lines(note_content, body_font, bold_font, available_width)
+        
+        if not all_lines:
+            # Empty note
+            return
+        
+        # Calculate visible lines
+        line_height = all_lines[0]["line_height"] if all_lines else (body_font.get_height() + int(4 * self.scale))
+        visible_lines = max(1, content_available_height // line_height)
+        
+        # Clamp scroll position
+        max_scroll = max(0, len(all_lines) - visible_lines)
+        self.notes_modal_view_scroll = max(0, min(self.notes_modal_view_scroll, max_scroll))
+        
+        # Draw visible lines
+        start_line = self.notes_modal_view_scroll
+        end_line = start_line + visible_lines
+        current_y = content_start_y
+        
+        for line_idx in range(start_line, min(end_line, len(all_lines))):
+            line_data = all_lines[line_idx]
+            for segment in line_data["segments"]:
+                # Render text segment
+                text_surface = segment["font"].render(segment["text"], True, COLOR_WHITE)
+                
+                # Draw highlight if needed
+                if segment["highlight"]:
+                    highlight_rect = pygame.Rect(
+                        text_x + segment["x"],
+                        current_y,
+                        segment["width"],
+                        line_data["line_height"]
+                    )
+                    highlight_rect.inflate_ip(4, 4)
+                    highlight_surf = pygame.Surface(highlight_rect.size, pygame.SRCALPHA)
+                    highlight_surf.fill((255, 255, 0, 90))
+                    self.screen.blit(highlight_surf, highlight_rect.topleft)
+                
+                # Draw text
+                self.screen.blit(text_surface, (text_x + segment["x"], current_y))
+                
+                # Draw strikethrough if needed
+                if segment["strike"]:
+                    line_y = current_y + text_surface.get_height() // 2
+                    pygame.draw.line(
+                        self.screen,
+                        COLOR_WHITE,
+                        (text_x + segment["x"], line_y),
+                        (text_x + segment["x"] + segment["width"], line_y),
+                        2
+                    )
+            
+            current_y += line_data["line_height"]
+        
+        # Draw scroll indicator
+        content_rect = pygame.Rect(
+            content_area_rect.x + gap,
+            content_start_y,
+            content_area_rect.width - gap * 2,
+            content_available_height
         )
+        self._draw_scroll_indicator(self.screen, content_rect, start_line, visible_lines, len(all_lines))
 
         # Draw floating panel for edit/delete (if allowed)
         if not note.get("is_locked", False):
@@ -4596,8 +5039,8 @@ class OSMode:
         if modal_name not in self.active_modals:
             return
         
-        # Remove modal from active set
-        self.active_modals.discard(modal_name)
+        # Remove modal from active list
+        self.active_modals = [name for name in self.active_modals if name != modal_name]
         
         # Remove modal position
         if modal_name in self.modal_positions:
@@ -4611,7 +5054,8 @@ class OSMode:
         # Modal-specific cleanup
         if modal_name == "tape":
             # Stop video if modal is closed (but keep recording flag)
-            if not self.tape_recording:
+            is_recording, _ = self.get_recording_state()
+            if not is_recording:
                 self._stop_tape_video()
         elif modal_name == "modem":
             # Don't reset modem state when closing - allow reconnection
@@ -4654,7 +5098,10 @@ class OSMode:
         self.modem_packet_sprites.clear()
         self.modem_wave_phase = 0.0
         self.modem_packet_spawn_timer = 0.0
-        self.network_connected = False
+        # Preserve network state unless explicitly disconnected
+        self.network_connected = OSMode.persisted_network_connected
+        self.modem_modal_error_message = ""
+        self.modem_modal_error_timer = 0.0
         self._stop_modem_dial_sound()
         
         # Reset icon states and restore positions from saved file (or defaults if none saved)
@@ -4938,9 +5385,11 @@ class OSMode:
                     break
         
         # Check button hovers in modals (check top-most first)
-        for modal_name in reversed(list(self.active_modals)):
+        for modal_name in reversed(self.active_modals.copy()):
             modal_x, modal_y = self.modal_positions.get(modal_name, (0, 0))
             modal_w, modal_h = self._get_modal_size(modal_name)
+            # Apply clamping to match the actual drawn modal size
+            modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
             
             if modal_name == "tape":
                 # Check tape modal buttons
@@ -4988,15 +5437,24 @@ class OSMode:
                     self.hovered_button = ("modem", "title_close")
                     return
                 
-                # Dial pad buttons
+                # Dial/call/disconnect buttons
+                terminal_y = modal_y + self.modal_title_bar_height + gap
+                dial_start_y = terminal_y + terminal_h + gap
+                
+                # Calculate centering for dial pad matching _draw_modem_modal
+                dial_width = 3 * button_size + 2 * button_spacing
+                dial_start_x = modal_x + (modal_w - dial_width) // 2
+                
+                # Side-by-side button layout (matching drawing/click code)
+                action_btn_y = dial_start_y + 4 * (button_size + button_spacing) + int(5 * self.scale)
+                action_btn_h = int(48 * self.scale)  # Button height (increased by 25%)
+                action_btn_spacing = int(8 * self.scale)
+                action_btn_w = (dial_width - action_btn_spacing) // 2
+                
+                call_btn_x = dial_start_x
+                disconnect_btn_x = dial_start_x + action_btn_w + action_btn_spacing
+                
                 if not self.modem_modal_connection_started:
-                    terminal_y = modal_y + self.modal_title_bar_height + gap
-                    dial_start_y = terminal_y + terminal_h + gap
-                    
-                    # Calculate centering for dial pad matching _draw_modem_modal
-                    dial_width = 3 * button_size + 2 * button_spacing
-                    dial_start_x = modal_x + (modal_w - dial_width) // 2
-                    
                     dial_buttons = [["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["*", "0", "#"]]
                     for row_idx, row in enumerate(dial_buttons):
                         for col_idx, button_label in enumerate(row):
@@ -5007,15 +5465,17 @@ class OSMode:
                                 self.hovered_button = ("modem", f"dial_{button_label}")
                                 return
                 
-                    # CALL button
-                    call_btn_y = dial_start_y + 4 * (button_size + button_spacing) + int(5 * self.scale)
-                    call_btn_w = dial_width
-                    call_btn_h = int(40 * self.scale)
-                    call_btn_x = dial_start_x
-                    call_btn_rect = pygame.Rect(call_btn_x, call_btn_y, call_btn_w, call_btn_h)
+                    # CONNECT button (left side)
+                    call_btn_rect = pygame.Rect(call_btn_x, action_btn_y, action_btn_w, action_btn_h)
                     if call_btn_rect.collidepoint(mouse_x, mouse_y):
                         self.hovered_button = ("modem", "call")
                         return
+                
+                # DISCONNECT button (right side, always hoverable)
+                disconnect_btn_rect = pygame.Rect(disconnect_btn_x, action_btn_y, action_btn_w, action_btn_h)
+                if disconnect_btn_rect.collidepoint(mouse_x, mouse_y):
+                    self.hovered_button = ("modem", "disconnect")
+                    return
             
             elif modal_name == "notes":
                 notes = self._load_user_notes()
@@ -5105,17 +5565,14 @@ class OSMode:
     
     def _set_network_disconnected(self):
         """Set network status to DISCONNECTED."""
-        self.network_connected = False
+        # Use full disconnect flow so the modem modal returns to idle
+        # and shows the CONNECT / DISCONNECT buttons after exiting a BBS.
+        self._disconnect_network()
     
     def _ghost_open_notes_mission(self):
         """Open Notes app and switch to mission tab (first tab)."""
         # Open notes modal
-        if "notes" not in self.active_modals:
-            self.active_modals.add("notes")
-            if "notes" not in self.modal_positions:
-                modal_w, modal_h = self._get_modal_size("notes")
-                modal_x, modal_y = self._get_modal_position(modal_w, modal_h, "notes")
-                self.modal_positions["notes"] = (modal_x, modal_y)
+        self._open_modal("notes")
         # Ensure mission tab is selected (tab 0)
         self.notes_modal_current_tab = 0
     
@@ -5154,11 +5611,7 @@ class OSMode:
         
         # Simulate double-click by opening the modal
         if "tape" not in self.active_modals:
-            self.active_modals.add("tape")
-            if "tape" not in self.modal_positions:
-                modal_w, modal_h = self._get_modal_size("tape")
-                modal_x, modal_y = self._get_modal_position(modal_w, modal_h, "tape")
-                self.modal_positions["tape"] = (modal_x, modal_y)
+            self._open_modal("tape")
             self.tape_modal_terminal_text = ""
             self._stop_tape_video()
     

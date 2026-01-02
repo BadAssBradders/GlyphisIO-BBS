@@ -1,0 +1,139 @@
+TITLE: First Signal - Origin of the Paper Crane Network
+
+INTERNAL HISTORY DOCUMENT
+Written by: PAPER_CRANE (Sysop)
+Date: January 1st, 1989 - Five Year Anniversary
+Classification: NETWORK MEMBERS ONLY
+
+---
+
+They ask me sometimes how this started.
+
+Usually I tell them it started with a radio. That's the easy version. The version that fits on a flyer or a frequency burst.
+
+The real version is longer. The real version starts with a box.
+
+---
+
+SUMMER, 1984.
+
+My grandmother died in June. Heart failure. She was seventy-one years old and she'd spent fifty of those years pretending to be someone named GRACE PARK.
+
+I was nineteen. I'd known her my whole life as Grandma Grace. She made pancakes on Sundays and complained about the weather and watched American game shows with the volume too loud.
+
+I didn't know anything else about her until I helped clean out her apartment.
+
+In the back of her bedroom closet, behind the winter coats and the boxes of old magazines, there was a wooden chest. Cedar. Old. The lock was broken - she'd forced it open at some point and never bothered to fix it.
+
+Inside:
+
+- Letters in a language I couldn't read
+- Photographs of people I didn't recognise
+- A folded piece of cloth - white, with a red circle in the centre
+- A small paper crane, yellowed with age, tucked into an envelope
+
+On the envelope, in English, in her handwriting:
+
+"FOR WHEN SOMEONE REMEMBERS"
+
+---
+
+I sat with that box for three days.
+
+I couldn't read the letters. I didn't know the faces. I didn't understand why a piece of cloth with a red circle would be hidden like contraband.
+
+But I understood the crane.
+
+Origami was one of the few things the authorities allowed. They called it "folk craft" - harmless, decorative, safely severed from meaning. You could buy origami paper at any store. Kids made cranes in school.
+
+But this crane was different. It was made from a page torn out of a book. I could see fragments of text - characters I'd never learned, printed in columns instead of rows.
+
+Grandma Grace had folded a page of forbidden language into a shape they couldn't ban.
+
+She'd hidden it for forty years.
+
+She'd left it for someone to find.
+
+---
+
+I didn't know what to do with any of it. I didn't speak the old language. I didn't have contacts in any resistance network. I was just a kid who fixed radios for pocket money.
+
+Radios.
+
+That was the part I knew.
+
+---
+
+AUTUMN, 1984.
+
+I started small. An AM transmitter built from spare parts. Broadcast range: maybe two miles on a good night.
+
+I didn't have anything to say yet. So I played music. Old recordings I found at estate sales - vinyl from before the integration, singers whose names I couldn't pronounce. I'd play them at 2 AM on frequencies the Pacifica Authority didn't bother monitoring.
+
+Nobody heard. Or if they did, they didn't respond.
+
+Then one night, I told the story of the box.
+
+Not the whole story. Just the crane. Just the folded page. Just the question my grandmother had left me: Who remembers?
+
+The next night, someone answered.
+
+---
+
+A voice on the frequency. A woman. She said she had a box too. Letters from her grandfather. A photograph of a shrine that didn't exist anymore.
+
+The night after that, two more voices.
+
+Then four.
+
+Then it wasn't about the radio anymore.
+
+---
+
+WINTER, 1984.
+
+We needed something more than a frequency. Frequencies get traced. Broadcasts get triangulated.
+
+But bulletin boards - dial-up systems running on phone lines, hopping between nodes, routing through dead numbers - those were harder to catch. You could hide a BBS inside the infrastructure. You could make it look like a dial tone until someone entered the right sequence.
+
+I built the first Paper Crane node in January 1985.
+
+The name came from the envelope. From Grandma Grace. From the shape she'd hidden.
+
+If they couldn't ban the crane, they couldn't ban us.
+
+---
+
+TODAY.
+
+It's been five years. We have sixteen active nodes across the Pacifica Isles. We've archived three hundred documents. We've helped forty-seven people find their family names.
+
+We've lost two nodes to Pacifica sweeps. We've lost friends to arrests, to silence, to fear.
+
+But we're still here.
+
+The crane keeps folding.
+
+---
+
+If you're reading this, you found us.
+
+Maybe you have a box too. Maybe you have questions you were never allowed to ask. Maybe you just want to know that someone else feels the same strange grief for something they never got to have.
+
+You're not alone.
+
+There's a whole network of us now, whispering across the wires, keeping the shape alive.
+
+Welcome to Paper Crane.
+
+We remember so no one has to forget.
+
+- PAPER_CRANE
+  Sysop, Node 01
+  January 1989
+
+---
+
+FREQUENCY: Ask and you'll know.
+PASSWORD: Guest/Origami
+SIGNAL: The crane folds on.

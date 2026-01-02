@@ -83,20 +83,22 @@ HISTORY_PURPLE = (134, 66, 164)  # #8642a4
 DARK_CYAN = (0, 60, 80)  # Dark cyan for selection highlight
 
 # Radio Station Definitions
+# All stations have -DeTuned (default) and -Tuned variants
+# User presses right arrow 3 times to switch from DeTuned to Tuned
 NIGHT_STATIONS = [
-    {"name": "Tokyo Yamoto Forever", "file": "tokyoyamoto.wav", "freq": 9970},
-    {"name": "Hotline Underground", "file": "hotunderground.wav", "freq": 7425},
-    {"name": "Radio Nippon", "file": "radionippon.wav", "freq": 558},
-    {"name": "Shojo AM", "file": "shojoam.wav", "freq": 1242},
-    {"name": "Synth Rebels", "file": "synthrebels.wav", "freq": 9150},
+    {"name": "Tokyo Yamoto Forever", "file": "TokyoYamoto-DeTuned.wav", "tuned_file": "TokyoYamoto-Tuned.wav", "freq": 9970},
+    {"name": "Hotline Underground", "file": "HotlineUnderground-DeTuned.wav", "tuned_file": "HotlineUnderground-Tuned.wav", "freq": 7425},
+    {"name": "Radio Nippon", "file": "RadioNippon-DeTuned.wav", "tuned_file": "RadioNippon-Tuned.wav", "freq": 558},
+    {"name": "Shojo AM", "file": "ShojoAM-DeTuned.wav", "tuned_file": "ShojoAM-Tuned.wav", "freq": 1242},
+    {"name": "Synth Rebels", "file": "SynthRebels-DeTuned.wav", "tuned_file": "SynthRebels-Tuned.wav", "freq": 9150},
 ]
 
 DAY_STATIONS = [
-    {"name": "Morning Drift", "file": "morningdrift.wav", "freq": 6045},
-    {"name": "Pacific Wave", "file": "pacificwave.wav", "freq": 1314},
-    {"name": "Sunrise Radio", "file": "sunriseradio.wav", "freq": 909},
-    {"name": "Coast FM", "file": "coastfm.wav", "freq": 1017},
-    {"name": "Echo Chamber", "file": "echochamber.wav", "freq": 15050},
+    {"name": "Morning Drift", "file": "MorningDrift-DeTuned.wav", "tuned_file": "MorningDrift-Tuned.wav", "freq": 6045},
+    {"name": "Pacific Wave", "file": "PacificWave-DeTuned.wav", "tuned_file": "PacificWave-Tuned.wav", "freq": 1314},
+    {"name": "Sunrise Radio", "file": "SunriseRadio-DeTuned.wav", "tuned_file": "SunriseRadio-Tuned.wav", "freq": 909},
+    {"name": "Coast FM", "file": "CoastFM-DeTuned.wav", "tuned_file": "CoastFM-Tuned.wav", "freq": 1017},
+    {"name": "Echo Chamber", "file": "EchoChamber-DeTuned.wav", "tuned_file": "EchoChamber-Tuned.wav", "freq": 15050},
 ]
 
 
@@ -169,17 +171,20 @@ class RadioStationManager:
         self.playback_start_seconds: float = 0.0
         
     def initialize_minutes(self, stations: List[Dict]):
-        """Initialize random starting positions for all stations (called at BBS launch)."""
-        if self.initialized:
-            return
-        
+        """Initialize deterministic starting positions for all stations based on real-world time."""
         for station in stations:
             station_name = station["name"]
-            # Random starting position between 0 and 3599 seconds (0-59 minutes, 59 seconds)
-            self.station_seconds[station_name] = random.uniform(0.0, 3599.0)
+            if station_name not in self.station_seconds:
+                # Use a deterministic offset based on name so different app instances stay in sync
+                name_hash = sum(ord(c) * (i + 1) for i, c in enumerate(station_name))
+                self.station_seconds[station_name] = float(name_hash % 3600)
         
-        self.last_tick_time = time.time()
-        self.initialized = True
+        if not self.initialized:
+            # Anchor to epoch for true "live" behavior that persists across restarts/instances
+            self.last_tick_time = 0.0 
+            self.initialized = True
+            # First tick will catch up from epoch to current time
+            self.tick()
         
     def tick(self):
         """
@@ -201,15 +206,13 @@ class RadioStationManager:
         # Update all stations by exact elapsed seconds
         if elapsed > 0.0:
             for station_name in self.station_seconds:
-                new_seconds = self.station_seconds[station_name] + elapsed
-                # Wrap around at 3600 seconds (60 minutes) back to 0
-                while new_seconds >= 3600.0:
-                    new_seconds -= 3600.0
-                self.station_seconds[station_name] = new_seconds
+                # Use modulo for efficient wrap-around at 3600 seconds (60 minutes)
+                self.station_seconds[station_name] = (self.station_seconds[station_name] + elapsed) % 3600.0
             self.last_tick_time = current_time
             
     def get_station_minute(self, station_name: str) -> int:
         """Get the current minute position for a station (1-60)."""
+        self.tick()  # Ensure time is up to date
         seconds = self.station_seconds.get(station_name, 0.0)
         # Convert seconds to minute (1-60)
         minute = int(seconds // 60) + 1
@@ -217,10 +220,12 @@ class RadioStationManager:
     
     def get_station_seconds(self, station_name: str) -> float:
         """Get the precise current time position in seconds (0.0-3599.99)."""
+        self.tick()  # Ensure time is up to date
         return self.station_seconds.get(station_name, 0.0)
     
     def get_station_time_formatted(self, station_name: str) -> Tuple[int, int]:
         """Get the current time as (minutes, seconds) tuple. Minutes are 0-59, seconds are 0-59."""
+        self.tick()  # Ensure time is up to date
         total_seconds = self.station_seconds.get(station_name, 0.0)
         minutes = int(total_seconds // 60) % 60
         seconds = int(total_seconds % 60)
@@ -236,6 +241,7 @@ class RadioStationManager:
             sound: pygame.mixer.Sound object for the station
             override_start_seconds: Optional override for start position in seconds
         """
+        self.tick()  # Ensure all stations have caught up before we get the position
         station_name = station["name"]
         # Get precise seconds position (0.0-3599.99) or use override
         if override_start_seconds is not None:
@@ -266,27 +272,28 @@ class RadioStationManager:
             if os.path.exists(file_path):
                 pygame.mixer.music.load(file_path)
                 pygame.mixer.music.set_volume(0.8)  # Set volume to 80%
-                pygame.mixer.music.play(-1)  # Loop indefinitely
                 
-                # Wait a tiny bit for playback to start, then seek
-                pygame.time.wait(50)  # 50ms delay
-                
-                # Try to seek to the start position
+                # Start playback from the precise position
+                # Note: start parameter is supported for OGG and MP3, 
+                # and in many SDL_mixer versions also for PCM WAV.
                 try:
-                    # For MP3: rewind first, then set_pos is relative
-                    # For OGG: set_pos is absolute
-                    file_ext = os.path.splitext(station_file)[1].lower()
-                    if file_ext == '.mp3':
-                        pygame.mixer.music.rewind()
-                        # For MP3 after rewind, set_pos should be relative from start
-                        pygame.mixer.music.set_pos(start_seconds)
-                    else:
-                        # For OGG and other formats, set_pos is absolute
-                        pygame.mixer.music.set_pos(start_seconds)
-                except (pygame.error, NotImplementedError, AttributeError) as seek_error:
-                    # If seeking fails, just start from beginning
-                    # The minute tracking will still work for the illusion
-                    print(f"Note: Could not seek in {station_file}: {seek_error}")
+                    pygame.mixer.music.play(-1, start=start_seconds)
+                except (pygame.error, NotImplementedError):
+                    # Fallback to play from beginning if start parameter fails
+                    pygame.mixer.music.play(-1)
+                    
+                    # Try to seek after playback has started as a secondary fallback
+                    if start_seconds > 0:
+                        pygame.time.wait(50)  # Wait a tiny bit for playback to start
+                        try:
+                            # For MP3: rewind first, then set_pos is relative
+                            # For OGG: set_pos is absolute
+                            file_ext = os.path.splitext(station_file)[1].lower()
+                            if file_ext == '.mp3':
+                                pygame.mixer.music.rewind()
+                            pygame.mixer.music.set_pos(start_seconds)
+                        except:
+                            pass
                 
                 self.current_station_file = station_file
                 self.playback_start_time = time.time()
@@ -306,7 +313,7 @@ class RadioStationManager:
                 self.current_channel.set_volume(0.8)  # Set volume to 80%
         
         self.current_playing_station = station_name
-        self.last_tick_time = time.time()
+        # Removed redundant self.last_tick_time update as tick() already handled it
         
     def stop_current(self):
         """Stop the currently playing station."""
@@ -635,6 +642,10 @@ class PirateRadioApp:
         
         # Radio stations state
         self.radio_manager = RadioStationManager()
+        # Initialize all possible stations immediately so they start "ticking" right away
+        # This provides the "live" feeling as soon as the BBS is launched.
+        self.radio_manager.initialize_minutes(NIGHT_STATIONS + DAY_STATIONS)
+        
         self.current_stations: List[Dict] = []
         self.selected_station_index = 0
         # self.station_sounds is initialized earlier before _load_resources()
@@ -643,6 +654,9 @@ class PirateRadioApp:
         self.uncle_am_message_queued = False
         self.token_awarded = False
         self.tokyo_yamoto_first_play = False  # Track if Tokyo Yamoto has been played for first time this session
+        self.echo_chamber_first_play = False  # Track if Echo Chamber has been played for first time this session
+        self.current_station_tuned = False  # Track if user has tuned the current station to clear signal
+        self.station_tuner_presses = 0  # Count right arrow presses for station tuning
         
     def _load_resources(self):
         # Fonts
@@ -720,11 +734,7 @@ class PirateRadioApp:
         else:
             self.current_stations = DAY_STATIONS
             
-        # Initialize minute tracking for current stations
-        # Force initialization if this is the first time (just completed patterns)
-        # The BBS launch will randomize again on next restart
-        if not self.radio_manager.initialized:
-            self.radio_manager.initialize_minutes(self.current_stations)
+        # Radio manager is already initialized in __init__ with all stations
         
         self.selected_station_index = 0
         
@@ -751,7 +761,7 @@ class PirateRadioApp:
         self.current_station = None
         self.skip_challenge_active = self.skip_challenge
         self.skip_challenge_unlock_done = False
-        self.tokyo_yamoto_first_play = False  # Reset for new session
+        # tokyo_yamoto_first_play is persistent throughout the app instance session
         self.skip_intro_messages = self.skip_challenge_active
 
         # If skipping challenge without intro, keep previous fast-path behavior
@@ -957,6 +967,10 @@ class PirateRadioApp:
         if self.radio_manager.current_playing_station == station_name and self.radio_manager.is_playing():
             return
         
+        # Reset tuning state when switching to any station
+        self.current_station_tuned = False
+        self.station_tuner_presses = 0
+        
         # Check if we have the sound loaded
         if station_name not in self.station_sounds:
             self.chat.queue_message(f"Station '{station_name}' audio not available.")
@@ -964,16 +978,30 @@ class PirateRadioApp:
             
         sound = self.station_sounds[station_name]
         
-        # Special handling for Tokyo Yamoto Forever first play
+        # Special handling for Tokyo Yamoto Forever (09:04 first-time start rule)
         override_start = None
         if station_name == "Tokyo Yamoto Forever" and not self.tokyo_yamoto_first_play:
-            self.tokyo_yamoto_first_play = True
-            # Start at 09:04 (9 minutes 4 seconds = 544 seconds)
+            # Force first play to start at 09:04
             override_start = 544.0
-            # Award token when first playing Tokyo Yamoto
+            self.tokyo_yamoto_first_play = True
+            
+            # Synchronize the radio manager's tracked time to this forced start position 
+            # so it "becomes live" from this point forward.
+            self.radio_manager.station_seconds[station_name] = 544.0
+            
+            # Award token ONLY on first play
             if self.on_token_award:
                 try:
-                    self.on_token_award("PaperPlaneBBS")
+                    self.on_token_award("PAPERCRANEBBS")
+                except Exception:
+                    pass
+        
+        # Award ECHOCHAMBER token on first play of Echo Chamber station
+        if station_name == "Echo Chamber" and not self.echo_chamber_first_play:
+            self.echo_chamber_first_play = True
+            if self.on_token_award:
+                try:
+                    self.on_token_award("ECHOCHAMBER")
                 except Exception:
                     pass
         
@@ -1468,9 +1496,91 @@ class PirateRadioApp:
             pass
 
     def _adjust_tuner(self, direction: int):
-        """Cycle tuner levels and reapply noise volume."""
+        """Cycle tuner levels and reapply noise volume. Handle station tuning (DeTuned -> Tuned)."""
         if not self.tuner_reduction_levels:
             return
+        
+        # Check if a station is playing and user pressed right arrow
+        is_station_playing = self.radio_manager.is_playing() and self.current_station is not None
+        
+        if is_station_playing and direction == 1 and not self.current_station_tuned:
+            self.station_tuner_presses += 1
+            
+            if self.station_tuner_presses >= 3:
+                # Switch to tuned version seamlessly
+                self._switch_station_to_tuned()
+                return
+        
+        # Reset counter if pressing left or no station playing
+        if direction == -1 or not is_station_playing:
+            self.station_tuner_presses = 0
+        
         self.tuner_index = (self.tuner_index + direction) % len(self.tuner_reduction_levels)
         self._apply_noise_volume()
         self.chat.queue_message("Fine tuning")
+    
+    def _switch_station_to_tuned(self):
+        """Switch current station from DeTuned to Tuned version at exact playback position."""
+        if self.current_station is None:
+            return
+            
+        # Get the tuned file name from the station definition
+        tuned_file = self.current_station.get("tuned_file")
+        if not tuned_file:
+            self.chat.queue_message("No tuned signal available for this station.")
+            return
+        
+        # Get current playback position in seconds
+        try:
+            # Calculate position based on elapsed time since playback started
+            # This works for both mixer.music and channel-based playback
+            if self.radio_manager.playback_start_time > 0:
+                elapsed_seconds = time.time() - self.radio_manager.playback_start_time
+                current_position = self.radio_manager.playback_start_seconds + elapsed_seconds
+            else:
+                # Fallback: try to get position from mixer.music
+                pos_ms = pygame.mixer.music.get_pos()
+                if pos_ms < 0:
+                    pos_ms = 0
+                elapsed_seconds = pos_ms / 1000.0
+                current_position = self.radio_manager.playback_start_seconds + elapsed_seconds
+            
+            # Check if tuned file exists
+            tuned_file_path = self._station_path(tuned_file)
+            if not os.path.exists(tuned_file_path):
+                self.chat.queue_message("Tuned signal file not found.")
+                return
+            
+            # Stop current playback completely (both music and channel-based)
+            self.radio_manager.stop_current()
+            
+            # Load and play the tuned version from the same position
+            pygame.mixer.music.load(tuned_file_path)
+            pygame.mixer.music.set_volume(0.8)
+            
+            try:
+                pygame.mixer.music.play(-1, start=current_position)
+            except (pygame.error, NotImplementedError):
+                # Fallback: play from beginning then seek
+                pygame.mixer.music.play(-1)
+                pygame.time.wait(50)
+                try:
+                    pygame.mixer.music.set_pos(current_position)
+                except:
+                    pass
+            
+            # Update internal state
+            self.radio_manager.current_station_file = tuned_file
+            self.radio_manager.playback_start_time = time.time()
+            self.radio_manager.playback_start_seconds = current_position
+            
+            # Mark as tuned and maximize noise reduction
+            self.current_station_tuned = True
+            self.tuner_index = len(self.tuner_reduction_levels) - 1  # Max reduction
+            self._apply_noise_volume()
+            
+            self.chat.queue_message("Signal locked! Clear transmission achieved.")
+            
+        except Exception as e:
+            print(f"Error switching to tuned station: {e}")
+            self.chat.queue_message("Tuning failed - signal unstable.")

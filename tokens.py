@@ -34,8 +34,11 @@ class Tokens:
     LAPC1_NODE5 = "LAPC1_NODE5"  # Node 5 stream entry reached
     LAPC1_NODE6 = "LAPC1_NODE6"  # Node 6 data check loop reached
     LAPC1_NODE7 = "LAPC1_NODE7"  # Node 7 output sample loop reached
+    JAX = "JAX"  # Read the "Targets Acquired" post from The Wall
     JAX1 = "JAX1"  # Volunteered to help Jaxkando with game cracking
+    JAX2 = "JAX2"  # Received cracking instructions from Jaxkando - unlocks challenge
     ASTROMINER = "ASTROMINER"
+    PAPERCRANEBBS = "PAPERCRANEBBS"
     AUDIO_ON = "AUDIO_ON"  # Completed all 7 nodes, all LEDs green
     MODEM1ST = "MODEM1ST"  # First successful modem connection established
 
@@ -149,15 +152,30 @@ TOKEN_METADATA: Dict[str, TokenMeta] = {
         label="LAPC1_NODE7",
         description="LAPC-1 Node 7 output sample loop reached",
     ),
+    Tokens.JAX: TokenMeta(
+        code=Tokens.JAX,
+        label="JAX",
+        description="Read the 'Targets Acquired' post from The Wall",
+    ),
     Tokens.JAX1: TokenMeta(
         code=Tokens.JAX1,
         label="JAX1",
         description="Volunteered to help Jaxkando crack games",
     ),
+    Tokens.JAX2: TokenMeta(
+        code=Tokens.JAX2,
+        label="JAX2",
+        description="Received cracking instructions - ASTRO MINER challenge unlocked",
+    ),
     Tokens.ASTROMINER: TokenMeta(
         code=Tokens.ASTROMINER,
         label="ASTROMINER",
         description="Access to the Astro Miner prototype",
+    ),
+    Tokens.PAPERCRANEBBS: TokenMeta(
+        code=Tokens.PAPERCRANEBBS,
+        label="PAPERCRANEBBS",
+        description="Access to the Paper Crane BBS dial-in frequency",
     ),
     Tokens.AUDIO_ON: TokenMeta(
         code=Tokens.AUDIO_ON,
