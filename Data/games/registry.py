@@ -699,6 +699,248 @@ class AstroMinerSession(BaseGameSession):
 
 
 # ---------------------------------------------------------------------------
+# CYBERTRAIN adapter (embedded C++ game with framebuffer rendering)
+# ---------------------------------------------------------------------------
+
+
+class CyberTrainSession(BaseGameSession):
+    """Session adapter for CyberTrain using headless framebuffer rendering."""
+    
+    # Mapping from pygame key codes to raylib key codes
+    KEY_MAP = {
+        pygame.K_UP: 265, pygame.K_DOWN: 264,
+        pygame.K_LEFT: 263, pygame.K_RIGHT: 262,
+        pygame.K_SPACE: 32, pygame.K_RETURN: 257, pygame.K_ESCAPE: 256,
+        pygame.K_a: 65, pygame.K_b: 66, pygame.K_c: 67, pygame.K_d: 68,
+        pygame.K_e: 69, pygame.K_f: 70, pygame.K_g: 71, pygame.K_h: 72,
+        pygame.K_i: 73, pygame.K_j: 74, pygame.K_k: 75, pygame.K_l: 76,
+        pygame.K_m: 77, pygame.K_n: 78, pygame.K_o: 79, pygame.K_p: 80,
+        pygame.K_q: 81, pygame.K_r: 82, pygame.K_s: 83, pygame.K_t: 84,
+        pygame.K_u: 85, pygame.K_v: 86, pygame.K_w: 87, pygame.K_x: 88,
+        pygame.K_y: 89, pygame.K_z: 90,
+        pygame.K_0: 48, pygame.K_1: 49, pygame.K_2: 50, pygame.K_3: 51,
+        pygame.K_4: 52, pygame.K_5: 53, pygame.K_6: 54, pygame.K_7: 55,
+        pygame.K_8: 56, pygame.K_9: 57,
+        pygame.K_MINUS: 45, pygame.K_EQUALS: 61,
+        pygame.K_LSHIFT: 340, pygame.K_RSHIFT: 344,
+    }
+    
+    MOUSE_BUTTON_MAP = {1: 0, 3: 1, 2: 2}
+    
+    def __init__(self, app: "GlyphisIOBBS"):
+        super().__init__(app)
+        self.embed_module = None
+        self.last_frame: Optional[pygame.Surface] = None
+        self.last_mouse_pos = (0, 0)
+        self.baseline_desktop_x = 176
+        self.baseline_desktop_y = 209
+    
+    def _get_desktop_pos(self) -> Tuple[int, int]:
+        return self.app.res_manager.coords(self.baseline_desktop_x, self.baseline_desktop_y)
+    
+    def _load_base_desktop_size(self) -> Tuple[int, int]:
+        if getattr(self, "_base_desktop_size", None):
+            return self._base_desktop_size
+        desktop_path = os.path.join("Data", "OS", "Desktop-Enviroment.png")
+        try:
+            desktop_image = pygame.image.load(desktop_path)
+            self._base_desktop_size = desktop_image.get_size()
+        except Exception:
+            self._base_desktop_size = (self.app.bbs_width, self.app.bbs_height)
+        return self._base_desktop_size
+    
+    def _get_desktop_dimensions(self) -> Tuple[int, int]:
+        width = height = None
+        if hasattr(self.app, "os_mode") and self.app.os_mode and hasattr(self.app.os_mode, "desktop_size"):
+            ds = self.app.os_mode.desktop_size
+            if ds:
+                try:
+                    width = int(ds[0])
+                    height = int(ds[1])
+                except (TypeError, ValueError):
+                    width = height = None
+        if width is None or height is None:
+            base_w, base_h = self._load_base_desktop_size()
+            width = self.app.res_manager.scale(base_w)
+            height = self.app.res_manager.scale(base_h)
+        width = max(720, width)
+        height = max(480, height)
+        return (width, height)
+    
+    def _get_game_mouse_pos(self, screen_pos: Tuple[int, int]) -> Tuple[float, float]:
+        desktop_x, desktop_y = self._get_desktop_pos()
+        desktop_w, desktop_h = self._get_desktop_dimensions()
+        rel_x = screen_pos[0] - desktop_x
+        rel_y = screen_pos[1] - desktop_y
+        
+        if self.embed_module:
+            game_width, game_height = self.embed_module.get_size()
+            if game_width > 0 and game_height > 0 and desktop_w > 0 and desktop_h > 0:
+                game_x = (rel_x / desktop_w) * game_width
+                game_y = (rel_y / desktop_h) * game_height
+                return (
+                    max(0.0, min(float(game_width), float(game_x))),
+                    max(0.0, min(float(game_height), float(game_y)))
+                )
+        return (float(rel_x), float(rel_y))
+    
+    def enter(self) -> None:
+        """Initialize the embedded game DLL."""
+        try:
+            from . import cybertrain_embed
+            self.embed_module = cybertrain_embed
+            
+            # Set resolution to match desktop
+            desktop_width, desktop_height = self._get_desktop_dimensions()
+            print(f"[CyberTrainSession] Setting DLL resolution: {desktop_width}x{desktop_height}")
+            if hasattr(cybertrain_embed, "set_render_resolution"):
+                cybertrain_embed.set_render_resolution(desktop_width, desktop_height)
+            
+            # Sync username from BBS before initializing
+            if hasattr(self.app, 'get_active_user'):
+                active_user = self.app.get_active_user()
+                if active_user and active_user.get('username'):
+                    username = active_user.get('username')
+                    print(f"[CyberTrainSession.enter] Setting username from BBS: {username}")
+                    if hasattr(cybertrain_embed, 'set_username'):
+                        cybertrain_embed.set_username(username)
+
+            if not cybertrain_embed.initialize():
+                print("[CyberTrainSession] Failed to initialize CyberTrain DLL")
+                self.exit_requested = True
+                return
+            
+            pygame.mouse.set_visible(False)
+            print("[CyberTrainSession] CyberTrain started successfully")
+            
+        except ImportError as e:
+            print(f"[CyberTrainSession] Failed to import cybertrain_embed: {e}")
+            self.exit_requested = True
+        except Exception as e:
+            print(f"[CyberTrainSession] Failed to initialize CyberTrain: {e}")
+            self.exit_requested = True
+    
+    def handle_event(self, event: pygame.event.Event) -> Optional[str]:
+        if not self.embed_module:
+            return None
+        
+        if event.type == pygame.KEYDOWN:
+            raylib_key = self.KEY_MAP.get(event.key)
+            if raylib_key is not None:
+                self.embed_module.set_key_state(raylib_key, True)
+        elif event.type == pygame.KEYUP:
+            raylib_key = self.KEY_MAP.get(event.key)
+            if raylib_key is not None:
+                self.embed_module.set_key_state(raylib_key, False)
+        
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            raylib_button = self.MOUSE_BUTTON_MAP.get(event.button)
+            if raylib_button is not None:
+                self.embed_module.set_mouse_button_state(raylib_button, True)
+                game_pos = self._get_game_mouse_pos(event.pos)
+                self.embed_module.set_mouse_position(game_pos[0], game_pos[1])
+            # Handle mouse wheel
+            if event.button == 4:  # Scroll up
+                if hasattr(self.embed_module, 'set_mouse_wheel'):
+                    self.embed_module.set_mouse_wheel(1.0)
+            elif event.button == 5:  # Scroll down
+                if hasattr(self.embed_module, 'set_mouse_wheel'):
+                    self.embed_module.set_mouse_wheel(-1.0)
+        elif event.type == pygame.MOUSEBUTTONUP:
+            raylib_button = self.MOUSE_BUTTON_MAP.get(event.button)
+            if raylib_button is not None:
+                self.embed_module.set_mouse_button_state(raylib_button, False)
+        
+        if event.type == pygame.MOUSEMOTION:
+            dx, dy = 0.0, 0.0
+            if hasattr(event, 'rel') and event.rel:
+                dx, dy = float(event.rel[0]), float(event.rel[1])
+            self.embed_module.set_mouse_delta(dx, dy)
+            game_pos = self._get_game_mouse_pos(event.pos)
+            self.embed_module.set_mouse_position(game_pos[0], game_pos[1])
+            self.last_mouse_pos = event.pos
+        
+        if event.type == pygame.MOUSEWHEEL:
+            if hasattr(self.embed_module, 'set_mouse_wheel'):
+                self.embed_module.set_mouse_wheel(float(event.y))
+        
+        return None
+    
+    def update(self, dt: float) -> None:
+        if not self.embed_module:
+            return
+        
+        rel_x, rel_y = pygame.mouse.get_rel()
+        if abs(rel_x) > 0.01 or abs(rel_y) > 0.01:
+            self.embed_module.set_mouse_delta(float(rel_x), float(rel_y))
+        else:
+            self.embed_module.set_mouse_delta(0.0, 0.0)
+        
+        mouse_pos = pygame.mouse.get_pos()
+        game_pos = self._get_game_mouse_pos(mouse_pos)
+        self.embed_module.set_mouse_position(game_pos[0], game_pos[1])
+        self.last_mouse_pos = mouse_pos
+        
+        # Sync username from BBS
+        if hasattr(self.app, 'get_active_user'):
+            active_user = self.app.get_active_user()
+            if active_user and active_user.get('username'):
+                self.embed_module.set_username(active_user.get('username'))
+
+        # Upload score to Steam leaderboard
+        try:
+            credits = self.embed_module.get_last_final_score()
+            if credits > 0:
+                if hasattr(self.app, 'steam') and self.app.steam.is_available():
+                    self.app.steam.upload_leaderboard_score("CyberTrainLeaderboard", credits)
+        except Exception:
+            pass
+
+        if self.embed_module.should_exit():
+            self.exit_requested = True
+        
+        try:
+            self.last_frame = self.embed_module.get_frame_surface()
+        except Exception as e:
+            print(f"[CyberTrainSession] ERROR getting frame: {e}")
+    
+    def draw(self) -> None:
+        pass
+    
+    def get_game_frame(self) -> Optional[Tuple[pygame.Surface, Tuple[int, int]]]:
+        if not self.last_frame:
+            return None
+        
+        desktop_x, desktop_y = self._get_desktop_pos()
+        desktop_width, desktop_height = self._get_desktop_dimensions()
+        frame_width, frame_height = self.last_frame.get_size()
+        
+        if (frame_width, frame_height) != (desktop_width, desktop_height):
+            scale_x = desktop_width / frame_width
+            scale_y = desktop_height / frame_height
+            scale = min(scale_x, scale_y)
+            new_width = int(frame_width * scale)
+            new_height = int(frame_height * scale)
+            scaled_frame = pygame.transform.smoothscale(self.last_frame, (new_width, new_height))
+        else:
+            scaled_frame = self.last_frame
+        
+        return (scaled_frame, (desktop_x, desktop_y))
+    
+    def exit(self) -> None:
+        pygame.mouse.set_visible(True)
+        print("[CyberTrainSession] Exiting, cursor restored")
+        
+        if self.embed_module:
+            try:
+                self.embed_module.cleanup()
+            except Exception as e:
+                print(f"[CyberTrainSession] Error cleaning up: {e}")
+        self.embed_module = None
+        self.last_frame = None
+
+
+# ---------------------------------------------------------------------------
 # Data definitions
 # ---------------------------------------------------------------------------
 
@@ -732,6 +974,13 @@ GAME_DEFINITIONS: List[GameDefinition] = [
         description="Deep space mining simulator. Extract resources, upgrade ship, survive.",
         tokens_required=[Tokens.ASTROMINER],
         session_factory=AstroMinerSession,
+    ),
+    GameDefinition(
+        id="cyber_train",
+        title="CYBERTRAIN",
+        description="Isometric railway builder. Lay tracks, build stations, manage trains.",
+        tokens_required=[Tokens.CYBERTRAIN],
+        session_factory=CyberTrainSession,
     ),
 ]
 

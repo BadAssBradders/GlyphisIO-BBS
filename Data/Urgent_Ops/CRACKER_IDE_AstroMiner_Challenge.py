@@ -126,6 +126,7 @@ class CRACKER_IDE_AstroMiner_Challenge:
         self.ORANGE = (255, 165, 0)
         self.HIGHLIGHT_CYAN = (0, 70, 120)
         self.PINK = (255, 105, 180)
+        self.LIGHT_GREY = (180, 180, 180)  # Light grey for existing code in Node 4
         self.PANEL_GRADIENT_TOP = (16, 28, 52)
         self.PANEL_GRADIENT_BOTTOM = (6, 12, 28)
         self.HEADER_GRADIENT_TOP = (12, 96, 144)
@@ -173,6 +174,7 @@ class CRACKER_IDE_AstroMiner_Challenge:
         self.pending_token_grants = []
         self.module_animation_timer = 0.0
         self.hint_level = {}  # Track hint level per node for progressive hints
+        self.error_message_shown = False  # Track if error message shown for current run
         
         # Progress flags
         self._splash_loaded = False
@@ -199,7 +201,14 @@ class CRACKER_IDE_AstroMiner_Challenge:
         self.target_logo_size = None
         self.static_mock_surface = None
         self.parrot_logo_png = self._load_and_process_parrot_logo()
-        self.fireworks = []
+        self.fireworks = []  # Firework particles for Node 4 celebration
+        self.node_intro_messages_shown = {0: False, 1: False, 2: False, 3: False}  # Track if intro shown for each node
+        self.code_particles = []  # Particles that bounce out when correct code is typed
+        self.completion_text_animations = []  # Text animations for node completions
+        self.detected_patterns = set()  # Track which correct patterns have been detected to avoid duplicate particles
+        self.code_particles = []  # Particles that bounce out when correct code is typed
+        self.completion_text_animations = []  # Text animations for node completions
+        self.detected_patterns = set()  # Track which correct patterns have been detected to avoid duplicate particles
 
         # Content - Node metadata
         self.node_titles = ["NODE 01", "NODE 02", "NODE 03", "NODE 04"]
@@ -295,7 +304,7 @@ FEATURES: REAL-TIME MESH RENDERING, PROCEDURAL GENERATION
 ===============================================
 
 TECHNICAL OVERVIEW:
-Astro Miner features real-time 3D asteroid rendering - a computationally intensive feature for 1989 hardware. The rendering engine requires four configuration parameters before mesh data can be processed.
+Astro Miner features real-time 3D asteroid rendering - a computational first for technology ever in this decade! The rendering engine requires four configuration parameters before mesh data can be processed.
 
 MEMORY MAP:
 
@@ -331,38 +340,53 @@ NODE 4 OF 4 // COPY PROTECTION BYPASS
 
 ===============================================
 TARGET: PUBLISHER PROTECTION SCHEME
-METHOD: MEMORY PATCH + EXECUTION REDIRECT
+METHOD: CODE INJECTION + EXECUTION REDIRECT
 ===============================================
 
 PROTECTION ANALYSIS:
-Bradsonic implemented a custom disk-check protection scheme. At startup, the game reads address $D000 and validates against expected disk signature data. Failed validation triggers an "UNAUTHORIZED COPY" message and program halt.
+Bradsonic implemented a custom disk-check protection scheme. The game's startup code contains a protection check routine that validates disk signature data at address $D000. Failed validation triggers an "UNAUTHORIZED COPY" message and program halt.
 
-BYPASS STRATEGY:
-Two memory writes neutralize the protection:
+YOUR TASK - CODE SEARCH AND REPOSITIONING:
+The editor contains 50 lines of existing game code (shown in light grey). You need to:
 
-  $D000 - Protection Check Flag
-          Write: #$00 (NOP - forces validation pass)
-          Original code expects non-zero disk signature
-          
-  $D100 - Execution Vector
-          Write: #$EA (JMP opcode)
-          Redirects program flow to game entry point
-          
-  $E000 - Game Entry Point (target of redirect)
+1. SEARCH for the protection check section:
+   Look for the code block that starts with:
+     CHECK_DISK:
+     LDA $D000
+     CMP #$00
+     BEQ PROTECTION_FAIL
+
+2. FIND the existing JMP GAME_ENTRY instruction:
+   There's already a JMP GAME_ENTRY in the code, but it's in the WRONG place (after the protection check).
+
+3. DELETE the existing JMP GAME_ENTRY and REPOSITION it:
+   Delete the JMP GAME_ENTRY that's currently after CHECK_DISK:
+   Then type it again on a new line ABOVE the CHECK_DISK: label
+
+This will bypass the entire protection routine by jumping directly to the game entry point, completely skipping the disk validation code.
+
+REFERENCE CODE:
+Check the DEBUGGED CODE panel on the right. It shows:
+  - The section to search for (CHECK_DISK: through PROTECTION_FAIL:)
+  - Where to insert your JMP GAME_ENTRY
+  - The target label (GAME_ENTRY:) that the jump points to
 
 EXECUTION FLOW:
-1. Write #$00 to $D000 - neutralizes the disk check
-2. Write #$EA to $D100 - inserts jump instruction
-3. CPU reaches $D100, reads JMP opcode, jumps to $E000
-4. Protection routine is completely bypassed
+1. CPU starts executing code from the top
+2. Reaches your JMP GAME_ENTRY instruction
+3. Jumps directly to GAME_ENTRY: label
+4. Protection check code is completely bypassed
+5. Game starts normally
 
-REQUIRED SEQUENCE:
-  LDA #$00 / STA $D000  ; Neutralize check
-  LDA #$EA / STA $D100  ; Insert jump opcode
+TIPS:
+- The existing code is shown in light grey - you can scroll through it
+- Find the JMP GAME_ENTRY that's already in the code (it's in the wrong place)
+- Delete it, then type it again above CHECK_DISK:
+- You can insert new lines by placing cursor and pressing ENTER
+- When you type JMP GAME_ENTRY yourself, it will appear in pink
+- Use TAB to focus the reference code panel to see the exact pattern
 
-Upon successful completion, Astro Miner will execute without copy protection verification. The cracked binary can be distributed freely via BBS networks.
-
-THIS IS THE FINAL NODE. Complete the bypass to free Astro Miner."""
+THIS IS THE FINAL NODE. Find the protection check and bypass it to free Astro Miner!"""
         ]
 
         # =====================================================================
@@ -427,7 +451,7 @@ THIS IS THE FINAL NODE. Complete the bypass to free Astro Miner."""
             0: ["; NODE 1: SPLASH SCREEN", "; LDA = Load Accumulator", "; STA = Store Accumulator", "", "LDA #$4D    ; Bitmap magic 'M'", "STA $A000   ; -> Splash address", "LDA #$1F    ; 16-color palette", "STA $A100   ; -> Palette register", "JMP LOAD_AUDIO"],
             1: ["; NODE 2: AUDIO ENGINE", "; Initialize sound hardware", "", "LDA #$A1    ; Audio ON command", "STA $B000   ; -> Control register", "LDA #$FF    ; Buffer active", "STA $B100   ; -> Stream buffer", "JMP LOAD_MESH"],
             2: ["; NODE 3: 3D RENDERER", "; Configure mesh rendering", "", "LDA #$3D    ; Mesh format ID", "STA $C000   ; -> Header register", "LDA #$80    ; 128 vertices", "STA $C100   ; -> Vertex count", "LDA #$01    ; Enable normals", "STA $C200   ; -> Normal flag", "LDA #$42    ; Seed 66", "STA $C300   ; -> RNG seed", "JMP BYPASS_PROTECTION"],
-            3: ["; NODE 4: THE CRACK", "; Bypass copy protection", "", "LDA #$00    ; NOP (neutralize)", "STA $D000   ; -> Protection flag", "LDA #$EA    ; JMP opcode", "STA $D100   ; -> Redirect vector", "JMP GAME_ENTRY  ; FREEDOM!"]
+            3: ["; NODE 4: THE CRACK", "; Search for protection check and inject JMP", "", "; === SEARCH FOR THIS SECTION IN THE EDITOR ===", "CHECK_DISK:", "LDA $D000", "CMP #$00", "BEQ PROTECTION_FAIL", "LDA $D001", "CMP #$AA", "BNE PROTECTION_FAIL", "JMP GAME_ENTRY", "", "PROTECTION_FAIL:", "LDA #$01", "STA $0400", "JMP ERROR_HANDLER", "", "; === INSERT THIS LINE ABOVE CHECK_DISK: ===", "JMP GAME_ENTRY", "", "; === TARGET SECTION (jump destination) ===", "GAME_ENTRY:", "NOP", "NOP", "LDA #$42", "STA $0600", "JMP MAIN_LOOP"]
         }
 
         self.chat_messages: List[Tuple[str, str]] = []
@@ -445,14 +469,19 @@ THIS IS THE FINAL NODE. Complete the bypass to free Astro Miner."""
         self.editor_scroll_limit = 0
         self.modal_scroll_offset = 0
         self.modal_scroll_limit = 0
+        self.ref_code_scroll_offset = 0
+        self.ref_code_scroll_limit = 0
+        self.ref_code_total_height = 0
         
         self.placeholder_lines = {"JMP LOAD_AUDIO", "JMP LOAD_MESH", "JMP BYPASS_PROTECTION", "JMP GAME_ENTRY"}
         
+        # Node 4 code will be set after _get_node4_default_code is defined
+        node4_code = self._get_node4_default_code()
         self.default_code = [
             ["; NODE 01: LOAD_SPLASH", "", "JMP LOAD_AUDIO"],
             ["; NODE 02: LOAD_AUDIO", "", "JMP LOAD_MESH"],
             ["; NODE 03: LOAD_MESH", "", "JMP BYPASS_PROTECTION"],
-            ["; NODE 04: BYPASS_PROTECTION", "", "JMP GAME_ENTRY"]
+            node4_code  # 50 lines of existing code
         ]
 
         self.reset_state()
@@ -486,6 +515,59 @@ THIS IS THE FINAL NODE. Complete the bypass to free Astro Miner."""
                 self.video_cap = None
         return static_img
 
+    def _get_node4_default_code(self):
+        """Generate 50 lines of existing assembly code for Node 4 with protection check section."""
+        return [
+            "; NODE 04: BYPASS_PROTECTION",
+            "; Existing game code - find the protection check section",
+            "",
+            "INIT_STACK:",
+            "LDA #$FF",
+            "STA $01FF",
+            "LDX #$FE",
+            "TXS",
+            "",
+            "SETUP_IRQ:",
+            "SEI",
+            "LDA #$00",
+            "STA $0200",
+            "LDA #$01",
+            "STA $0201",
+            "CLI",
+            "",
+            "INIT_TIMER:",
+            "LDA #$10",
+            "STA $0300",
+            "LDA #$00",
+            "STA $0301",
+            "",
+            "CHECK_DISK:",
+            "LDA $D000",
+            "CMP #$00",
+            "BEQ PROTECTION_FAIL",
+            "LDA $D001",
+            "CMP #$AA",
+            "BNE PROTECTION_FAIL",
+            "JMP GAME_ENTRY",
+            "",
+            "PROTECTION_FAIL:",
+            "LDA #$01",
+            "STA $0400",
+            "JMP ERROR_HANDLER",
+            "",
+            "ERROR_HANDLER:",
+            "LDA #$FF",
+            "STA $0500",
+            "BRK",
+            "",
+            "GAME_ENTRY:",
+            "NOP",
+            "NOP",
+            "LDA #$42",
+            "STA $0600",
+            "JMP MAIN_LOOP"
+        ]
+    
     def _load_node_badges(self):
         for idx in range(1, 5):
             try:
@@ -516,6 +598,10 @@ THIS IS THE FINAL NODE. Complete the bypass to free Astro Miner."""
         self.chat_messages.clear()
         self.chat_message_queue.clear()
         self.hint_level = {0: 0, 1: 0, 2: 0, 3: 0}
+        # Reset particles and animations
+        self.code_particles.clear()
+        self.completion_text_animations.clear()
+        self.detected_patterns.clear()
         # Reset all scroll offsets
         self.chat_scroll_offset = 0
         self.chat_scroll_limit = 0
@@ -524,6 +610,9 @@ THIS IS THE FINAL NODE. Complete the bypass to free Astro Miner."""
         self.editor_scroll_limit = 0
         self.modal_scroll_offset = 0
         self.modal_scroll_limit = 0
+        self.ref_code_scroll_offset = 0
+        self.ref_code_scroll_limit = 0
+        self.ref_code_total_height = 0
         self.parse_code()
 
     def _restore_progress(self):
@@ -733,8 +822,10 @@ CODING BASICS:
   JMP LABEL - Jump to code label
 
 Check the DEBUGGED CODE panel on the right for reference!
-TAB cycles focus between editor, chat, and controls.
-Type your code, then TAB to RUN to execute!"""
+TAB cycles focus between editor, chat, reference code panel, and controls.
+Type your code, then TAB to RUN to execute!
+
+Remember: Press F4 to access the documentation that came with your computer - it has all the technical specs and assembly reference you might need!"""
 
     def _handle_hint_command(self) -> str:
         """Handle the HINT command - progressive hints."""
@@ -852,7 +943,8 @@ Just chat normally too - I'll try to help!
 Ask things like "what does #$4D mean?" or "how do I start?"
 
 TAB = cycle focus (editor -> chat -> controls)
-ENTER = run code (when controls focused)"""
+ENTER = run code (when controls focused)
+F4 = access computer documentation (assembly reference, hardware specs)"""
 
     def _submit_chat_message(self):
         text = self.chat_input.strip()
@@ -1019,27 +1111,47 @@ ENTER = run code (when controls focused)"""
         self.surface.set_clip(old_clip)
 
     def _draw_ref_code_panel(self):
-        content_rect, _ = self._draw_panel(self.ref_code_pane_rect, "DEBUGGED CODE", "REFERENCE")
+        accent = self.HIGHLIGHT_CYAN if self.focus_target == "ref_code" else self.DARK_CYAN
+        content_rect, _ = self._draw_panel(self.ref_code_pane_rect, "DEBUGGED CODE", "REFERENCE", accent=accent)
         old_clip = self.surface.get_clip(); self.surface.set_clip(content_rect)
-        y = content_rect.y
         
-        for line in self.node_reference_code.get(self.page_index, []):
-            if not line:
-                y += self.font_tiny.get_linesize() // 2
-                continue
-            if line.startswith(";"):
-                color = self.DARK_CYAN
-            elif "LDA" in line:
-                color = self.GREEN
-            elif "STA" in line:
-                color = self.YELLOW
-            elif "JMP" in line:
-                color = self.PINK
+        # Calculate total height
+        line_h = self.font_tiny.get_linesize() + 1
+        ref_lines = self.node_reference_code.get(self.page_index, [])
+        self.ref_code_total_height = sum(line_h if line else line_h // 2 for line in ref_lines)
+        visible_height = content_rect.height
+        self.ref_code_scroll_limit = max(0, self.ref_code_total_height - visible_height)
+        self.ref_code_scroll_offset = max(0, min(self.ref_code_scroll_offset, self.ref_code_scroll_limit))
+        
+        y = content_rect.y - self.ref_code_scroll_offset
+        
+        for line in ref_lines:
+            # Only draw if visible
+            if y + line_h > content_rect.y and y < content_rect.bottom:
+                if not line:
+                    y += line_h // 2
+                    continue
+                if line.startswith(";"):
+                    color = self.DARK_CYAN
+                elif "LDA" in line:
+                    color = self.GREEN
+                elif "STA" in line:
+                    color = self.YELLOW
+                elif "JMP" in line:
+                    color = self.PINK
+                else:
+                    color = self.CYAN
+                self.surface.blit(self.font_tiny.render(line, True, color), (content_rect.x, y))
+                y += line_h
             else:
-                color = self.CYAN
-            self.surface.blit(self.font_tiny.render(line, True, color), (content_rect.x, y))
-            y += self.font_tiny.get_linesize() + 1
+                # Still need to advance y even if not drawing
+                y += line_h if line else line_h // 2
+        
         self.surface.set_clip(old_clip)
+        
+        # Draw scroll indicator if needed
+        if self.ref_code_total_height > visible_height:
+            self._draw_scroll_indicator(content_rect, self.ref_code_scroll_offset, visible_height, self.ref_code_total_height)
 
     def _draw_control_strip(self):
         start_y = self.team_window_rect.bottom + int(32 * self.scale)
@@ -1079,7 +1191,8 @@ ENTER = run code (when controls focused)"""
             return
 
         display_surface = self.parrot_logo_png or self.static_mock_surface
-        is_video_active = self.challenge_completed or self.module_animation_timer > 0
+        # Only show video animation when Node 4 is complete (challenge fully completed)
+        is_video_active = self.challenge_completed and self.module_animation_timer > 0
 
         if is_video_active and self.video_cap:
             if not self.video_frame:
@@ -1139,20 +1252,30 @@ ENTER = run code (when controls focused)"""
         
         # Enhanced status bar
         if self.challenge_completed:
-            msg = "SUCCESS: ASTRO MINER CRACKED! The game is FREE for everyone on the BBS!"
+            msg = "SUCCESS: ASTRO MINER CRACKED! The game is FREE for everyone on the BBS and the rest of Pacifica!"
             color = self.GREEN
         elif self.cpu_state["isRunning"]:
             node_descriptions = ["Initializing graphics subsystem...", "Powering up audio engine...", "Configuring 3D renderer...", "Executing protection bypass..."]
             msg = f"RUNNING: {node_descriptions[self.page_index]}"
             color = self.YELLOW
         else:
-            msg = "EDITING: TAB cycles focus | Type HELP, HINT, or EXPLAIN for guidance | RUN to execute"
+            msg = "EDITING: TAB cycles focus (editor -> chat -> ref_code -> controls) | Type HELP, HINT, or EXPLAIN for guidance | RUN to execute"
             color = self.CYAN
         self.surface.blit(self.font_tiny.render(msg, True, color), (10, self.height - 20))
 
+        # Draw code particles (feedback for correct code)
+        self._draw_code_particles()
+        
+        # Draw fireworks if challenge is completed
+        if self.challenge_completed:
+            self._draw_fireworks()
+        
         # Draw modals to overlay (rendered last by main.py via get_screen_overlays)
         if self.modal_active: self._draw_initial_modal()
         elif self.success_modal_active: self._draw_success_modal()
+        
+        # Draw completion text animations AFTER modals so they appear on top
+        self._draw_completion_text_animations()
 
     def _draw_editor_pane(self):
         accent = self.HIGHLIGHT_CYAN if self.focus_target == "editor" else self.DARK_CYAN
@@ -1179,10 +1302,38 @@ ENTER = run code (when controls focused)"""
         self.surface.set_clip(content_rect)
         
         y = content_rect.y - self.editor_scroll_offset
+        # For Node 4, find the index of CHECK_DISK: to determine which JMP GAME_ENTRY is user-added
+        check_disk_idx = -1
+        if self.page_index == 3:
+            for idx, ln in enumerate(lines):
+                if ln.strip().upper().startswith("CHECK_DISK:"):
+                    check_disk_idx = idx
+                    break
+        
         for i, line in enumerate(lines):
             # Only draw visible lines
             if y + self.line_height > content_rect.y and y < content_rect.bottom:
-                if line.strip().startswith(";"):
+                # Node 4: Render existing code in light grey, including the default JMP GAME_ENTRY
+                if self.page_index == 3:
+                    # Check if this is a user-added JMP GAME_ENTRY (above CHECK_DISK)
+                    is_user_jmp = (line.strip().upper() == "JMP GAME_ENTRY" and 
+                                  check_disk_idx != -1 and i < check_disk_idx)
+                    # Check if this is the default JMP GAME_ENTRY (after CHECK_DISK or in default position)
+                    is_default_jmp = (line.strip().upper() == "JMP GAME_ENTRY" and 
+                                     (check_disk_idx == -1 or i > check_disk_idx))
+                    
+                    if is_user_jmp:
+                        # User-added JMP above CHECK_DISK - make it pink
+                        color = self.PINK
+                    elif is_default_jmp:
+                        # Default JMP in wrong position - make it grey
+                        color = self.LIGHT_GREY
+                    elif not line.strip().upper().startswith("JMP GAME_ENTRY"):
+                        # All other existing code is grey
+                        color = self.LIGHT_GREY
+                    else:
+                        color = self.LIGHT_GREY
+                elif line.strip().startswith(";"):
                     color = self.DARK_CYAN
                 elif line.strip().upper() in self.placeholder_lines:
                     color = self.PINK
@@ -1190,6 +1341,8 @@ ENTER = run code (when controls focused)"""
                     color = self.GREEN
                 elif "STA" in line.upper():
                     color = self.YELLOW
+                elif "JMP" in line.upper():
+                    color = self.CYAN
                 else:
                     color = self.CYAN
                 self.surface.blit(self.font_small.render(line, True, color), (content_rect.x + 5, y))
@@ -1370,6 +1523,49 @@ Press SPACE to continue."""
     # =========================================================================
     # EVENT HANDLING
     # =========================================================================
+    def _show_node_intro_if_needed(self):
+        """Show Jax intro for current node if not shown yet."""
+        if not self.node_intro_messages_shown.get(self.page_index, False):
+            self.node_intro_messages_shown[self.page_index] = True
+            
+            if self.page_index == 0:
+                # Node 1 intro - first time meeting Jax
+                self._queue_chat_message(f"Hey {self.player_username}! Jax here. Ready to crack some code?")
+                self._queue_chat_message("I got my hands on this Astro Miner build last week - been dying to get into it!")
+                self._queue_chat_message("The brass banned it here in the Isles... something about the space station names being 'politically sensitive'. Whatever.")
+                self._queue_chat_message("Point is - we're gonna free this game for everyone on the BBS. That's what we do, right?")
+                self._queue_chat_message("NODE 1 is graphics initialization. The Bradsonic 69000's CGA+ controller needs two memory writes: $A000 for the bitmap pointer, $A100 for the palette.")
+                self._queue_chat_message("You saw the technical docs in the briefing. I'll be here to help if you get stuck.")
+                self._queue_chat_message("Just type HELP or HINT if you need me. Or ask anything - I'm watching your code!")
+                self._queue_chat_message("Oh, and don't forget - press F4 anytime to look through the documentation that came with your computer. It's got all the assembly reference and hardware specs!")
+                # Radio recommendation based on time of day (only if not already streaming)
+                radio_rec = self._get_radio_recommendation()
+                if radio_rec:
+                    self._queue_chat_message(radio_rec)
+                self._queue_chat_message("The reference code is on the right panel. Let's do this!")
+            elif self.page_index == 1:
+                # Node 2 intro
+                self._queue_chat_message("Alright, NODE 2 time!")
+                self._queue_chat_message("Now we're getting into the audio subsystem. The Bradsonic 69000 has this FM synthesis chip that needs a proper handshake.")
+                self._queue_chat_message("Two addresses: $B000 powers it on, $B100 tells it the buffer's ready. Without both, the game runs silent.")
+                self._queue_chat_message("Same pattern as before - LDA to load, STA to store. You've got this!")
+            elif self.page_index == 2:
+                # Node 3 intro
+                self._queue_chat_message("NODE 3 - this is where it gets interesting!")
+                self._queue_chat_message("Astro Miner does real-time 3D rendering. I've been looking at the code - Bradsonic R&D genuinely pulled off something incredible here.")
+                self._queue_chat_message("Four memory addresses configure the whole pipeline: mesh format, vertex count, lighting normals, and the procedural seed.")
+                self._queue_chat_message("The seed at $C300 determines how the asteroids look - same seed, same pattern. It's like a fingerprint for the game.")
+                self._queue_chat_message("Four LDA/STA pairs this time. More work, but you're almost there!")
+            elif self.page_index == 3:
+                # Node 4 intro - the big one
+                self._queue_chat_message("NODE 4. The big one.")
+                self._queue_chat_message("This is where we actually crack the protection. Everything else was setup - this is the bypass.")
+                self._queue_chat_message("The game has a disk-check routine that validates the copy. We're gonna jump right past it.")
+                self._queue_chat_message("Look through the grey code - there's already a JMP GAME_ENTRY in there, but it's in the wrong place.")
+                self._queue_chat_message("Find it, delete it, then type it again above CHECK_DISK:. When you type it yourself, it'll show up in pink.")
+                self._queue_chat_message("One line of code. That's all it takes to free this game.")
+                self._queue_chat_message(f"Let's do this, {self.player_username}. This is what we came for.")
+    
     def handle_event(self, event):
         # Handle mouse wheel scrolling
         if event.type == pygame.MOUSEWHEEL:
@@ -1377,7 +1573,21 @@ Press SPACE to continue."""
             return
         
         if event.type != pygame.KEYDOWN: return
-        if event.key == pygame.K_ESCAPE: self.exit_requested = True; return "EXIT"
+        
+        # ESC key handling: close modals if open, otherwise exit challenge
+        if event.key == pygame.K_ESCAPE:
+            if self.modal_active or self.success_modal_active:
+                # Close modal
+                self.modal_active = False
+                self.success_modal_active = False
+                self.modal_scroll_offset = 0
+                # Show Jax intro for current node if not shown yet (same as SPACE/RETURN)
+                self._show_node_intro_if_needed()
+                return
+            else:
+                # No modal open, exit challenge
+                self.exit_requested = True
+                return "EXIT"
         
         # Modal scrolling
         if self.modal_active or self.success_modal_active:
@@ -1397,27 +1607,25 @@ Press SPACE to continue."""
                 self.modal_active = False
                 self.success_modal_active = False
                 self.modal_scroll_offset = 0
-                if not self.chat_messages and self.page_index == 0:
-                    # Queue personable introduction from Jax (different from modal documentation)
-                    self._queue_chat_message(f"Hey {self.player_username}! Jax here. Ready to crack some code?")
-                    self._queue_chat_message("I got my hands on this Astro Miner build last week - been dying to get into it!")
-                    self._queue_chat_message("The brass banned it here in the Isles... something about the space station names being 'politically sensitive'. Whatever.")
-                    self._queue_chat_message("Point is - we're gonna free this game for everyone on the BBS. That's what we do, right?")
-                    self._queue_chat_message("You saw the technical docs in the briefing. I'll be here to help if you get stuck.")
-                    self._queue_chat_message("Just type HELP or HINT if you need me. Or ask anything - I'm watching your code!")
-                    # Radio recommendation based on time of day (only if not already streaming)
-                    radio_rec = self._get_radio_recommendation()
-                    if radio_rec:
-                        self._queue_chat_message(radio_rec)
-                    self._queue_chat_message("Start with NODE 1 - graphics init. The reference code is on the right panel. Let's do this!")
+                # Show Jax intro for current node if not shown yet
+                self._show_node_intro_if_needed()
             return
 
         if event.key == pygame.K_TAB:
-            self.focus_target = "chat" if self.focus_target == "editor" else ("controls" if self.focus_target == "chat" else "editor")
+            # Cycle: editor -> chat -> ref_code -> controls -> editor
+            if self.focus_target == "editor":
+                self.focus_target = "chat"
+            elif self.focus_target == "chat":
+                self.focus_target = "ref_code"
+            elif self.focus_target == "ref_code":
+                self.focus_target = "controls"
+            else:  # controls
+                self.focus_target = "editor"
             return
 
         if self.focus_target == "editor": self._handle_editor_input(event)
         elif self.focus_target == "chat": self._handle_chat_input(event)
+        elif self.focus_target == "ref_code": self._handle_ref_code_input(event)
         elif self.focus_target == "controls" and event.key in (pygame.K_RETURN, pygame.K_SPACE): self._trigger_run()
     
     def _handle_scroll(self, direction: int):
@@ -1446,6 +1654,12 @@ Press SPACE to continue."""
                 self.editor_scroll_offset = max(0, self.editor_scroll_offset - scroll_amount)
             else:
                 self.editor_scroll_offset = min(self.editor_scroll_limit, self.editor_scroll_offset + scroll_amount)
+        elif self.focus_target == "ref_code":
+            # Scroll reference code panel
+            if direction > 0:
+                self.ref_code_scroll_offset = max(0, self.ref_code_scroll_offset - scroll_amount)
+            else:
+                self.ref_code_scroll_offset = min(self.ref_code_scroll_limit, self.ref_code_scroll_offset + scroll_amount)
 
     def _handle_editor_input(self, event):
         row, col = self.cursor_pos
@@ -1463,7 +1677,15 @@ Press SPACE to continue."""
             if col < len(lines[row]): lines[row] = lines[row][:col] + lines[row][col+1:]
             elif row < len(lines) - 1: lines[row] += lines.pop(row + 1)
         elif event.key == pygame.K_RETURN: lines.insert(row + 1, lines[row][col:]); lines[row] = lines[row][:col]; row += 1; col = 0
-        elif event.unicode.isprintable(): lines[row] = lines[row][:col] + event.unicode.upper() + lines[row][col:]; col += 1
+        elif event.unicode.isprintable(): 
+            lines[row] = lines[row][:col] + event.unicode.upper() + lines[row][col:]; col += 1
+            # Check if user typed semicolon and show helpful message
+            if event.unicode == ";":
+                friendly_name = self.player_username or "OPERATIVE"
+                if "@" in friendly_name:
+                    friendly_name = friendly_name.split("@", 1)[0]
+                cleaned_name = friendly_name.strip().upper() or "OPERATIVE"
+                self._queue_chat_message(f"Hey {cleaned_name}, no need to write the notes, anything from ; is just a guide for the original programmers, you don't need to copy that into your RAM!")
         self.cursor_pos = (row, col)
 
     def _handle_chat_input(self, event):
@@ -1503,11 +1725,30 @@ Press SPACE to continue."""
         elif event.unicode.isprintable():
             self.chat_input += event.unicode
 
+    def _handle_ref_code_input(self, event):
+        """Handle input when reference code panel is focused - scrolling only."""
+        scroll_line = self.font_tiny.get_linesize() + 2
+        scroll_page = scroll_line * 5
+        
+        if event.key == pygame.K_UP:
+            self.ref_code_scroll_offset = max(0, self.ref_code_scroll_offset - scroll_line)
+        elif event.key == pygame.K_DOWN:
+            self.ref_code_scroll_offset = min(self.ref_code_scroll_limit, self.ref_code_scroll_offset + scroll_line)
+        elif event.key == pygame.K_PAGEUP:
+            self.ref_code_scroll_offset = max(0, self.ref_code_scroll_offset - scroll_page)
+        elif event.key == pygame.K_PAGEDOWN:
+            self.ref_code_scroll_offset = min(self.ref_code_scroll_limit, self.ref_code_scroll_offset + scroll_page)
+        elif event.key == pygame.K_HOME:
+            self.ref_code_scroll_offset = 0
+        elif event.key == pygame.K_END:
+            self.ref_code_scroll_offset = self.ref_code_scroll_limit
+
     def _trigger_run(self):
         self.parse_code()
         self.cpu_state["isRunning"] = True
         self.cpu_state["cycles"] = 0
         self.cpu_state["instructionIndex"] = 0
+        self.error_message_shown = False  # Reset error message flag for new run
         node_names = ["graphics initialization", "audio engine setup", "3D renderer configuration", "protection bypass"]
         self._queue_chat_message(f"Running your code... Executing {node_names[self.page_index]} sequence!")
 
@@ -1543,11 +1784,36 @@ Press SPACE to continue."""
         if self.cpu_state["isRunning"]:
             self.cpu_state["cycles"] += 1
             self._check_completion()
-            if self.cpu_state["cycles"] > 50: self.cpu_state["isRunning"] = False
+            if self.cpu_state["cycles"] > 50 and not self.error_message_shown:
+                # If we've run out of cycles and no error was shown, show generic error
+                self.error_message_shown = True
+                self.cpu_state["isRunning"] = False
+                friendly_name = self.player_username or "OPERATIVE"
+                if "@" in friendly_name:
+                    friendly_name = friendly_name.split("@", 1)[0]
+                cleaned_name = friendly_name.strip().upper() or "OPERATIVE"
+                self._queue_chat_message(f"Hey {cleaned_name}, the code didn't execute correctly. Check the DEBUGGED CODE panel on the right to see what you need to write!")
+                self._queue_chat_message("Make sure you have all the required LDA and STA instructions with the correct values and addresses!")
         
-        if self.challenge_completed or self.module_animation_timer > 0:
+        # Update video only when challenge is fully completed
+        if self.challenge_completed and self.module_animation_timer > 0:
             self._update_video_frame(dt)
-            if self.module_animation_timer > 0: self.module_animation_timer -= dt
+            if self.module_animation_timer > 0: 
+                self.module_animation_timer -= dt
+        
+        # Update fireworks when challenge is completed
+        if self.challenge_completed:
+            self._update_fireworks()
+        
+        # Update code particles
+        self._update_code_particles()
+        
+        # Update completion text animations
+        self._update_completion_text_animations(dt)
+        
+        # Check for correct code patterns (only when not running, to avoid spam)
+        if not self.cpu_state["isRunning"]:
+            self._check_code_patterns()
 
     def _update_video_frame(self, dt):
         if not self.video_cap: return
@@ -1561,23 +1827,106 @@ Press SPACE to continue."""
                 resized = cv2.resize(rgb, self.target_logo_size)
                 self.video_frame = pygame.surfarray.make_surface(np.swapaxes(resized, 0, 1))
 
+    def _generate_error_message(self, code: str, patterns: List[Tuple[str, str]]) -> str:
+        """Generate helpful error message explaining what's missing or wrong."""
+        # Get username for personalization
+        friendly_name = self.player_username or "OPERATIVE"
+        if "@" in friendly_name:
+            friendly_name = friendly_name.split("@", 1)[0]
+        cleaned_name = friendly_name.strip().upper() or "OPERATIVE"
+        
+        # Node 4 has special error handling
+        if self.page_index == 3:
+            has_jmp = "JMP GAME_ENTRY" in code
+            has_check_disk = "CHECK_DISK:" in code
+            check_disk_idx = code.find("CHECK_DISK:")
+            jmp_idx = code.find("JMP GAME_ENTRY")
+            
+            if not has_check_disk:
+                return f"Hey {cleaned_name}, scroll through the code to find CHECK_DISK: - that's the protection check section you need to bypass!"
+            elif not has_jmp:
+                return f"Hey {cleaned_name}, you need to find the existing JMP GAME_ENTRY in the grey code, delete it, then type it again above CHECK_DISK:! Look for it after the protection check section."
+            elif jmp_idx > check_disk_idx:
+                return f"Hey {cleaned_name}, you found JMP GAME_ENTRY but it's still in the wrong place (after CHECK_DISK:). Delete it and type it again ABOVE CHECK_DISK: so it jumps past the protection check!"
+            else:
+                return f"Hey {cleaned_name}, make sure JMP GAME_ENTRY is on its own line, right before CHECK_DISK:. When you type it yourself, it should appear in pink!"
+        
+        missing_items = []
+        
+        # Check each required pattern
+        for inst, val in patterns:
+            if inst not in code or val not in code:
+                # Either instruction or value is missing
+                missing_items.append(f"{inst} {val}")
+        
+        # Generate node-specific error messages
+        node_errors = {
+            0: {
+                "missing": "You need to write #$4D to $A000 (bitmap) and #$1F to $A100 (palette).",
+                "partial": "Check the DEBUGGED CODE panel - you need LDA #$4D / STA $A000 and LDA #$1F / STA $A100.",
+            },
+            1: {
+                "missing": "You need to write #$A1 to $B000 (audio control) and #$FF to $B100 (buffer).",
+                "partial": "Check the DEBUGGED CODE panel - you need LDA #$A1 / STA $B000 and LDA #$FF / STA $B100.",
+            },
+            2: {
+                "missing": "You need to configure four addresses: $C000 (mesh format #$3D), $C100 (vertices #$80), $C200 (normals #$01), and $C300 (seed #$42).",
+                "partial": "Check the DEBUGGED CODE panel - Node 3 needs four LDA/STA pairs for the 3D engine setup.",
+            },
+        }
+        
+        error_info = node_errors.get(self.page_index, {})
+        base_msg = error_info.get("missing", "Some required instructions are missing.")
+        
+        if missing_items:
+            # Show which specific patterns are missing
+            missing_list = ", ".join(missing_items[:4])  # Limit to first 4 items
+            return f"Hey {cleaned_name}, your code isn't quite right. {base_msg} Missing or incorrect: {missing_list}. {error_info.get('partial', 'Check the reference code!')}"
+        else:
+            return f"Hey {cleaned_name}, something's not matching up. {base_msg} {error_info.get('partial', 'Check the reference code!')}"
+    
     def _check_completion(self):
         code = "\n".join(self.code_areas_content[self.page_index]).upper()
         
-        # More flexible matching - check for key instructions
-        required_patterns = {
-            0: [("LDA", "#$4D"), ("STA", "$A000"), ("LDA", "#$1F"), ("STA", "$A100")],
-            1: [("LDA", "#$A1"), ("STA", "$B000"), ("LDA", "#$FF"), ("STA", "$B100")],
-            2: [("LDA", "#$3D"), ("STA", "$C000"), ("LDA", "#$80"), ("STA", "$C100"), ("LDA", "#$01"), ("STA", "$C200"), ("LDA", "#$42"), ("STA", "$C300")],
-            3: [("LDA", "#$00"), ("STA", "$D000"), ("LDA", "#$EA"), ("STA", "$D100")],
-        }
+        # Node 4 has special validation - check for JMP GAME_ENTRY before CHECK_DISK
+        if self.page_index == 3:
+            # Check that JMP GAME_ENTRY exists and appears before CHECK_DISK:
+            has_jmp = "JMP GAME_ENTRY" in code
+            check_disk_idx = code.find("CHECK_DISK:")
+            jmp_idx = code.find("JMP GAME_ENTRY")
+            matches = has_jmp and (check_disk_idx == -1 or (jmp_idx != -1 and jmp_idx < check_disk_idx))
+        else:
+            # More flexible matching - check for key instructions
+            required_patterns = {
+                0: [("LDA", "#$4D"), ("STA", "$A000"), ("LDA", "#$1F"), ("STA", "$A100")],
+                1: [("LDA", "#$A1"), ("STA", "$B000"), ("LDA", "#$FF"), ("STA", "$B100")],
+                2: [("LDA", "#$3D"), ("STA", "$C000"), ("LDA", "#$80"), ("STA", "$C100"), ("LDA", "#$01"), ("STA", "$C200"), ("LDA", "#$42"), ("STA", "$C300")],
+            }
+            patterns = required_patterns.get(self.page_index, [])
+            matches = all(inst in code and val in code for inst, val in patterns)
         
-        patterns = required_patterns.get(self.page_index, [])
-        matches = all(inst in code and val in code for inst, val in patterns)
+        if not matches and self.cpu_state["cycles"] >= 10 and not self.error_message_shown:
+            # Code doesn't match - show error message after a few cycles
+            self.error_message_shown = True
+            self.cpu_state["isRunning"] = False
+            if self.page_index == 3:
+                error_msg = self._generate_error_message(code, [])
+            else:
+                error_msg = self._generate_error_message(code, patterns)
+            self._queue_chat_message(error_msg)
+            return
         
         if matches:
             self.cpu_state["isRunning"] = False
-            self.module_animation_timer = self.ANIMATION_DURATION
+            # Animation timer only set on Node 4 completion (see below)
+            
+            # Create completion text animation
+            if self.page_index == 3:
+                # Final completion - big deal!
+                self._create_completion_text_animation(self.page_index + 1, is_final=True)
+            else:
+                # Regular node completion
+                self._create_completion_text_animation(self.page_index + 1, is_final=False)
             
             # Grant tokens and set flags
             if self.page_index == 0:
@@ -1593,6 +1942,7 @@ Press SPACE to continue."""
                 self._protection_bypassed = True
                 self.challenge_completed = True
                 self.pending_token_grants.append("AMnode4")
+                self.pending_token_grants.append("ASTROMINER")  # Grant ASTROMINER token when Node 4 completes
             
             self.success_modal_active = True
             
@@ -1623,10 +1973,33 @@ Press SPACE to continue."""
                 self.cursor_pos = (1, 0)
                 # Reset hint level for new node
                 self.hint_level[self.page_index] = 0
-
+                # Reset reference code scroll when changing nodes
+                self.ref_code_scroll_offset = 0
+                # Reset particles and detected patterns for new node
+                self.code_particles.clear()
+                self.detected_patterns.clear()
+                # Mark that we'll show intro when modal is closed
+                self.node_intro_messages_shown[self.page_index] = False
+                # Prepare modal for new node
+                self._prepare_modal_for_current_node()
+                
+                # Check if reference code is scrollable and mention it
+                ref_lines = self.node_reference_code.get(self.page_index, [])
+                line_h = self.font_tiny.get_linesize() + 1
+                ref_height = sum(line_h if line else line_h // 2 for line in ref_lines)
+                ref_panel_height = self.ref_code_pane_rect.height - self.font_small.get_linesize() - 20  # Approximate visible area
+                
+                if ref_height > ref_panel_height:
+                    self._queue_chat_message(f"Quick tip: The reference code in the DEBUGGED CODE panel is scrollable - use TAB to focus it, then UP/DOWN or PGUP/PGDN to scroll through all the code you need to type!")
+                
                 self._queue_chat_message(f"NODE {self.page_index + 1} is up. Check the briefing or holler if you need me!")
             else:
-                # FINAL COMPLETION - Personal celebration from Jax
+                # FINAL COMPLETION - Personal celebration from Jax with fireworks
+                # Initialize fireworks for celebration
+                self._init_fireworks()
+                # Start parrot animation
+                self.module_animation_timer = self.ANIMATION_DURATION
+                
                 final_messages = [
                     "...",
                     "...",
@@ -1649,6 +2022,270 @@ Press SPACE to continue."""
                 ]
                 for msg in final_messages:
                     self._queue_chat_message(msg)
+
+    # =========================================================================
+    # FIREWORKS SYSTEM - Celebration for Node 4 completion
+    # =========================================================================
+    def _init_fireworks(self):
+        """Initialize firework particles for Node 4 celebration."""
+        self.fireworks = []
+        # Create multiple firework bursts
+        for _ in range(8):
+            x = random.randint(int(self.width * 0.2), int(self.width * 0.8))
+            y = random.randint(int(self.height * 0.2), int(self.height * 0.6))
+            # Create burst of particles
+            colors = [
+                (0, 255, 255),  # Cyan
+                (255, 255, 255),  # White
+                (0, 255, 0),  # Green
+                (255, 255, 0),  # Yellow
+                (255, 165, 0),  # Orange
+            ]
+            for _ in range(20):
+                color = random.choice(colors)
+                angle = random.uniform(0, 2 * math.pi)
+                speed = random.uniform(2, 6)
+                self.fireworks.append({
+                    "x": x,
+                    "y": y,
+                    "vx": speed * math.cos(angle),
+                    "vy": speed * math.sin(angle),
+                    "color": color,
+                    "life": 1.0,
+                    "decay": random.uniform(0.01, 0.03),
+                    "size": random.randint(2, 4),
+                })
+
+    def _update_fireworks(self):
+        """Update firework particle positions and lifetimes."""
+        for fw in self.fireworks[:]:
+            fw["x"] += fw["vx"]
+            fw["y"] += fw["vy"]
+            fw["vy"] += 0.2  # Gravity
+            fw["life"] -= fw["decay"]
+            if fw["life"] <= 0:
+                self.fireworks.remove(fw)
+        
+        # Occasionally add new bursts
+        if len(self.fireworks) < 50 and random.random() < 0.1:
+            x = random.randint(int(self.width * 0.2), int(self.width * 0.8))
+            y = random.randint(int(self.height * 0.2), int(self.height * 0.6))
+            colors = [
+                (0, 255, 255),  # Cyan
+                (255, 255, 255),  # White
+                (0, 255, 0),  # Green
+                (255, 255, 0),  # Yellow
+                (255, 165, 0),  # Orange
+            ]
+            for _ in range(15):
+                color = random.choice(colors)
+                angle = random.uniform(0, 2 * math.pi)
+                speed = random.uniform(2, 6)
+                self.fireworks.append({
+                    "x": x,
+                    "y": y,
+                    "vx": speed * math.cos(angle),
+                    "vy": speed * math.sin(angle),
+                    "color": color,
+                    "life": 1.0,
+                    "decay": random.uniform(0.01, 0.03),
+                    "size": random.randint(2, 4),
+                })
+
+    def _draw_fireworks(self):
+        """Draw firework particles with alpha blending."""
+        for fw in self.fireworks:
+            alpha = int(255 * fw["life"])
+            if alpha > 0:
+                size = int(fw["size"] * fw["life"])
+                if size > 0:
+                    # Create surface with alpha for each particle
+                    particle_surface = pygame.Surface((size * 2 + 2, size * 2 + 2), pygame.SRCALPHA)
+                    color_with_alpha = (*fw["color"][:3], alpha)
+                    pygame.draw.circle(
+                        particle_surface,
+                        color_with_alpha,
+                        (size + 1, size + 1),
+                        size
+                    )
+                    self.surface.blit(particle_surface, (int(fw["x"]) - size - 1, int(fw["y"]) - size - 1))
+
+    # =========================================================================
+    # CODE PARTICLE SYSTEM - Feedback when correct code is typed
+    # =========================================================================
+    def _create_code_particles(self, x, y, color):
+        """Create particles that bounce out from correct code lines."""
+        for _ in range(6):
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(1.5, 3.5)
+            self.code_particles.append({
+                "x": x,
+                "y": y,
+                "vx": speed * math.cos(angle),
+                "vy": speed * math.sin(angle),
+                "color": color,
+                "life": 1.0,
+                "decay": random.uniform(0.02, 0.04),
+                "size": random.randint(2, 3),
+            })
+
+    def _update_code_particles(self):
+        """Update code particle positions and lifetimes."""
+        for p in self.code_particles[:]:
+            p["x"] += p["vx"]
+            p["y"] += p["vy"]
+            p["vy"] += 0.15  # Light gravity
+            p["life"] -= p["decay"]
+            if p["life"] <= 0:
+                self.code_particles.remove(p)
+
+    def _draw_code_particles(self):
+        """Draw code particles with alpha blending."""
+        for p in self.code_particles:
+            alpha = int(255 * p["life"])
+            if alpha > 0:
+                size = int(p["size"] * p["life"])
+                if size > 0:
+                    particle_surface = pygame.Surface((size * 2 + 2, size * 2 + 2), pygame.SRCALPHA)
+                    color_with_alpha = (*p["color"][:3], alpha)
+                    pygame.draw.circle(
+                        particle_surface,
+                        color_with_alpha,
+                        (size + 1, size + 1),
+                        size
+                    )
+                    self.surface.blit(particle_surface, (int(p["x"]) - size - 1, int(p["y"]) - size - 1))
+
+    # =========================================================================
+    # COMPLETION TEXT ANIMATION SYSTEM
+    # =========================================================================
+    def _create_completion_text_animation(self, node_num, is_final=False):
+        """Create text animation for node completion."""
+        if is_final:
+            text = "ASTRO MINER CRACKED!"
+            subtext = "FREE THE GAMES!"
+            color = self.GREEN
+            scale_start = 0.5
+            scale_end = 2.5
+            duration = 2.5
+        else:
+            text = f"NODE {node_num} COMPLETE"
+            subtext = "CONGRATULATIONS!"
+            color = self.CYAN
+            scale_start = 0.3
+            scale_end = 1.8
+            duration = 1.8
+        
+        self.completion_text_animations.append({
+            "text": text,
+            "subtext": subtext,
+            "color": color,
+            "x": self.width // 2,
+            "y": self.height // 2,
+            "scale": scale_start,
+            "scale_target": scale_end,
+            "life": duration,
+            "max_life": duration,
+            "alpha": 255,
+        })
+
+    def _update_completion_text_animations(self, dt):
+        """Update completion text animation scales and alpha."""
+        for anim in self.completion_text_animations[:]:
+            anim["life"] -= dt
+            if anim["life"] <= 0:
+                self.completion_text_animations.remove(anim)
+                continue
+            
+            # Scale animation - grow then shrink slightly
+            progress = 1.0 - (anim["life"] / anim["max_life"])
+            if progress < 0.5:
+                # Growing phase
+                anim["scale"] = anim["scale_target"] * (progress * 2)
+            else:
+                # Slight shrink phase
+                shrink_progress = (progress - 0.5) * 2
+                anim["scale"] = anim["scale_target"] * (1.0 - shrink_progress * 0.2)
+            
+            # Fade out in last 30% of life
+            if anim["life"] < anim["max_life"] * 0.3:
+                anim["alpha"] = int(255 * (anim["life"] / (anim["max_life"] * 0.3)))
+
+    def _draw_completion_text_animations(self):
+        """Draw completion text animations."""
+        for anim in self.completion_text_animations:
+            if anim["alpha"] <= 0:
+                continue
+            
+            # Create text surface with scaling using Courier font to match app style
+            font_size = int(self.font_large.get_height() * anim["scale"])
+            try:
+                # Use Courier font (bold for main text) to match app fonts
+                scaled_font = pygame.font.SysFont("Courier", max(12, font_size), bold=True)
+            except:
+                scaled_font = self.font_large
+            
+            # Main text
+            text_surf = scaled_font.render(anim["text"], True, anim["color"])
+            text_surf.set_alpha(anim["alpha"])
+            text_rect = text_surf.get_rect(center=(anim["x"], anim["y"] - 20))
+            self.surface.blit(text_surf, text_rect)
+            
+            # Subtext (smaller)
+            if anim["subtext"]:
+                sub_size = int(self.font_medium.get_height() * anim["scale"] * 0.6)
+                try:
+                    # Use Courier font (not bold) for subtext to match app fonts
+                    sub_font = pygame.font.SysFont("Courier", max(10, sub_size))
+                except:
+                    sub_font = self.font_medium
+                sub_surf = sub_font.render(anim["subtext"], True, self.YELLOW)
+                sub_surf.set_alpha(anim["alpha"])
+                sub_rect = sub_surf.get_rect(center=(anim["x"], anim["y"] + 30))
+                self.surface.blit(sub_surf, sub_rect)
+
+    def _check_code_patterns(self):
+        """Check if user has typed correct code patterns and create particles."""
+        lines = self.code_areas_content[self.page_index]
+        
+        if self.page_index == 3:
+            # Node 4: Check for JMP GAME_ENTRY before CHECK_DISK
+            code = "\n".join(lines).upper()
+            check_disk_idx = code.find("CHECK_DISK:")
+            jmp_idx = code.find("JMP GAME_ENTRY")
+            pattern_key = f"node4_jmp_{self.page_index}"
+            
+            if jmp_idx != -1 and check_disk_idx != -1 and jmp_idx < check_disk_idx and pattern_key not in self.detected_patterns:
+                # Find the line number for particle position
+                lines_before = code[:jmp_idx].count('\n')
+                if lines_before < len(lines):
+                    line_y = self.editor_pane_rect.y + self.panel_padding + (lines_before * self.line_height) - self.editor_scroll_offset
+                    particle_x = self.editor_pane_rect.x + 150
+                    particle_y = line_y + self.line_height // 2
+                    self._create_code_particles(particle_x, particle_y, self.PINK)
+                    self.detected_patterns.add(pattern_key)
+        else:
+            # Nodes 1-3: Check for required patterns
+            code = "\n".join(lines).upper()
+            required_patterns = {
+                0: [("LDA", "#$4D", self.GREEN), ("STA", "$A000", self.YELLOW), ("LDA", "#$1F", self.GREEN), ("STA", "$A100", self.YELLOW)],
+                1: [("LDA", "#$A1", self.GREEN), ("STA", "$B000", self.YELLOW), ("LDA", "#$FF", self.GREEN), ("STA", "$B100", self.YELLOW)],
+                2: [("LDA", "#$3D", self.GREEN), ("STA", "$C000", self.YELLOW), ("LDA", "#$80", self.GREEN), ("STA", "$C100", self.YELLOW), ("LDA", "#$01", self.GREEN), ("STA", "$C200", self.YELLOW), ("LDA", "#$42", self.GREEN), ("STA", "$C300", self.YELLOW)],
+            }
+            
+            patterns = required_patterns.get(self.page_index, [])
+            for inst, val, color in patterns:
+                pattern_key = f"node{self.page_index}_{inst}_{val}"
+                if inst in code and val in code and pattern_key not in self.detected_patterns:
+                    # Find the line containing this pattern
+                    for line_idx, line in enumerate(lines):
+                        if inst in line.upper() and val in line.upper():
+                            line_y = self.editor_pane_rect.y + self.panel_padding + (line_idx * self.line_height) - self.editor_scroll_offset
+                            particle_x = self.editor_pane_rect.x + 150
+                            particle_y = line_y + self.line_height // 2
+                            self._create_code_particles(particle_x, particle_y, color)
+                            self.detected_patterns.add(pattern_key)
+                            break
 
 
 # =============================================================================

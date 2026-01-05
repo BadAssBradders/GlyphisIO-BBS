@@ -38,6 +38,7 @@ class Tokens:
     JAX1 = "JAX1"  # Volunteered to help Jaxkando with game cracking
     JAX2 = "JAX2"  # Received cracking instructions from Jaxkando - unlocks challenge
     ASTROMINER = "ASTROMINER"
+    CYBERTRAIN = "CYBERTRAIN"
     PAPERCRANEBBS = "PAPERCRANEBBS"
     AUDIO_ON = "AUDIO_ON"  # Completed all 7 nodes, all LEDs green
     MODEM1ST = "MODEM1ST"  # First successful modem connection established
@@ -171,6 +172,11 @@ TOKEN_METADATA: Dict[str, TokenMeta] = {
         code=Tokens.ASTROMINER,
         label="ASTROMINER",
         description="Access to the Astro Miner prototype",
+    ),
+    Tokens.CYBERTRAIN: TokenMeta(
+        code=Tokens.CYBERTRAIN,
+        label="CYBERTRAIN",
+        description="Access to the CyberTrain railway builder prototype",
     ),
     Tokens.PAPERCRANEBBS: TokenMeta(
         code=Tokens.PAPERCRANEBBS,

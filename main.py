@@ -6,6 +6,7 @@ import time
 import re
 import json
 import os
+import math
 import numpy as np
 import logging
 from typing import Dict, List, Optional, Tuple
@@ -34,7 +35,7 @@ if os.path.exists(_data_path) and _data_path not in sys.path:
 
 # Import game systems
 from games import GAME_DEFINITIONS, GameDefinition, BaseGameSession
-from games.registry import launch_external_game, AstroMinerSession
+from games.registry import launch_external_game, AstroMinerSession, CyberTrainSession
 from tokens import Tokens, normalize_token, describe_token, sort_tokens
 
 # Import supporting systems
@@ -1217,6 +1218,12 @@ class GLYPHIS_IOBBS:
         self.active_field = None  # to, subject, body, or send
         self.current_recipient_index = 0  # Index in team_member_emails for TO field selection
         
+        # Guided email mode state (for JAX cracking assistance quest)
+        self.guided_email_active = False  # True when compose is in guided mode
+        self.guided_email_subject = "CRACKING ASSISTANCE"  # Required subject text
+        self.guided_email_body_placeholder = "[TELL JAX THAT YOU'RE INTERESTED IN CRACKING THE GAMES HE MENTIONED]"
+        self.guided_email_body_started = False  # True once user starts typing in body
+        
         # Selected email
         self.selected_email = None
         self.previous_email_state = None  # Track which list we came from
@@ -1279,6 +1286,21 @@ class GLYPHIS_IOBBS:
         self.baseline_desktop_y = 209
         # self.pirate_radio_app already initialized to None earlier
         self.pirate_radio_intro_sound = None
+        # Load mail notification sound
+        self.mail_sound = None
+        mail_sound_path = get_data_path("Audio", "mail.wav")
+        if os.path.exists(mail_sound_path):
+            try:
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init(frequency=AUDIO_FREQUENCY, size=AUDIO_SIZE, channels=AUDIO_CHANNELS, buffer=AUDIO_BUFFER)
+                self.mail_sound = pygame.mixer.Sound(mail_sound_path)
+                self.mail_sound.set_volume(0.7)  # Set volume to 70%
+            except Exception as e:
+                logger.warning(f"Failed to load mail.wav: {e}")
+                self.mail_sound = None
+        else:
+            logger.debug(f"mail.wav not found at {mail_sound_path}")
+        
         if _pirate_radio_available and PirateRadioApp:
             try:
                 desktop_x, desktop_y = self.res_manager.coords(self.baseline_desktop_x, self.baseline_desktop_y)
@@ -1867,17 +1889,17 @@ class GLYPHIS_IOBBS:
         # Strip time prefixes to get the base filename for detection
         base_filename_for_detection = current_filename.replace("night-", "").replace("day-", "")
         
-        # Check if Astro Miner is active - use Audio-Desktop-os video
-        astro_miner_active = self._is_astro_miner_session_active()
+        # Check if Astro Miner or CyberTrain is active - use Audio-Desktop-os video
+        embedded_game_active = self._is_embedded_dll_game_active()
         
         # PRIORITY 1: If OSBoot video is playing, force Audio-Desktop-No-Sound-os video (highest priority)
         # Night cycle will be applied automatically via _get_time_aware_video_name() below
         if self.os_boot_video_playing:
             desired_state = "osboot-playing"
             base_video = "Audio-Desktop-No-Sound-os.mp4"  # Will become "night-Audio-Desktop-No-Sound-os.mp4" if nighttime
-        elif astro_miner_active:
-            # Astro Miner is playing - always use -os variant so frozen backgrounds look correct
-            desired_state = "astro-miner"
+        elif embedded_game_active:
+            # Embedded DLL game is playing - always use -os variant so frozen backgrounds look correct
+            desired_state = "embedded-game"
             base_video = "Audio-Desktop-os.mp4"
         # Treat RadioMusic same as cracker_audio_playing for video selection
         # Also check for pirate radio playing
@@ -1928,11 +1950,11 @@ class GLYPHIS_IOBBS:
             self.desktop_state = desired_state
             self._set_desktop_video(time_aware_video)
 
-    def _is_astro_miner_session_active(self) -> bool:
+    def _is_embedded_dll_game_active(self) -> bool:
         return (
             self.state == "game_session"
             and self.active_game_session is not None
-            and isinstance(self.active_game_session, AstroMinerSession)
+            and isinstance(self.active_game_session, (AstroMinerSession, CyberTrainSession))
         )
 
     # ------------------------------------------------------------------
@@ -2001,11 +2023,20 @@ class GLYPHIS_IOBBS:
         self.screen.blit(self.bbs_surface, (self.bbs_x, self.bbs_y))
         pygame.display.flip()
     
+    def _play_mail_sound(self) -> None:
+        """Play mail notification sound if user has AUDIO_ON token"""
+        if self.inventory.has_token(Tokens.AUDIO_ON) and self.mail_sound:
+            try:
+                self.mail_sound.play()
+            except Exception as e:
+                logger.warning(f"Failed to play mail.wav: {e}")
+
     def check_email_database(self) -> None:
         """Check email database for new emails based on tokens and add them to inbox"""
         new_emails = self.email_db.check_and_send_emails(self.inventory, self.player_email, self.inbox)
         for email in new_emails:
             self.inbox.append(email)
+            self._play_mail_sound()  # Play sound for each new email
             
         # Process delayed emails
         current_time = time.time()
@@ -2015,6 +2046,7 @@ class GLYPHIS_IOBBS:
         for delayed in self.delayed_emails:
             if current_time >= delayed["delivery_time"]:
                 self.inbox.append(delayed["email"])
+                self._play_mail_sound()  # Play sound when delayed email is delivered
                 delivered_any = True
                 log_event(f"Delayed email delivered: '{delayed['email'].subject}' from {delayed['email'].sender}")
             else:
@@ -2551,6 +2583,13 @@ class GLYPHIS_IOBBS:
                 color = RED if locked else DARK_CYAN
                 tag = "[ ]"
 
+            # Pulse EMAIL SYSTEM when in guided email mode (has JAX but not JAX1)
+            if module == "EMAIL SYSTEM" and self.is_guided_email_mode_active() and not locked:
+                # Light cyan color for pulsing: (150, 255, 255)
+                light_cyan = (150, 255, 255)
+                base_color = WHITE if i == self.current_module else DARK_CYAN
+                color = self.get_pulse_color(base_color, light_cyan, speed=1.5)
+
             text_x = entry_rect.x + int(14 * self.scale)
             self.draw_text(f"{tag} {label}", module_font, color, text_x, y)
             y += row_height
@@ -2646,6 +2685,38 @@ class GLYPHIS_IOBBS:
         if isinstance(custom_message, str) and custom_message:
             return custom_message.replace("{username}", placeholder_username)
         return default_message
+
+    def is_guided_email_mode_active(self) -> bool:
+        """Check if player should be guided to email Jax about cracking.
+        
+        Returns True when player has JAX token (read the post) but NOT JAX1 token
+        (hasn't yet volunteered to help with cracking).
+        """
+        has_jax = self.inventory.has_token(Tokens.JAX)
+        has_jax1 = self.inventory.has_token(Tokens.JAX1)
+        return has_jax and not has_jax1
+
+    def get_pulse_color(self, base_color: tuple, light_color: tuple, speed: float = 2.0) -> tuple:
+        """Get a pulsing color that oscillates between base and light color.
+        
+        Args:
+            base_color: The normal color (RGB tuple)
+            light_color: The lighter color to pulse to (RGB tuple)
+            speed: Pulse speed in Hz (default 2.0 = 2 cycles per second)
+            
+        Returns:
+            Interpolated color between base and light based on time
+        """
+        # Use sine wave for smooth pulsing, oscillating between 0 and 1
+        t = time.time() * speed * 2 * math.pi
+        pulse = (math.sin(t) + 1) / 2  # Range 0 to 1
+        
+        # Interpolate between base and light colors
+        r = int(base_color[0] + (light_color[0] - base_color[0]) * pulse)
+        g = int(base_color[1] + (light_color[1] - base_color[1]) * pulse)
+        b = int(base_color[2] + (light_color[2] - base_color[2]) * pulse)
+        
+        return (r, g, b)
 
     def load_main_terminal_feed(self):
         default_posts = [
@@ -3266,6 +3337,12 @@ class GLYPHIS_IOBBS:
                 color = DARK_CYAN
                 tag = "[ ]"
 
+            # Pulse NEW MESSAGE when in guided email mode (has JAX but not JAX1)
+            if option == "NEW MESSAGE" and self.is_guided_email_mode_active():
+                light_cyan = (150, 255, 255)
+                base_color = WHITE if i == self.current_module else DARK_CYAN
+                color = self.get_pulse_color(base_color, light_cyan, speed=1.5)
+
             module_font = self.font_medium_small if option.startswith("INBOX") else self.font_medium
             self.draw_text(f"{tag} {option}", module_font, color, entry_rect.x + int(14 * self.scale), y)
             y += row_height
@@ -3338,7 +3415,7 @@ class GLYPHIS_IOBBS:
         
         # Show current recipient
         recipient_text = self.compose_to
-        if self.active_field == "to":
+        if self.active_field == "to" and not self.guided_email_active:
             recipient_text += " [UP/DOWN to change]"
         self.draw_text(recipient_text, self.font_small, to_color, to_field_x + int(8 * self.scale), cursor_y + int(6 * self.scale))
         cursor_y += int(40 * self.scale)
@@ -3360,7 +3437,27 @@ class GLYPHIS_IOBBS:
             ),
             1,
         )
-        self.draw_text(self.compose_subject + cursor, self.font_small, subject_color, subject_field_x + int(8 * self.scale), cursor_y + int(6 * self.scale))
+        
+        # In guided email mode, show ghost text for subject
+        if self.guided_email_active:
+            # Draw the ghost subject text in dark grey (what user needs to type)
+            ghost_subject = self.guided_email_subject  # "CRACKING ASSISTANCE"
+            typed_length = len(self.compose_subject)
+            
+            if typed_length < len(ghost_subject):
+                # Show remaining ghost text after what user has typed
+                remaining_ghost = ghost_subject[typed_length:]
+                # Calculate x position after typed text
+                typed_width = self.font_small.size(self.compose_subject)[0] if self.compose_subject else 0
+                ghost_x = subject_field_x + int(8 * self.scale) + typed_width
+                # Dark grey color for ghost text
+                ghost_color = (80, 80, 80)
+                self.draw_text(remaining_ghost, self.font_small, ghost_color, ghost_x, cursor_y + int(6 * self.scale))
+            
+            # Draw the user's typed subject text in cyan on top
+            self.draw_text(self.compose_subject + cursor, self.font_small, subject_color, subject_field_x + int(8 * self.scale), cursor_y + int(6 * self.scale))
+        else:
+            self.draw_text(self.compose_subject + cursor, self.font_small, subject_color, subject_field_x + int(8 * self.scale), cursor_y + int(6 * self.scale))
         cursor_y += int(60 * self.scale)
 
         # Body field
@@ -3385,14 +3482,37 @@ class GLYPHIS_IOBBS:
             ),
             1,
         )
-        self.draw_text(
-            body_text,
-            self.font_small,
-            body_color,
-            panel_x + int(10 * self.scale),
-            body_y + int(10 * self.scale),
-            panel_width - int(20 * self.scale),
-        )
+        
+        # In guided email mode, show placeholder text that disappears when typing
+        if self.guided_email_active and not self.guided_email_body_started and not self.compose_body:
+            # Show placeholder instruction text in dark grey
+            placeholder_color = (80, 80, 80)
+            self.draw_text(
+                self.guided_email_body_placeholder,
+                self.font_small,
+                placeholder_color,
+                panel_x + int(10 * self.scale),
+                body_y + int(10 * self.scale),
+                panel_width - int(20 * self.scale),
+            )
+            # Also show cursor if active field is body
+            if self.active_field == "body":
+                self.draw_text(
+                    "|",
+                    self.font_small,
+                    body_color,
+                    panel_x + int(10 * self.scale),
+                    body_y + int(10 * self.scale),
+                )
+        else:
+            self.draw_text(
+                body_text,
+                self.font_small,
+                body_color,
+                panel_x + int(10 * self.scale),
+                body_y + int(10 * self.scale),
+                panel_width - int(20 * self.scale),
+            )
 
         send_y = body_y + body_field_height + int(20 * self.scale)
         button_x = panel_x
@@ -3616,7 +3736,7 @@ class GLYPHIS_IOBBS:
                 {
                     "id": "ops_standby",
                     "title": "Awaiting dispatch authorisation",
-                    "description": "No urgent assignments have been issued. Stand by for Uncle-am's signal.",
+                    "description": "No urgent assignments have been issued. Stand by for further announcements from within the collective.",
                     "status": "Status: stand by.",
                     "launch_method": None,
                 }
@@ -4192,15 +4312,16 @@ class GLYPHIS_IOBBS:
                 modules_rect.width - int(32 * self.scale),
                 row_height,
             )
-            if i == self.current_task:
+            # Don't show selection rectangle for "Awaiting dispatch authorisation" task
+            if task.get("id") == "ops_standby":
+                # No selection rectangle for standby task
+                color = DARK_CYAN
+                prefix = ""
+            elif i == self.current_task:
                 pygame.draw.rect(self.bbs_surface, HIGHLIGHT_BLUE, entry_rect)
                 pygame.draw.rect(self.bbs_surface, ACCENT_CYAN, entry_rect, 2)
                 color = WHITE
-                # Don't show [>] prefix for "Awaiting dispatch authorisation" task
-                if task.get("id") == "ops_standby":
-                    prefix = ""
-                else:
-                    prefix = "[>]"
+                prefix = "[>]"
             else:
                 pygame.draw.rect(self.bbs_surface, PANEL_BLUE, entry_rect, 1)
                 color = DARK_CYAN
@@ -4391,18 +4512,21 @@ class GLYPHIS_IOBBS:
         """Handle text input for compose screen"""
         if event.key == pygame.K_ESCAPE:
             # ESC always returns to email menu, even if locked
+            # Reset guided email state
+            self.guided_email_active = False
+            self.guided_email_body_started = False
             self.state = "email_menu"
             self.current_module = 0
             return
         elif event.key == pygame.K_UP:
-            # Navigate TO field dropdown
-            if self.active_field == "to":
+            # Navigate TO field dropdown (disabled in guided email mode)
+            if self.active_field == "to" and not self.guided_email_active:
                 self.current_recipient_index = (self.current_recipient_index - 1) % len(self.team_member_emails)
                 self.compose_to = self.team_member_emails[self.current_recipient_index]
                 return
         elif event.key == pygame.K_DOWN:
-            # Navigate TO field dropdown
-            if self.active_field == "to":
+            # Navigate TO field dropdown (disabled in guided email mode)
+            if self.active_field == "to" and not self.guided_email_active:
                 self.current_recipient_index = (self.current_recipient_index + 1) % len(self.team_member_emails)
                 self.compose_to = self.team_member_emails[self.current_recipient_index]
                 return
@@ -4411,18 +4535,32 @@ class GLYPHIS_IOBBS:
                 self.compose_subject = self.compose_subject[:-1]
             elif self.active_field == "body" and self.compose_body:
                 self.compose_body = self.compose_body[:-1]
+                # In guided mode, if body is empty again, allow placeholder to show
+                if self.guided_email_active and not self.compose_body:
+                    self.guided_email_body_started = False
         elif event.key == pygame.K_TAB:
             # Switch fields: to -> subject -> body -> send -> to
-            if self.active_field == "to":
-                self.active_field = "subject"
-            elif self.active_field == "subject":
-                self.active_field = "body"
-            elif self.active_field == "body":
-                self.active_field = "send"
-            elif self.active_field == "send":
-                self.active_field = "to"
-            else:  # None or unknown
-                self.active_field = "to"
+            # In guided email mode, skip TO field since it's locked
+            if self.guided_email_active:
+                if self.active_field == "subject":
+                    self.active_field = "body"
+                elif self.active_field == "body":
+                    self.active_field = "send"
+                elif self.active_field == "send":
+                    self.active_field = "subject"  # Skip to, go back to subject
+                else:  # None or unknown
+                    self.active_field = "subject"
+            else:
+                if self.active_field == "to":
+                    self.active_field = "subject"
+                elif self.active_field == "subject":
+                    self.active_field = "body"
+                elif self.active_field == "body":
+                    self.active_field = "send"
+                elif self.active_field == "send":
+                    self.active_field = "to"
+                else:  # None or unknown
+                    self.active_field = "to"
         elif event.key == pygame.K_RETURN:
             if self.active_field == "send":
                 # Require PSEM token before outbound email is available
@@ -4490,8 +4628,8 @@ class GLYPHIS_IOBBS:
                                 f"RE: {email.subject}",
                                 response_body
                             )
-                            # Add with delay (30-120 seconds)
-                            delay = random.randint(30, 120)
+                            # Add with delay (15-60 seconds - reduced by 50%)
+                            delay = random.randint(15, 60)
                             self.delayed_emails.append({
                                 "email": response,
                                 "delivery_time": time.time() + delay
@@ -4502,30 +4640,57 @@ class GLYPHIS_IOBBS:
                         self.sent.append(email)
                         log_event(f"Email sent to {self.compose_to} | Subject: '{email.subject}'")
                         
-                        # Check for affirmative replies to Jaxkando's cracking offer (JAX token present but not JAX1)
+                        # Flag to skip normal response generation if we already sent a special response
+                        skip_normal_response = False
+                        
+                        # Check for CRACKING ASSISTANCE email to Jaxkando (JAX token present but not JAX1)
                         if self.compose_to == "jaxkando@ciphernet.net":
-                            email_text = (email.subject + " " + email.body).lower()
-                            
-                            # If player has JAX token (read the post) but not JAX1, check for affirmative replies
+                            # If player has JAX token (read the post) but not JAX1, check for CRACKING ASSISTANCE subject
                             if self.inventory.has_token(Tokens.JAX) and not self.inventory.has_token(Tokens.JAX1):
-                                affirmative_keywords = ["yes", "yeah", "yep", "yup", "i'll do it", "i will do it", 
-                                                       "count me in", "i'm in", "let's do it", "sure", "ok", "okay",
-                                                       "i want to help", "i'd like to help", "i would like to help",
-                                                       "help", "crack games", "help with games", "help cracking"]
-                                
-                                if any(keyword in email_text for keyword in affirmative_keywords):
+                                # Award JAX1 when player sends email with subject "CRACKING ASSISTANCE"
+                                if email.subject.upper().strip() == "CRACKING ASSISTANCE":
                                     # Grant JAX1 token
-                                    self.grant_token(Tokens.JAX1, reason="agreed to help Jaxkando crack games")
-                            # Legacy check for old help keywords (backwards compatibility)
-                            else:
-                                help_keywords = ["i want to help", "i'd like to help", "i would like to help", 
-                                                "help", "crack games", "crack games for you", "help with games",
-                                                "help cracking", "want to help", "like to help", "volunteer"]
-                                
-                                if any(keyword in email_text for keyword in help_keywords):
-                                    # Grant JAX1 token if not already granted
-                                    if not self.inventory.has_token(Tokens.JAX1):
-                                        self.grant_token(Tokens.JAX1, reason="volunteered to help Jaxkando crack games")
+                                    self.grant_token(Tokens.JAX1, reason="sent CRACKING ASSISTANCE email to Jaxkando")
+                                    
+                                    # Send the "perfect timing" response directly (skip normal NPC response)
+                                    player_username = self.player_email.split("@")[0] if "@" in self.player_email else self.player_email
+                                    
+                                    # Get time-based radio recommendation (matching the cracker IDE)
+                                    hour = datetime.now().hour
+                                    if 6 <= hour < 18:
+                                        radio_station = "PACIFIC WAVE"
+                                        radio_note = "Good vibes for cracking!"
+                                    else:
+                                        radio_station = "SYNTH REBELS"
+                                        radio_note = "Perfect for late-night hacking!"
+                                    
+                                    response_body = (
+                                        f"{player_username.upper()}! Perfect timing!\n\n"
+                                        f"The ASTRO MINER cracking session is all prepped and waiting for you in URGENT OPS! "
+                                        f"We're gonna use the Bradsonic's insane RAM to stream the whole game in - just like how the machine "
+                                        f"streams radio waves. No tapes, no discs, just pure streaming goodness!\n\n"
+                                        f"Head to URGENT OPS and fire up the ASTRO MINER CRACKER. I'll be in the chat to help!\n\n"
+                                        f"Oh, and coding is always better with some tunes! Since it's {'daytime' if 6 <= hour < 18 else 'nighttime'}, "
+                                        f"I'd tune into {radio_station} on the Pirate Radio. {radio_note} "
+                                        f"The best part? So long as you stay connected to the BBS, the music keeps playing even while you're "
+                                        f"working in the CRACKER-PARROT IDE. It's great for coding - helps you stay in the zone!\n\n"
+                                        f"LET'S CRACK THIS THING AND PLAY THE HELL OUT OF IT!\n\n"
+                                        f"-jaxkando"
+                                    )
+                                    response = Email(
+                                        self.compose_to,
+                                        self.player_email,
+                                        f"RE: {email.subject}",
+                                        response_body
+                                    )
+                                    # Add with delay - Jaxkando replies faster (excited gamer energy!)
+                                    delay = random.randint(8, 30)  # Reduced from 15-60
+                                    self.delayed_emails.append({
+                                        "email": response,
+                                        "delivery_time": time.time() + delay
+                                    })
+                                    log_event(f"NPC reply scheduled (delay: {delay}s): '{response.subject}'")
+                                    skip_normal_response = True  # Skip normal response generation for this case
                         
                         # Check for radio relay agreement (for uncle-am)
                         if self.compose_to == "uncle-am@ciphernet.net":
@@ -4541,59 +4706,80 @@ class GLYPHIS_IOBBS:
                                 if not self.inventory.has_token(Tokens.RADIO_ACCESS):
                                     self.grant_token(Tokens.RADIO_ACCESS, reason="agreed to be part of the underground radio network relay")
                         
-                        # Generate response using enhanced trait-based system
-                        player_tokens = self.inventory.get_all_tokens()
-                        active_user = self.get_active_user()
-                        current_score = active_user.get("relationship_scores", {}).get(self.compose_to, 0.0) if active_user else 0.0
-                        
-                        response_body = self.npc.generate_response(
-                            sender_email=self.compose_to,
-                            email_subject=email.subject,
-                            email_body=email.body,
-                            player_tokens=player_tokens,
-                            player_username=self.player_email,
-                            relationship_score=current_score
-                        )
-                        # Update score in user profile
-                        if active_user:
-                            active_user.setdefault("relationship_scores", {})[self.compose_to] = self.npc.relationship_scores.get(self.compose_to, 0.0)
-                        response = Email(
-                            self.compose_to,
-                            self.player_email,
-                            f"RE: {email.subject}",
-                            response_body
-                        )
-                        # Add with delay - Jaxkando replies faster (excited gamer energy!)
-                        if self.compose_to == "jaxkando@ciphernet.net":
-                            delay = random.randint(15, 60)  # Jax is quick!
-                        else:
-                            delay = random.randint(30, 120)
-                        self.delayed_emails.append({
-                            "email": response,
-                            "delivery_time": time.time() + delay
-                        })
-                        log_event(f"NPC reply scheduled (delay: {delay}s): '{response.subject}'")
+                        # Generate response using enhanced trait-based system (only if we didn't already send a response above)
+                        if not skip_normal_response:
+                            player_tokens = self.inventory.get_all_tokens()
+                            active_user = self.get_active_user()
+                            current_score = active_user.get("relationship_scores", {}).get(self.compose_to, 0.0) if active_user else 0.0
+                            
+                            response_body = self.npc.generate_response(
+                                sender_email=self.compose_to,
+                                email_subject=email.subject,
+                                email_body=email.body,
+                                player_tokens=player_tokens,
+                                player_username=self.player_email,
+                                relationship_score=current_score
+                            )
+                            # Update score in user profile
+                            if active_user:
+                                active_user.setdefault("relationship_scores", {})[self.compose_to] = self.npc.relationship_scores.get(self.compose_to, 0.0)
+                            response = Email(
+                                self.compose_to,
+                                self.player_email,
+                                f"RE: {email.subject}",
+                                response_body
+                            )
+                            # Add with delay - Jaxkando replies faster (excited gamer energy!)
+                            # All delays reduced by 50%
+                            if self.compose_to == "jaxkando@ciphernet.net":
+                                delay = random.randint(8, 30)  # Jax is quick! (reduced from 15-60)
+                            else:
+                                delay = random.randint(15, 60)  # Reduced from 30-120
+                            self.delayed_emails.append({
+                                "email": response,
+                                "delivery_time": time.time() + delay
+                            })
+                            log_event(f"NPC reply scheduled (delay: {delay}s): '{response.subject}'")
                     else:
                         # For other recipients, add to outbox
                         self.outbox.append(email)
                         log_event(f"Email queued for {self.compose_to} | Subject: '{email.subject}'")
                     
-                    # Clear compose fields
+                    # Clear compose fields and guided email state
                     self.compose_subject = ""
                     self.compose_body = ""
                     self.active_field = None
+                    self.guided_email_active = False
+                    self.guided_email_body_started = False
                     
                     # Return to email menu
                     self.state = "email_menu"
                     self.current_module = 0
             elif self.active_field == "body":
+                # In guided mode, mark that body typing has started
+                if self.guided_email_active and not self.guided_email_body_started:
+                    self.guided_email_body_started = True
                 self.compose_body += "\n"
         else:
             # Add character (only if not on send button)
             if self.active_field != "send" and event.unicode.isprintable():
                 if self.active_field == "subject" and len(self.compose_subject) < 100:
-                    self.compose_subject += event.unicode
+                    # In guided email mode, only allow characters that match the expected subject
+                    if self.guided_email_active:
+                        expected_subject = self.guided_email_subject  # "CRACKING ASSISTANCE"
+                        current_pos = len(self.compose_subject)
+                        if current_pos < len(expected_subject):
+                            expected_char = expected_subject[current_pos]
+                            # Only accept the correct character (case insensitive)
+                            if event.unicode.upper() == expected_char.upper():
+                                self.compose_subject += expected_char  # Use the expected case
+                        # If subject is complete, don't allow more characters
+                    else:
+                        self.compose_subject += event.unicode
                 elif self.active_field == "body" and len(self.compose_body) < 2000:
+                    # In guided mode, mark that body typing has started (clears placeholder)
+                    if self.guided_email_active and not self.guided_email_body_started:
+                        self.guided_email_body_started = True
                     self.compose_body += event.unicode
     
     def handle_keyboard_navigation(self, event):
@@ -4735,12 +4921,29 @@ class GLYPHIS_IOBBS:
             elif self.state == "email_menu":
                 if self.current_module == 0:
                     self.state = "compose"
-                    # Initialize compose fields with default recipient
-                    self.compose_to = self.team_member_emails[0]  # Default to first team member
-                    self.current_recipient_index = 0
-                    self.compose_subject = ""
-                    self.compose_body = ""
-                    self.active_field = "to"  # Start with TO field active for dropdown selection
+                    
+                    # Check if guided email mode is active (JAX but not JAX1)
+                    if self.is_guided_email_mode_active():
+                        # Set up guided email to Jax
+                        self.guided_email_active = True
+                        self.guided_email_body_started = False
+                        self.compose_to = "jaxkando@ciphernet.net"
+                        # Find jaxkando's index in team_member_emails
+                        try:
+                            self.current_recipient_index = self.team_member_emails.index("jaxkando@ciphernet.net")
+                        except ValueError:
+                            self.current_recipient_index = 2  # Default position for jaxkando
+                        self.compose_subject = ""  # User must type the subject
+                        self.compose_body = ""
+                        self.active_field = "subject"  # Start at subject field
+                    else:
+                        # Normal email compose mode
+                        self.guided_email_active = False
+                        self.compose_to = self.team_member_emails[0]  # Default to first team member
+                        self.current_recipient_index = 0
+                        self.compose_subject = ""
+                        self.compose_body = ""
+                        self.active_field = "to"  # Start with TO field active for dropdown selection
                 elif self.current_module == 1:
                     self.state = "inbox"
                     self.current_module = 0
@@ -5407,8 +5610,8 @@ class GLYPHIS_IOBBS:
                 if self.active_game_session.should_exit():
                     self.end_game_session()
             
-            astro_active = self._is_astro_miner_session_active()
-            if astro_active:
+            embedded_active = self._is_embedded_dll_game_active()
+            if embedded_active:
                 if not self.game_freeze_active and not self.game_freeze_pending_capture:
                     self.game_freeze_pending_capture = True
             else:
@@ -7306,6 +7509,7 @@ class GLYPHIS_IOBBS:
 
         reply = Email("glyphis@ciphernet.net", username, reply_subject, reply_body)
         self.inbox.append(reply)
+        self._play_mail_sound()  # Play sound for auto-reply
         log_event("Glyphis auto-replied to username registration")
 
     def _handle_token_acquired(self, token: str) -> None:
@@ -7353,6 +7557,7 @@ class GLYPHIS_IOBBS:
             body
         )
         self.inbox.append(email)
+        self._play_mail_sound()  # Play sound for ASTRO-MINER email
         log_event("Jaxkando delivered ASTRO-MINER cracking task email")
 
     def grant_token(self, token: str, *, reason: Optional[str] = None) -> bool:
@@ -7407,6 +7612,7 @@ class GLYPHIS_IOBBS:
         email = self.email_db.deliver_email_by_id(email_id, self.player_email, placeholders=placeholders)
         if email:
             self.inbox.append(email)
+            self._play_mail_sound()  # Play sound when email is delivered
             self.save_user_state()
             log_event(f"Delivered email '{email.subject}' from {email.sender}")
             return True

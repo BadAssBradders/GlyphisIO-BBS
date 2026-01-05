@@ -157,18 +157,27 @@ class RadioStationManager:
     """
     Manages real-time radio station time tracking with precise seconds.
     Creates the illusion of live radio by tracking elapsed time across all stations.
+    All stations play simultaneously with volume control.
     """
     def __init__(self):
         # Precise time positions for each station (in seconds, 0-3599 for 60 minutes)
         self.station_seconds: Dict[str, float] = {}
         self.initialized = False
         self.last_tick_time = 0.0
-        self.current_playing_station: Optional[str] = None
-        self.current_sound: Optional[pygame.mixer.Sound] = None
-        self.current_channel: Optional[pygame.mixer.Channel] = None
-        self.current_station_file: Optional[str] = None
-        self.playback_start_time: float = 0.0
-        self.playback_start_seconds: float = 0.0
+        
+        # Simultaneous playback: all stations play at once
+        # Maps station_name -> {"detuned_channel": Channel, "tuned_channel": Channel, 
+        #                        "detuned_sound": Sound, "tuned_sound": Sound,
+        #                        "detuned_volume": float, "tuned_volume": float,
+        #                        "playback_start_time": float, "playback_start_seconds": float}
+        self.station_channels: Dict[str, Dict] = {}
+        
+        # Currently selected station (for volume control)
+        self.selected_station: Optional[str] = None
+        
+        # Fine-tuning state: 0 = detuned at 80%, 1 = 50% detuned + 30% tuned, 
+        # 2 = 20% detuned + 60% tuned, 3 = 0% detuned + 80% tuned
+        self.tune_level = 0  # 0-3, where 3 is fully tuned
         
     def initialize_minutes(self, stations: List[Dict]):
         """Initialize deterministic starting positions for all stations based on real-world time."""
@@ -231,110 +240,266 @@ class RadioStationManager:
         seconds = int(total_seconds % 60)
         return (minutes, seconds)
         
-    def play_station(self, station: Dict, sound: pygame.mixer.Sound, override_start_seconds: Optional[float] = None):
+    def initialize_station_playback(self, station: Dict, detuned_sound: pygame.mixer.Sound, 
+                                    tuned_sound: Optional[pygame.mixer.Sound], 
+                                    station_path_func: Callable) -> bool:
         """
-        Start playing a station from its current precise time position.
-        Uses pygame.mixer.music for seeking capability.
+        Initialize playback for a station (both detuned and tuned versions).
+        All stations start playing at 0% volume and will be controlled via volume.
         
         Args:
             station: Station dictionary
-            sound: pygame.mixer.Sound object for the station
-            override_start_seconds: Optional override for start position in seconds
+            detuned_sound: Sound object for detuned version
+            tuned_sound: Sound object for tuned version (can be None)
+            station_path_func: Function to resolve station file paths (not currently used, kept for compatibility)
+        
+        Returns:
+            True if initialization was successful, False otherwise
         """
-        self.tick()  # Ensure all stations have caught up before we get the position
         station_name = station["name"]
-        # Get precise seconds position (0.0-3599.99) or use override
-        if override_start_seconds is not None:
-            start_seconds = override_start_seconds
-        else:
-            start_seconds = self.get_station_seconds(station_name)
         
-        # Stop currently playing station if any
-        self.stop_current()
+        # Safety check: detuned_sound must exist
+        if not detuned_sound:
+            print(f"Warning: No detuned sound for station {station_name}")
+            return False
         
-        # Get sound file path from station dict
-        station_file = station.get("file")
-        if not station_file:
-            print(f"Warning: No file specified for station {station_name}")
-            return
+        self.tick()  # Ensure time is up to date
+        
+        # Get precise seconds position
+        start_seconds = self.get_station_seconds(station_name)
         
         # Get sound length
-        sound_length = sound.get_length()
+        try:
+            sound_length = detuned_sound.get_length()
+        except Exception as e:
+            print(f"Warning: Could not get length for {station_name} detuned sound: {e}")
+            return False
         
         # Wrap start position if beyond sound length
         if start_seconds >= sound_length:
             start_seconds = start_seconds % max(1, sound_length)
         
-        # Use pygame.mixer.music for seeking capability
+        # Play detuned version (looping)
         try:
-            # Import get_data_path from the module level (already imported at top)
-            file_path = self._station_path(station_file)
-            if os.path.exists(file_path):
-                pygame.mixer.music.load(file_path)
-                pygame.mixer.music.set_volume(0.8)  # Set volume to 80%
-                
-                # Start playback from the precise position
-                # Note: start parameter is supported for OGG and MP3, 
-                # and in many SDL_mixer versions also for PCM WAV.
-                try:
-                    pygame.mixer.music.play(-1, start=start_seconds)
-                except (pygame.error, NotImplementedError):
-                    # Fallback to play from beginning if start parameter fails
-                    pygame.mixer.music.play(-1)
-                    
-                    # Try to seek after playback has started as a secondary fallback
-                    if start_seconds > 0:
-                        pygame.time.wait(50)  # Wait a tiny bit for playback to start
-                        try:
-                            # For MP3: rewind first, then set_pos is relative
-                            # For OGG: set_pos is absolute
-                            file_ext = os.path.splitext(station_file)[1].lower()
-                            if file_ext == '.mp3':
-                                pygame.mixer.music.rewind()
-                            pygame.mixer.music.set_pos(start_seconds)
-                        except:
-                            pass
-                
-                self.current_station_file = station_file
-                self.playback_start_time = time.time()
-                self.playback_start_seconds = start_seconds
-            else:
-                # Fallback to Sound object if file not found
-                self.current_sound = sound
-                self.current_channel = sound.play(-1)
-                if self.current_channel:
-                    self.current_channel.set_volume(0.8)  # Set volume to 80%
+            # Get a free channel explicitly
+            detuned_channel = pygame.mixer.find_channel()
+            if not detuned_channel:
+                print(f"Warning: No free channel available for {station_name} detuned sound")
+                return False
+            detuned_channel.play(detuned_sound, loops=-1)
+            detuned_channel.set_volume(0.0)  # Start at 0%
+            # Verify it's actually playing
+            if not detuned_channel.get_busy():
+                print(f"Warning: {station_name} detuned channel not playing after start")
+                return False
         except Exception as e:
-            print(f"Warning: Could not use mixer.music for {station_name}: {e}")
-            # Fallback to Sound object
-            self.current_sound = sound
-            self.current_channel = sound.play(-1)
-            if self.current_channel:
-                self.current_channel.set_volume(0.8)  # Set volume to 80%
+            print(f"Warning: Could not play {station_name} detuned sound: {e}")
+            return False
         
-        self.current_playing_station = station_name
-        # Removed redundant self.last_tick_time update as tick() already handled it
+        # Play tuned version if available (looping)
+        tuned_channel = None
+        if tuned_sound:
+            try:
+                # Get a free channel explicitly
+                tuned_channel = pygame.mixer.find_channel()
+                if tuned_channel:
+                    tuned_channel.play(tuned_sound, loops=-1)
+                    tuned_channel.set_volume(0.0)  # Start at 0%
+                    # Verify it's actually playing
+                    if not tuned_channel.get_busy():
+                        print(f"Warning: {station_name} tuned channel not playing after start")
+                        tuned_channel = None
+                else:
+                    print(f"Warning: No free channel available for {station_name} tuned sound")
+            except Exception as e:
+                print(f"Warning: Could not play {station_name} tuned sound: {e}")
+        
+        # Store channel references and state
+        self.station_channels[station_name] = {
+            "detuned_channel": detuned_channel,
+            "tuned_channel": tuned_channel,
+            "detuned_sound": detuned_sound,
+            "tuned_sound": tuned_sound,
+            "detuned_volume": 0.0,
+            "tuned_volume": 0.0,
+            "playback_start_time": time.time(),
+            "playback_start_seconds": start_seconds
+        }
+        
+        return True
+    
+    def select_station(self, station_name: str):
+        """
+        Select a station - sets its detuned version to 80% volume, all others to 0%.
+        Resets fine-tuning level to 0.
+        """
+        # Set all stations to 0% volume first
+        for name, channels in self.station_channels.items():
+            if channels["detuned_channel"]:
+                try:
+                    # Check if channel is still playing, restart if needed
+                    if not channels["detuned_channel"].get_busy():
+                        # Channel stopped, restart it
+                        channels["detuned_channel"] = channels["detuned_sound"].play(-1)
+                    if channels["detuned_channel"]:
+                        channels["detuned_channel"].set_volume(0.0)
+                        channels["detuned_volume"] = 0.0
+                except Exception as e:
+                    print(f"Warning: Error setting volume for {name} detuned: {e}")
+            if channels["tuned_channel"]:
+                try:
+                    # Check if channel is still playing, restart if needed
+                    if not channels["tuned_channel"].get_busy():
+                        # Channel stopped, restart it
+                        if channels["tuned_sound"]:
+                            channels["tuned_channel"] = channels["tuned_sound"].play(-1)
+                    if channels["tuned_channel"]:
+                        channels["tuned_channel"].set_volume(0.0)
+                        channels["tuned_volume"] = 0.0
+                except Exception as e:
+                    print(f"Warning: Error setting volume for {name} tuned: {e}")
+        
+        # Set selected station detuned to 80%
+        if station_name in self.station_channels:
+            channels = self.station_channels[station_name]
+            if channels["detuned_channel"]:
+                try:
+                    # Ensure channel is playing
+                    if not channels["detuned_channel"].get_busy():
+                        channels["detuned_channel"] = channels["detuned_sound"].play(-1)
+                    if channels["detuned_channel"]:
+                        # Verify channel is actually playing
+                        if not channels["detuned_channel"].get_busy():
+                            print(f"Warning: {station_name} detuned channel not busy, restarting...")
+                            new_channel = pygame.mixer.find_channel()
+                            if new_channel:
+                                new_channel.play(channels["detuned_sound"], loops=-1)
+                                channels["detuned_channel"] = new_channel
+                            else:
+                                channels["detuned_channel"] = channels["detuned_sound"].play(-1)
+                        if channels["detuned_channel"] and channels["detuned_channel"].get_busy():
+                            channels["detuned_channel"].set_volume(0.8)
+                            channels["detuned_volume"] = 0.8
+                            # Double-check volume was set
+                            actual_vol = channels["detuned_channel"].get_volume()
+                            is_busy = channels["detuned_channel"].get_busy()
+                            print(f"Selected station {station_name}, set detuned volume to 0.8 (actual: {actual_vol:.2f}, busy: {is_busy})")
+                        else:
+                            print(f"Error: Could not get working channel for {station_name} detuned")
+                except Exception as e:
+                    print(f"Warning: Error setting volume for {station_name} detuned: {e}")
+        else:
+            print(f"Warning: Station {station_name} not found in station_channels")
+        
+        self.selected_station = station_name
+        self.tune_level = 0  # Reset fine-tuning
+    
+    def fine_tune_right(self):
+        """
+        Fine tune to the right: increase tuned volume by 30%, decrease detuned by 30%.
+        Final press (level 3): detuned at 0%, tuned at 80%.
+        """
+        if not self.selected_station or self.selected_station not in self.station_channels:
+            return
+        
+        channels = self.station_channels[self.selected_station]
+        
+        # Can't tune if no tuned version available
+        if not channels["tuned_channel"] or not channels["tuned_sound"]:
+            print(f"Warning: No tuned version available for {self.selected_station}")
+            return
+        
+        # Increment tune level (0 -> 1 -> 2 -> 3, max 3)
+        if self.tune_level < 3:
+            self.tune_level += 1
+        
+        # Calculate volumes based on tune level
+        # Level 0: 80% detuned, 0% tuned
+        # Level 1: 50% detuned, 30% tuned
+        # Level 2: 20% detuned, 60% tuned
+        # Level 3: 0% detuned, 80% tuned
+        detuned_vol = max(0.0, 0.8 - (self.tune_level * 0.3))
+        tuned_vol = min(0.8, self.tune_level * 0.3)
+        
+        # Ensure channels are playing
+        try:
+            if channels["detuned_channel"]:
+                if not channels["detuned_channel"].get_busy():
+                    channels["detuned_channel"] = channels["detuned_sound"].play(-1)
+                if channels["detuned_channel"]:
+                    channels["detuned_channel"].set_volume(detuned_vol)
+                    channels["detuned_volume"] = detuned_vol
+            
+            if channels["tuned_channel"]:
+                if not channels["tuned_channel"].get_busy():
+                    channels["tuned_channel"] = channels["tuned_sound"].play(-1)
+                if channels["tuned_channel"]:
+                    channels["tuned_channel"].set_volume(tuned_vol)
+                    channels["tuned_volume"] = tuned_vol
+                    print(f"Fine tuning {self.selected_station}: detuned={detuned_vol:.1f}, tuned={tuned_vol:.1f}")
+        except Exception as e:
+            print(f"Warning: Error fine-tuning {self.selected_station}: {e}")
+    
+    def fine_tune_left(self):
+        """
+        Fine tune to the left: decrease tuned volume, increase detuned volume.
+        """
+        if not self.selected_station or self.selected_station not in self.station_channels:
+            return
+        
+        channels = self.station_channels[self.selected_station]
+        
+        # Decrement tune level (min 0)
+        if self.tune_level > 0:
+            self.tune_level -= 1
+        
+        # Calculate volumes based on tune level
+        detuned_vol = max(0.0, 0.8 - (self.tune_level * 0.3))
+        tuned_vol = min(0.8, self.tune_level * 0.3)
+        
+        # Apply volumes
+        if channels["detuned_channel"]:
+            channels["detuned_channel"].set_volume(detuned_vol)
+            channels["detuned_volume"] = detuned_vol
+        if channels["tuned_channel"]:
+            channels["tuned_channel"].set_volume(tuned_vol)
+            channels["tuned_volume"] = tuned_vol
+        
+    def stop_all(self):
+        """Stop all station playback."""
+        for channels in self.station_channels.values():
+            if channels["detuned_channel"]:
+                channels["detuned_channel"].stop()
+            if channels["tuned_channel"]:
+                channels["tuned_channel"].stop()
+        self.station_channels.clear()
+        self.selected_station = None
+        self.tune_level = 0
         
     def stop_current(self):
-        """Stop the currently playing station."""
-        if self.current_channel:
-            self.current_channel.stop()
-        pygame.mixer.music.stop()
-        self.current_sound = None
-        self.current_channel = None
-        self.current_playing_station = None
-        self.current_station_file = None
-        self.playback_start_time = 0.0
-        self.playback_start_seconds = 0.0
+        """Stop the currently selected station (set all volumes to 0)."""
+        if self.selected_station and self.selected_station in self.station_channels:
+            channels = self.station_channels[self.selected_station]
+            if channels["detuned_channel"]:
+                channels["detuned_channel"].set_volume(0.0)
+                channels["detuned_volume"] = 0.0
+            if channels["tuned_channel"]:
+                channels["tuned_channel"].set_volume(0.0)
+                channels["tuned_volume"] = 0.0
+        self.selected_station = None
+        self.tune_level = 0
         
     def is_playing(self) -> bool:
-        """Check if a station is currently playing."""
-        if self.current_playing_station is None:
-            return False
-        # Check both channel and mixer.music
-        channel_playing = self.current_channel is not None and self.current_channel.get_busy()
-        music_playing = pygame.mixer.music.get_busy()
-        return channel_playing or music_playing
+        """Check if any station is currently playing (has volume > 0)."""
+        for channels in self.station_channels.values():
+            if channels["detuned_volume"] > 0.0 or channels["tuned_volume"] > 0.0:
+                return True
+        return False
+    
+    @property
+    def current_playing_station(self) -> Optional[str]:
+        """Get the currently selected/playing station name."""
+        return self.selected_station
 
 
 class ChatSystem:
@@ -704,17 +869,63 @@ class PirateRadioApp:
         self._load_station_sounds()
 
     def _load_station_sounds(self):
-        """Load radio station audio files if they exist."""
+        """Load radio station audio files (both detuned and tuned versions) if they exist."""
         all_stations = NIGHT_STATIONS + DAY_STATIONS
         for station in all_stations:
-            file_path = self._station_path(station["file"])
-            if os.path.exists(file_path):
+            station_name = station["name"]
+            
+            # Load detuned version
+            detuned_path = self._station_path(station["file"])
+            detuned_sound = None
+            if os.path.exists(detuned_path):
                 try:
-                    sound = pygame.mixer.Sound(file_path)
-                    sound.set_volume(0.8)  # Set volume to 80%
-                    self.station_sounds[station["name"]] = sound
+                    detuned_sound = pygame.mixer.Sound(detuned_path)
+                    # Don't set volume on the Sound object - we'll control it via Channel
                 except Exception as e:
-                    print(f"Warning: Could not load {station['file']}: {e}")
+                    print(f"Warning: Could not load detuned {station['file']}: {e}")
+            else:
+                # Try alternative file names (case-insensitive, without -DeTuned suffix)
+                base_name = station["file"].replace("-DeTuned.wav", ".wav").replace("-Tuned.wav", ".wav")
+                alt_path = self._station_path(base_name)
+                if os.path.exists(alt_path):
+                    try:
+                        detuned_sound = pygame.mixer.Sound(alt_path)
+                        print(f"Loaded {station_name} detuned from alternative path: {base_name}")
+                    except Exception as e:
+                        print(f"Warning: Could not load detuned {base_name}: {e}")
+                else:
+                    print(f"Warning: Detuned file not found: {detuned_path} or {alt_path}")
+            
+            # Load tuned version
+            tuned_sound = None
+            tuned_file = station.get("tuned_file")
+            if tuned_file:
+                tuned_path = self._station_path(tuned_file)
+                if os.path.exists(tuned_path):
+                    try:
+                        tuned_sound = pygame.mixer.Sound(tuned_path)
+                        # Don't set volume on the Sound object - we'll control it via Channel
+                    except Exception as e:
+                        print(f"Warning: Could not load tuned {tuned_file}: {e}")
+                else:
+                    # Try alternative file names (case-insensitive)
+                    base_name = tuned_file.replace("-Tuned.wav", ".wav")
+                    alt_path = self._station_path(base_name)
+                    if os.path.exists(alt_path):
+                        try:
+                            tuned_sound = pygame.mixer.Sound(alt_path)
+                            print(f"Loaded {station_name} tuned from alternative path: {base_name}")
+                        except Exception as e:
+                            print(f"Warning: Could not load tuned {base_name}: {e}")
+                    else:
+                        print(f"Warning: Tuned file not found: {tuned_path} or {alt_path}")
+            
+            # Store both sounds (for backward compatibility, also store detuned as main)
+            if detuned_sound:
+                self.station_sounds[station_name] = detuned_sound
+                # Also store tuned version with a key suffix for easy access
+                if tuned_sound:
+                    self.station_sounds[f"{station_name}_tuned"] = tuned_sound
 
     def _on_message_complete(self, message: str):
         """Callback when a chat message finishes displaying."""
@@ -724,7 +935,7 @@ class PirateRadioApp:
             self._activate_radio_ui()
 
     def _activate_radio_ui(self):
-        """Switch to the radio station selection UI."""
+        """Switch to the radio station selection UI and initialize all stations for simultaneous playback."""
         self.radio_ui_active = True
         self.game_state = "RADIO_STATIONS"
         
@@ -736,6 +947,42 @@ class PirateRadioApp:
             
         # Radio manager is already initialized in __init__ with all stations
         
+        # Ensure we have enough mixer channels for all stations (5 stations × 2 versions = 10 channels minimum)
+        # Plus some extra for noise, tones, etc. - request 16 channels
+        try:
+            current_channels = pygame.mixer.get_num_channels()
+            if current_channels < 16:
+                pygame.mixer.set_num_channels(16)
+                print(f"Increased mixer channels to 16 (was {current_channels})")
+        except Exception as e:
+            print(f"Warning: Could not increase mixer channels: {e}")
+        
+        # Initialize all stations for simultaneous playback (all at 0% volume initially)
+        initialized_count = 0
+        for station in self.current_stations:
+            station_name = station["name"]
+            detuned_sound = self.station_sounds.get(station_name)
+            tuned_sound = self.station_sounds.get(f"{station_name}_tuned")
+            
+            if detuned_sound:
+                print(f"Initializing station: {station_name} (detuned: {detuned_sound is not None}, tuned: {tuned_sound is not None})")
+                # Initialize playback for this station
+                success = self.radio_manager.initialize_station_playback(
+                    station, 
+                    detuned_sound, 
+                    tuned_sound,
+                    self._station_path
+                )
+                if success:
+                    initialized_count += 1
+                    print(f"Successfully initialized {station_name}")
+                else:
+                    print(f"Warning: Failed to initialize playback for {station_name}")
+            else:
+                print(f"Warning: No detuned sound loaded for {station_name}")
+        
+        print(f"Initialized {initialized_count}/{len(self.current_stations)} stations")
+        
         self.selected_station_index = 0
         
         # Queue chat guidance: concise status if already unlocked, otherwise story message
@@ -746,7 +993,7 @@ class PirateRadioApp:
                 self.chat.queue.clear()
                 self.chat.history.clear()
                 self.chat.queue_message("Stations live. UP/DOWN to browse, ENTER to tune, SPACE to stop.")
-                self.chat.queue_message("LEFT/RIGHT to fine tune noise. ESC to leave; audio stays live while connected.")
+                self.chat.queue_message("LEFT/RIGHT to fine tune signal. ESC to leave; audio stays live while connected.")
             else:
                 self.chat.queue_message(
                     "Here are the stations we have on the network as of now, it changes throughout the day, "
@@ -956,30 +1203,23 @@ class PirateRadioApp:
         return False
 
     def _play_selected_station(self):
-        """Play the currently selected radio station."""
+        """Select and play the currently selected radio station."""
         if not self.current_stations:
             return
             
         station = self.current_stations[self.selected_station_index]
         station_name = station["name"]
         
-        # If this station is already playing, don't restart it
-        if self.radio_manager.current_playing_station == station_name and self.radio_manager.is_playing():
+        # Check if station is initialized
+        if station_name not in self.radio_manager.station_channels:
+            self.chat.queue_message(f"Station '{station_name}' not initialized.")
             return
         
         # Reset tuning state when switching to any station
         self.current_station_tuned = False
         self.station_tuner_presses = 0
         
-        # Check if we have the sound loaded
-        if station_name not in self.station_sounds:
-            self.chat.queue_message(f"Station '{station_name}' audio not available.")
-            return
-            
-        sound = self.station_sounds[station_name]
-        
         # Special handling for Tokyo Yamoto Forever (09:04 first-time start rule)
-        override_start = None
         if station_name == "Tokyo Yamoto Forever" and not self.tokyo_yamoto_first_play:
             # Force first play to start at 09:04
             override_start = 544.0
@@ -1005,18 +1245,25 @@ class PirateRadioApp:
                 except Exception:
                     pass
         
-        # Get formatted time for display (use override if set, otherwise normal position)
-        if override_start is not None:
-            minutes = int(override_start // 60)
-            seconds = int(override_start % 60)
-        else:
-            minutes, seconds = self.radio_manager.get_station_time_formatted(station_name)
-        
-        self.radio_manager.play_station(station, sound, override_start_seconds=override_start)
+        # Select the station (this sets volumes appropriately)
+        self.radio_manager.select_station(station_name)
         self.start_noise()
         self.current_station = station
+        
+        # Debug: Verify channel is actually playing
+        if station_name in self.radio_manager.station_channels:
+            channels = self.radio_manager.station_channels[station_name]
+            if channels["detuned_channel"]:
+                is_busy = channels["detuned_channel"].get_busy()
+                print(f"Debug: {station_name} detuned channel busy: {is_busy}, volume: {channels['detuned_volume']}")
+            else:
+                print(f"Debug: {station_name} detuned channel is None!")
+        
         # Give EQ a boost when tuning
         self.eq_current_level = max(self.eq_current_level, 0.7)
+        
+        # Get formatted time for display
+        minutes, seconds = self.radio_manager.get_station_time_formatted(station_name)
         freq = station.get("freq")
         freq_suffix = f" ({freq} kHz)" if freq else ""
         self.chat.queue_message(f"Now tuned to: {station_name}{freq_suffix} ({minutes:02d}:{seconds:02d})")
@@ -1496,91 +1743,38 @@ class PirateRadioApp:
             pass
 
     def _adjust_tuner(self, direction: int):
-        """Cycle tuner levels and reapply noise volume. Handle station tuning (DeTuned -> Tuned)."""
-        if not self.tuner_reduction_levels:
-            return
-        
-        # Check if a station is playing and user pressed right arrow
-        is_station_playing = self.radio_manager.is_playing() and self.current_station is not None
-        
-        if is_station_playing and direction == 1 and not self.current_station_tuned:
-            self.station_tuner_presses += 1
-            
-            if self.station_tuner_presses >= 3:
-                # Switch to tuned version seamlessly
-                self._switch_station_to_tuned()
+        """Fine tune the currently selected station: right increases tuned volume, left decreases it."""
+        # Check if a station is selected and playing
+        if not self.radio_manager.selected_station or not self.current_station:
+            # If no station selected, adjust noise volume (legacy behavior)
+            if not self.tuner_reduction_levels:
                 return
-        
-        # Reset counter if pressing left or no station playing
-        if direction == -1 or not is_station_playing:
-            self.station_tuner_presses = 0
-        
-        self.tuner_index = (self.tuner_index + direction) % len(self.tuner_reduction_levels)
-        self._apply_noise_volume()
-        self.chat.queue_message("Fine tuning")
-    
-    def _switch_station_to_tuned(self):
-        """Switch current station from DeTuned to Tuned version at exact playback position."""
-        if self.current_station is None:
-            return
-            
-        # Get the tuned file name from the station definition
-        tuned_file = self.current_station.get("tuned_file")
-        if not tuned_file:
-            self.chat.queue_message("No tuned signal available for this station.")
-            return
-        
-        # Get current playback position in seconds
-        try:
-            # Calculate position based on elapsed time since playback started
-            # This works for both mixer.music and channel-based playback
-            if self.radio_manager.playback_start_time > 0:
-                elapsed_seconds = time.time() - self.radio_manager.playback_start_time
-                current_position = self.radio_manager.playback_start_seconds + elapsed_seconds
-            else:
-                # Fallback: try to get position from mixer.music
-                pos_ms = pygame.mixer.music.get_pos()
-                if pos_ms < 0:
-                    pos_ms = 0
-                elapsed_seconds = pos_ms / 1000.0
-                current_position = self.radio_manager.playback_start_seconds + elapsed_seconds
-            
-            # Check if tuned file exists
-            tuned_file_path = self._station_path(tuned_file)
-            if not os.path.exists(tuned_file_path):
-                self.chat.queue_message("Tuned signal file not found.")
-                return
-            
-            # Stop current playback completely (both music and channel-based)
-            self.radio_manager.stop_current()
-            
-            # Load and play the tuned version from the same position
-            pygame.mixer.music.load(tuned_file_path)
-            pygame.mixer.music.set_volume(0.8)
-            
-            try:
-                pygame.mixer.music.play(-1, start=current_position)
-            except (pygame.error, NotImplementedError):
-                # Fallback: play from beginning then seek
-                pygame.mixer.music.play(-1)
-                pygame.time.wait(50)
-                try:
-                    pygame.mixer.music.set_pos(current_position)
-                except:
-                    pass
-            
-            # Update internal state
-            self.radio_manager.current_station_file = tuned_file
-            self.radio_manager.playback_start_time = time.time()
-            self.radio_manager.playback_start_seconds = current_position
-            
-            # Mark as tuned and maximize noise reduction
-            self.current_station_tuned = True
-            self.tuner_index = len(self.tuner_reduction_levels) - 1  # Max reduction
+            self.tuner_index = (self.tuner_index + direction) % len(self.tuner_reduction_levels)
             self._apply_noise_volume()
-            
-            self.chat.queue_message("Signal locked! Clear transmission achieved.")
-            
-        except Exception as e:
-            print(f"Error switching to tuned station: {e}")
-            self.chat.queue_message("Tuning failed - signal unstable.")
+            self.chat.queue_message("Fine tuning noise")
+            return
+        
+        # Fine tune the selected station
+        if direction == 1:  # Right arrow - increase tuned, decrease detuned
+            self.radio_manager.fine_tune_right()
+            tune_level = self.radio_manager.tune_level
+            if tune_level == 0:
+                self.chat.queue_message("Signal: Detuned (80%)")
+            elif tune_level == 1:
+                self.chat.queue_message("Signal: Tuning... (50% detuned, 30% tuned)")
+            elif tune_level == 2:
+                self.chat.queue_message("Signal: Almost there... (20% detuned, 60% tuned)")
+            elif tune_level == 3:
+                self.chat.queue_message("Signal locked! Clear transmission (0% detuned, 80% tuned)")
+        else:  # Left arrow - decrease tuned, increase detuned
+            self.radio_manager.fine_tune_left()
+            tune_level = self.radio_manager.tune_level
+            if tune_level == 0:
+                self.chat.queue_message("Signal: Detuned (80%)")
+            elif tune_level == 1:
+                self.chat.queue_message("Signal: Tuning... (50% detuned, 30% tuned)")
+            elif tune_level == 2:
+                self.chat.queue_message("Signal: Almost there... (20% detuned, 60% tuned)")
+            else:
+                self.chat.queue_message("Signal locked! Clear transmission (0% detuned, 80% tuned)")
+    
