@@ -91,14 +91,23 @@ class EmailDatabase:
         """Check token requirements and send emails that should be auto-sent"""
         new_emails = []
         
-        # Helper to check if email exists in current inbox
+        # Helper to check if email exists in current inbox and if it's been read
         def email_in_inbox(email_id):
             if current_inbox is None:
                 return False
             for email in current_inbox:
+                email_id_match = False
                 if hasattr(email, 'email_id') and email.email_id == email_id:
-                    return True
-                if isinstance(email, dict) and email.get("id") == email_id:
+                    email_id_match = True
+                elif isinstance(email, dict) and email.get("id") == email_id:
+                    email_id_match = True
+                
+                if email_id_match:
+                    # If email exists and has been read, don't re-send it
+                    if hasattr(email, 'read') and email.read:
+                        return "read"
+                    elif isinstance(email, dict) and email.get("read", False):
+                        return "read"
                     return True
             return False
         
@@ -107,6 +116,19 @@ class EmailDatabase:
             
             # Skip if already sent
             if email_id in self.sent_email_ids:
+                continue
+
+            # Check if email is already in the player's inbox (handle persistence)
+            inbox_status = email_in_inbox(email_id)
+            if inbox_status == "read":
+                # Email has been read - don't re-send it, but mark as sent to prevent future attempts
+                self.sent_email_ids.add(email_id)
+                self.delivered_email_ids.add(email_id)
+                continue
+            elif inbox_status:
+                # Email exists but not read - mark as sent but don't add to new_emails
+                self.sent_email_ids.add(email_id)
+                self.delivered_email_ids.add(email_id)
                 continue
             
             # Check if email should be sent on start (but still check token if required)

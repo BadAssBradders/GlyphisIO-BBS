@@ -360,6 +360,11 @@ class AstroMinerSession(BaseGameSession):
             pygame.mouse.set_visible(False)
             print("[AstroMinerSession.enter] Cursor hidden, mouse input now controlled by game")
             
+            # Grant ASTROMINER1 token when player enters the game
+            if hasattr(self.app, 'grant_token'):
+                from tokens import Tokens
+                self.app.grant_token(Tokens.ASTROMINER1, reason="player entered AstroMiner game")
+            
         except ImportError as e:
             print(f"Failed to import astrominer_embed: {e}")
             self.exit_requested = True

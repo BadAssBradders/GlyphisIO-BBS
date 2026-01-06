@@ -2634,7 +2634,7 @@ const char* GetRankName(int rank) {
         case 1: return "Cadet Miner";
         case 2: return "Junior Miner";
         case 3: return "Able Miner";
-        case 4: return "Leading Miner";
+        case 4: return "LDN MINER";
         case 5: return "Chief Miner";
         default: return "Cadet Miner";
     }
@@ -2733,6 +2733,57 @@ void LoadLeaderboard() {
     g_leaderboardCount = entryIdx;
     fclose(file);
     printf("[LoadLeaderboard] Loaded %d entries\n", g_leaderboardCount);
+    
+    // Check if ASTROMINER1 token has been granted (flag file exists)
+    // Only add jaxkando's entry after player gets the ASTROMINER1 token
+    const char* flagPaths[] = {
+        "Data/games/AstroMiner/.astrominer1_granted",
+        "../../games/AstroMiner/.astrominer1_granted",
+        ".astrominer1_granted"
+    };
+    
+    bool astrominer1Granted = false;
+    FILE* flagFile = NULL;
+    for (int i = 0; i < 3; i++) {
+        flagFile = fopen(flagPaths[i], "r");
+        if (flagFile) {
+            fclose(flagFile);
+            astrominer1Granted = true;
+            printf("[LoadLeaderboard] ASTROMINER1 token flag found at: %s\n", flagPaths[i]);
+            break;
+        }
+    }
+    
+    // Add jaxkando's score if ASTROMINER1 token granted and he doesn't already exist
+    if (astrominer1Granted) {
+        bool jaxkandoExists = false;
+        for (int i = 0; i < g_leaderboardCount; i++) {
+            if (strcmp(g_leaderboard[i].username, "jaxkando") == 0) {
+                jaxkandoExists = true;
+                break;
+            }
+        }
+        
+        if (!jaxkandoExists && g_leaderboardCount < MAX_LEADERBOARD_ENTRIES) {
+            // Add jaxkando's entry: 47,392 credits, rank 1, final score 47,392
+            g_leaderboard[g_leaderboardCount].score = 47392;
+            g_leaderboard[g_leaderboardCount].credits = 47392;
+            g_leaderboard[g_leaderboardCount].rank = 1;
+            strncpy(g_leaderboard[g_leaderboardCount].rankName, "Chief Miner", sizeof(g_leaderboard[g_leaderboardCount].rankName) - 1);
+            g_leaderboard[g_leaderboardCount].rankName[sizeof(g_leaderboard[g_leaderboardCount].rankName) - 1] = '\0';
+            strncpy(g_leaderboard[g_leaderboardCount].username, "jaxkando", MAX_USERNAME_LENGTH - 1);
+            g_leaderboard[g_leaderboardCount].username[MAX_USERNAME_LENGTH - 1] = '\0';
+            g_leaderboardCount++;
+            printf("[LoadLeaderboard] Added jaxkando's entry (Chief Miner, 47,392 credits) - ASTROMINER1 token granted\n");
+            
+            // Save immediately to persist jaxkando's entry
+            SaveLeaderboard();
+        } else if (jaxkandoExists) {
+            printf("[LoadLeaderboard] jaxkando already exists in leaderboard\n");
+        }
+    } else {
+        printf("[LoadLeaderboard] ASTROMINER1 token not yet granted - jaxkando entry not added\n");
+    }
 }
 
 // Save leaderboard to file
@@ -4057,8 +4108,18 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
                 } else if (g_selectedShopItemIndex == 2 && G_Player.fuel >= G_Player.maxFuel) {
                     canPurchase = false;
                     strncpy(g_purchaseFailReason, "FUEL TANK FULL", sizeof(g_purchaseFailReason));
-                } else if (g_selectedShopItemIndex >= 3 && g_selectedShopItemIndex <= 5) {
-                    // Ships - can always purchase (replaces current ship)
+                } else if (g_selectedShopItemIndex == 3 && G_Player.shipColor == 1) {
+                    // Red Ship (index 3 = shipColor 1)
+                    canPurchase = false;
+                    strncpy(g_purchaseFailReason, "RED SHIP ALREADY OWNED", sizeof(g_purchaseFailReason));
+                } else if (g_selectedShopItemIndex == 4 && G_Player.shipColor == 2) {
+                    // Green Ship (index 4 = shipColor 2)
+                    canPurchase = false;
+                    strncpy(g_purchaseFailReason, "GREEN SHIP ALREADY OWNED", sizeof(g_purchaseFailReason));
+                } else if (g_selectedShopItemIndex == 5 && G_Player.shipColor == 3) {
+                    // Purple Ship (index 5 = shipColor 3)
+                    canPurchase = false;
+                    strncpy(g_purchaseFailReason, "PURPLE SHIP ALREADY OWNED", sizeof(g_purchaseFailReason));
                 }
             } else if (g_currentLocation == 2) {  // Halo
                 if (g_selectedShopItemIndex == 0 && G_Player.hasBetterLaser) {
@@ -4070,25 +4131,33 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
                 } else if (g_selectedShopItemIndex == 2 && G_Player.fuel >= G_Player.maxFuel) {
                     canPurchase = false;
                     strncpy(g_purchaseFailReason, "FUEL TANK FULL", sizeof(g_purchaseFailReason));
-                } else if (g_selectedShopItemIndex == 4) {
-                    // Gold Ship - can always purchase (replaces current ship)
+                } else if (g_selectedShopItemIndex == 4 && G_Player.shipColor == 4) {
+                    // Gold Ship (index 4 = shipColor 4)
+                    canPurchase = false;
+                    strncpy(g_purchaseFailReason, "GOLD SHIP ALREADY OWNED", sizeof(g_purchaseFailReason));
                 } else if (g_selectedShopItemIndex == 5 && G_Player.hull >= G_Player.maxHull) {
                     canPurchase = false;
                     strncpy(g_purchaseFailReason, "HULL IS FULLY REPAIRED", sizeof(g_purchaseFailReason));
                 }
             } else {  // Depot
+                // Check each item independently for clearer logic
                 if (g_selectedShopItemIndex == 0 && G_Player.hasLaser) {
-                canPurchase = false;
-                strncpy(g_purchaseFailReason, "LASER ALREADY FITTED", sizeof(g_purchaseFailReason));
-                } else if (g_selectedShopItemIndex == 1 && G_Player.hasCollector) {
-                canPurchase = false;
-                strncpy(g_purchaseFailReason, "COLLECTOR ALREADY FITTED", sizeof(g_purchaseFailReason));
-                } else if (g_selectedShopItemIndex == 5 && G_Player.hull >= G_Player.maxHull) {
-                canPurchase = false;
-                strncpy(g_purchaseFailReason, "HULL IS FULLY REPAIRED", sizeof(g_purchaseFailReason));
-                } else if (g_selectedShopItemIndex == 4 && G_Player.fuel >= G_Player.maxFuel) {
-                canPurchase = false;
-                strncpy(g_purchaseFailReason, "FUEL TANK FULL", sizeof(g_purchaseFailReason));
+                    canPurchase = false;
+                    strncpy(g_purchaseFailReason, "LASER ALREADY FITTED", sizeof(g_purchaseFailReason));
+                }
+                if (g_selectedShopItemIndex == 1 && G_Player.hasCollector) {
+                    canPurchase = false;
+                    strncpy(g_purchaseFailReason, "COLLECTOR ALREADY FITTED", sizeof(g_purchaseFailReason));
+                }
+                // Thruster Systems (index 2) - repeatable, no check needed
+                // Exo-Plating (index 3) - repeatable, no check needed
+                if (g_selectedShopItemIndex == 4 && G_Player.fuel >= G_Player.maxFuel) {
+                    canPurchase = false;
+                    strncpy(g_purchaseFailReason, "FUEL TANK FULL", sizeof(g_purchaseFailReason));
+                }
+                if (g_selectedShopItemIndex == 5 && G_Player.hull >= G_Player.maxHull) {
+                    canPurchase = false;
+                    strncpy(g_purchaseFailReason, "HULL IS FULLY REPAIRED", sizeof(g_purchaseFailReason));
                 }
             }
             
@@ -4340,8 +4409,9 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
 // BAR LOGIC
 // ------------------------------------------------------------
 void CheckBarEvents() {
-    // Initialize drunk threshold on first drink if not set
-    if (g_drunkThreshold == 0 && g_barDrinksPurchased == 0) {
+    // Initialize drunk threshold on first call if not set
+    // This should happen before checking drunk status
+    if (g_drunkThreshold == 0) {
         g_drunkThreshold = GetRandomValue(5, 10);  // Random threshold between 5-10 drinks
         printf("[CheckBarEvents] Drunk threshold set to %d drinks\n", g_drunkThreshold);
     }

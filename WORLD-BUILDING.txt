@@ -130,9 +130,273 @@ These pirate stations mirror real history:
 * Polish underground “bibuła” media
 * Soviet dissident broadcasts
 
+The Radio Stations offer some interesting insights:
+
+* Radio stations explore the world in more detail wiith interviews and the playing of banned content.
+
+* The music artist Fugamachi's song "Hikari-Zero no Uta — The Song They Tried to Erase" is the first track the player
+hears when they launch their soundcard via the CRACKER_IDE_LAPC1_Driver_Challenge in Urgent_Ops, this is the first real 
+exposure that the player gets to the underground Tokyo revolutionary scene.
+* When listening to the Radio they also discover a young female artist who goes by the name of MiaZuki, her song Death 
+Certain has the lyrics below. Her interview explores why she chooses to remain a banned artist within the Pacficia Isles (formally Japan).
+
+The following are the lyrics to both tracks:
+
+Death Certain - by MiaZuki
+Plastic dawn in a borrowed tongue
+Stars and stripes in my mouth again
+I learned to pray through a screen glow
+History humming like a faulted fan
+
+They dressed the past in museum glass
+Put a shōgun in a paper crown
+I feel the silence under my skin
+Like a city forced to quiet down
+
+I hear my name in static rain
+Not the one they let me keep
+Kokoro buried under wires
+Dreaming in codes I’m not meant to speak
+
+Death certain, love delayed
+Every future pre-approved
+Soft power pressing on my chest
+Like I asked to be subdued
+
+Death certain, don’t look back
+Neon mercy, velvet lie
+I kiss the law through broken sound
+And call it freedom when I cry
+
+English prayers, military calm
+Schoolyard flags I never chose
+Mother’s voice cut mid-sentence
+Father learned what not to know
+
+We steal our ghosts from pirate waves
+AM blood beneath the floor
+Wasurerarenai, they said forget
+But forgetting feels like war
+
+My body hums in voltage key
+A hymn they forgot to ban
+Data knows what we used to be
+More human than their perfect plan
+
+Death certain, love delayed
+Every future pre-approved
+Soft power pressing on my chest
+Like I asked to be subdued
+
+Death certain, don’t look back
+Neon mercy, velvet lie
+I kiss the law through broken sound
+And call it freedom when I cry
+
+Shiroi noise, shiroi lies
+White light washing memory thin
+Sayōnara to the self I was
+Hello to the shape I’m in
+
+I dance with surveillance angels
+Gold lips, empty eyes
+They promise safety, promise heaven
+In calibrated lullabies
+
+Kikoeru? Do you hear me now
+Between the ads and emergency tones
+This body remembers another rhythm
+A country hidden in bones
+
+Death certain, sing it soft
+Like a synth held under breath
+If this is peace, let it glitch
+Let beauty stutter into death
+
+Death certain, love delayed
+But still I pulse, still I burn
+In forbidden words and pirate songs
+I am what they couldn’t learn
+
+Kokoro, don’t shut down
+Even if the signal’s thin
+In every erased tomorrow
+Something ancient flickers in
+
+
+Hikari-Zero no Uta — The Song They Tried to Erase by Fugamatchi
+In the flash that swallowed Hiroshima Castle,
+A dynasty turned to dust, a kingdom left unravelled.
+But the truth was buried deeper than the crater’s glow,
+They erased the names, replaced them with a lie we now call “Tokyo.”
+
+Whispers in the ruins said the Hikari-Zero line
+Was not a myth but stolen blood the State forced us to decline.
+
+“Kietai nai,” we swear — we won’t forget their flame,
+Though Pacifica rewrote the past and outlawed every name.
+
+Static in the night… a voice cracks through the hum:
+“Rise, coded children — the rebellion has begun.”
+
+Break the chains of Pacifica,
+Tear down their neon throne.
+We carry the fire of Hikari-Zero,
+In every hacked transmission we own.
+Scream “yamete!” to the silence,
+Let the buried truth ignite —
+We are the ghosts they feared would rise,
+And tonight… we fight.
+
+They banned our words, they banned our flags,
+Painted stars on every wall.
+But in the alleyways of Shinjuku-8
+We learned to read between it all.
+In fractured romaji fragments,
+In cracked game carts and broken keys,
+We found the old world sleeping
+In the circuits of our memories.
+We know the Shogun puppet
+Is just theatre for their show —
+A cardboard crown on borrowed time,
+An empire built on “no.”
+
+Break the chains of Pacifica,
+Tear down their neon throne.
+We carry the fire of Hikari-Zero,
+In every hacked transmission we own.
+Scream “yamete!” to the silence,
+Let the buried truth ignite —
+We are the ghosts they feared would rise,
+And tonight… we fight.
+
+Kowareta sekai?
+No — it’s theirs that’s falling fast.
+We sync our breath to rebel drums,
+We write our names at last.
+Pacifica cannot hold the night
+When all its lights go dark —
+For every child they tried to mould,
+A thousand more will spark.
+
+Break the voice-lock, break the towers,
+Let Tokyo hear our cry.
+Raise the banner of Hikari-Zero,
+Lift it high against the sky.
+Kiseki isn’t fate —
+It’s the path we choose tonight:
+A future forged in truth and code,
+A city born from fight.
+
+Pacifica whispers “obedience”…
+We answer:
+“Never again.”
+
 ---
 
-## 7. Player’s Role
+## 7. The Glyphis_IO BBS Network
+
+### Main BBS: Glyphis_IO
+
+The primary underground BBS operated by the hacker collective. Access is granted through encrypted invitations. The BBS serves multiple functions:
+
+* **Communication Hub**: Private email system connecting operators and members
+* **Game Distribution**: Cracked games and software shared among the community
+* **Technical Challenges**: Urgent Ops section containing reverse engineering tasks
+* **Pirate Radio Relay**: Network infrastructure for underground broadcasts
+* **Community Board**: Public posts, manifestos, and shared knowledge
+
+### The Operators
+
+**glyphis** - The sysop and founder. An enigmatic presence that monitors all activity. Speaks in mechanical, poetic language. Questions the player's true purpose. Gradually reveals awareness of surveillance and infiltration.
+
+**rain** - Taskmaster and operations organizer. Assigns missions and coordinates the group's activities. Maintains a professional but warm demeanor. Becomes increasingly suspicious as the story progresses.
+
+**jaxkando** - Gamesmaster and technical challenge curator. Creates and oversees the reverse engineering challenges. Guides players through complex assembly code tasks. Has a playful, encouraging personality that contrasts with glyphis's coldness.
+
+**uncle-am** - Radio engineer and community moderator. Handles audio operations, soundcard drivers, and pirate radio infrastructure. Nostalgic optimist who brings warmth to the group. First to trust the player and invite them into deeper operations.
+
+### Player Progression Through Challenges
+
+The player's journey begins with assessment and gradually escalates to active participation in illegal activities:
+
+1. **SIMULACRA CORE** - Initial assessment game. Tests the player's problem-solving abilities and efficiency. Completion demonstrates potential to the operators.
+
+2. **LAPC1 Driver Challenge** - First technical task from uncle-am. Player writes assembly code to initialize a RADLAND soundcard driver. This unlocks the first exposure to banned music: Fugamachi's "Hikari-Zero no Uta — The Song They Tried to Erase." This moment marks the player's first real connection to the underground revolutionary scene.
+
+3. **AstroMiner Cracking Challenge** - Advanced reverse engineering task from jaxkando. Player cracks a copy-protected game by writing assembly code to:
+   * Initialize graphics and palette
+   * Set up audio streaming
+   * Load 3D mesh data
+   * Bypass copy protection mechanisms
+   * Override jump instructions
+
+   This challenge represents a deeper commitment to the group's activities—actively breaking copyright and distribution laws.
+
+4. **Pirate Radio Relay Setup** - Network infrastructure task. Player configures their system as a relay node for underground radio broadcasts. This grants access to the full spectrum of banned stations but also makes the player complicit in illegal broadcasting operations.
+
+### Other BBS Sites in the Network
+
+**The Ancient Lantern (Paper Crane BBS)**
+* Location: Hiroshima
+* Dial-in: (082) 77 34 19 45
+* Sysop: Paper Crane
+* Purpose: Archive of banned literature, historical documents, poetry, and cultural artifacts
+* Discovery: Players learn about this BBS through the pirate radio interview with Paper Crane on Tokyo Yamoto Forever
+* Content: Scanned pages of banned books, including *The Tale of Genji*, Bashō's poetry, folklore, and woodblock prints
+* Significance: Represents the cultural preservation aspect of the resistance—saving what was meant to be erased
+
+**Echo Chamber BBS**
+* Location: Unknown
+* Dial-in: (07) 57 42 19 89
+* Purpose: Additional underground communication node
+* Discovery: Players discover this BBS through pirate radio broadcasts
+* Role: Part of the distributed network of resistance BBSs operating across the Pacifica Isles
+
+### Email Progression and Narrative Integration
+
+The email system serves as the primary storytelling mechanism, tracking the player's relationship with each operator:
+
+**Act 1: The Invitation**
+* Welcome email from glyphis requiring username registration
+* Username acknowledgment unlocking SIMULACRA CORE assessment
+
+**Act 2: Initial Exploration**
+* SIMULACRA completion email from glyphis
+* Audio ops email from uncle-am introducing the LAPC1 challenge
+* First exposure to banned music upon completing soundcard driver
+
+**Act 3: Becoming Part of the Community**
+* Radio relay request from uncle-am—first invitation to participate in illegal activities
+* Radio access granted email from glyphis—acknowledgment of deeper involvement
+* Paranoia email from glyphis—first hints of surveillance awareness
+
+**Act 4: The Suspicion** (Future Content)
+* Increasingly paranoid messages from operators
+* Questions about the player's true identity
+* Disappearing threads and wiped logs
+
+**Act 5: The Revelation** (Future Content)
+* The truth about the player's identity as an agent
+* glyphis's direct confrontation
+
+**Act 6: The Conflict** (Future Content)
+* Final choice between duty and loyalty
+
+### Games and Software Distribution
+
+The BBS hosts several games that serve both entertainment and narrative purposes:
+
+**SIMULACRA CORE** - A puzzle/optimization game that serves as the initial assessment. Players must complete cycles efficiently, demonstrating their technical aptitude.
+
+**AstroMiner** - A 3D space mining game that requires cracking before play. The cracking process itself is a challenge, teaching players reverse engineering concepts. Once cracked, the game becomes playable and can be shared with the community.
+
+**CyberTrain** - Additional cracked game available on the BBS, representing the group's software piracy activities.
+
+These games represent the dual nature of the BBS: both a community resource and a distribution network for illegal software.
+
+---
+## 8. Player's Role
 
 ### Identity: A Mystery at First
 
@@ -150,10 +414,64 @@ The narrative slowly reveals:
 * Their place in the American surveillance apparatus
 * Their purpose within the Pacifica Isles security system
 * Their connection to Glyphis_IO
+* The gradual shift in their loyalty as they become part of the community
+
+### The Moral Journey
+
+The player's progression through challenges represents an escalating commitment to illegal activities:
+
+1. **Assessment** (SIMULACRA) - Neutral, just proving capability
+2. **Technical Support** (LAPC1 Driver) - Helping the group, but not explicitly illegal
+3. **Copyright Infringement** (AstroMiner Cracking) - Actively breaking laws
+4. **Illegal Broadcasting** (Radio Relay) - Participating in underground network operations
+
+Each step draws the player deeper into the community while simultaneously making them more complicit in activities they're meant to be investigating. The warmth of uncle-am, the encouragement of jaxkando, and even the cold curiosity of glyphis create genuine connections that conflict with the player's original mission.
 
 ---
 
-## 8. Summary
+## 9. Technical Challenges and Their Narrative Purpose
+
+### The Challenge System
+
+The Urgent Ops section contains technical challenges that serve dual purposes: teaching real concepts and advancing the narrative. Each challenge represents a deeper level of commitment to the group.
+
+**LAPC1 Driver Challenge (uncle-am)**
+* **Technical Goal**: Write assembly code to initialize a RADLAND soundcard driver
+* **Narrative Purpose**: First real exposure to banned content (Fugamachi's "Hikari-Zero no Uta")
+* **Significance**: The moment the player hears their first revolutionary song marks their entry into the underground culture
+* **Relationship Impact**: Builds trust with uncle-am, the warmest and most welcoming operator
+
+**AstroMiner Cracking Challenge (jaxkando)**
+* **Technical Goal**: Reverse engineer a copy-protected game by writing assembly code to:
+  * Load splash screen bitmap and palette
+  * Initialize audio streaming
+  * Load 3D mesh data (vertices, normals)
+  * Set procedural generation seed
+  * Bypass copy protection checks
+  * Override jump instructions to game entry point
+* **Narrative Purpose**: Active participation in software piracy
+* **Significance**: Crossing the line from passive observer to active participant in illegal activities
+* **Relationship Impact**: Demonstrates technical skill to jaxkando, earning respect and deeper access
+
+**Pirate Radio Relay Setup (uncle-am)**
+* **Technical Goal**: Configure system as network relay node for underground broadcasts
+* **Narrative Purpose**: Infrastructure support for illegal broadcasting network
+* **Significance**: Player becomes part of the resistance infrastructure, not just a consumer
+* **Relationship Impact**: Full trust from uncle-am, acknowledgment from glyphis about the risks taken
+
+### The Escalation Pattern
+
+The challenges follow a pattern of increasing technical complexity and legal/moral weight:
+
+1. **Assessment** → Prove capability (legal, neutral)
+2. **Driver Development** → Technical support (legal, helpful)
+3. **Game Cracking** → Copyright infringement (illegal, active)
+4. **Network Infrastructure** → Illegal broadcasting support (illegal, infrastructure)
+
+This escalation mirrors the player's journey from outsider to trusted member, while simultaneously making them more complicit in activities they're investigating.
+
+---
+## 10. Summary
 
 The world of *Glyphis_IO BBS: The Proxy Tapes* is defined by:
 
@@ -164,9 +482,14 @@ The world of *Glyphis_IO BBS: The Proxy Tapes* is defined by:
 * rise of Americanised Japanese youth hackers
 * underground radio resistance
 * hybrid American‑Japanese technological evolution
-* the player’s ambiguous role in state intelligence
+* the player's ambiguous role in state intelligence
+* a network of interconnected BBS sites preserving banned culture
+* technical challenges that teach real skills while advancing illegal activities
+* a progression system that draws players deeper into the community
 
-This forms the political and emotional bedrock for every system, interface, broadcast, and choice within the game world.
+This forms the political and emotional bedrock for every system, interface, broadcast, challenge, and choice within the game world.
+
+The game's structure—emails, challenges, games, and BBS exploration—all serve to immerse the player in a world where every technical task has moral weight, every connection deepens their involvement, and every choice moves them closer to the inevitable revelation of their true identity.
 
 ---
 
@@ -178,3 +501,359 @@ This forms the political and emotional bedrock for every system, interface, broa
 * Technology catalog
 * Radio broadcast scripts
 * BBS lore and message samples
+
+---
+
+## 11. Current Implementation Status and Story Alignment
+
+### Story Act Mapping
+
+**ACT 1: THE INVITATION** ✅ Implemented
+* Welcome email from glyphis
+* Username registration system
+* Initial BBS access
+
+**ACT 2: INITIAL EXPLORATION** ✅ Partially Implemented
+* SIMULACRA CORE assessment game
+* Email system with operator correspondence
+* Front Post Board with community content
+* Games module with initial challenges
+* Pirate Radio module (audio playback)
+* Team Info dossiers
+
+**ACT 3: BECOMING PART OF THE COMMUNITY** ✅ Partially Implemented
+* LAPC1 Driver Challenge (uncle-am)
+* First exposure to banned music
+* AstroMiner Cracking Challenge (jaxkando)
+* Pirate Radio Relay Setup (uncle-am)
+* Access to other BBS sites (Paper Crane, Echo Chamber)
+* Relationship building through emails
+* ⏳ Grey-area jobs and escalating tasks (future content)
+
+**ACT 4: THE SUSPICION** ⏳ Planned
+* Paranoia email from glyphis (implemented but not fully integrated)
+* ⏳ Disappearing threads
+* ⏳ NPCs questioning each other
+* ⏳ Tension and fractured friendships
+
+**ACT 5: THE REVELATION** ⏳ Planned
+* ⏳ Player identity reveal
+* ⏳ glyphis's direct confrontation
+* ⏳ Blurring of reality and simulation
+
+**ACT 6: THE CONFLICT** ⏳ Planned
+* ⏳ Final choice system
+* ⏳ Multiple endings based on player decisions
+
+### Current Email Flow
+
+The implemented email sequence follows this progression:
+
+1. **welcome_001** - Initial invitation from glyphis
+2. **glyphis_username_ack_001** - Acknowledgment after username registration
+3. **glyphis_simulacra_congrats_001** - After completing SIMULACRA CORE
+4. **uncle_am_audio_ops_001** - Introduction to LAPC1 challenge
+5. **uncle_am_radio_relay_001** - Radio relay request
+6. **glyphis_paranoia_001** - First hints of surveillance awareness
+7. **glyphis_radio_access1_congrats_001** - Acknowledgment of radio access
+
+This sequence effectively covers Acts 1-2 and the beginning of Act 3, with the paranoia email providing a bridge to Act 4 content.
+
+### BBS Network Expansion
+
+The current implementation includes:
+
+* **Glyphis_IO BBS** (Main) - Fully functional with all modules
+* **Paper Crane BBS (Ancient Lantern)** - Implemented, accessible via dial-in from radio interview
+* **Echo Chamber BBS** - Implemented, discovered through radio
+
+These external BBS sites expand the world and provide additional content that reinforces the themes of cultural preservation and resistance.
+
+### Challenge Integration
+
+All current challenges are fully integrated:
+* ✅ SIMULACRA CORE - Assessment game
+* ✅ LAPC1 Driver Challenge - Soundcard initialization
+* ✅ AstroMiner Cracking Challenge - Game reverse engineering
+* ✅ Radio Relay Setup - Network infrastructure
+
+Each challenge teaches real technical concepts while advancing the narrative and deepening player involvement in illegal activities.
+
+---
+
+The following a radio interview that apears on the Pirate Radio broadcast in-game via the BBS:
+
+You’re listening to Tokyo Yamoto Forever - ninety nine seventy Kay H Zeee.
+You’re man Switchboard is here to take you into the night, we have a special guest on shortly who is just dying to share her plights against the pillars of Pacifica.
+
+She is someone very.. Well I’ll just… No look, I have to tell you. I, we, the team, my wife, well we’ve been tracking her down for months. Been trying to get 
+her on for at least three.
+
+So, she runs a board out of Hiroshima 
+- called The Ancient Lantern. If you care about 
+where we came from, if you've ever wondered what they burned... 
+she's been putting the pieces back together.
+
+She calls herself Paper Crane. That's not her real name. Obviously.
+
+She’s online with us, right after this…
+
+You there, Crane?
+
+PAPER CRANE:
+[Slight static on her line, voice calm, measured]
+Am I on? Yes, I'm here. Hey SwitchBoard, thanks, thank you for having me, Can you hear me okay?
+
+SWITCHBOARD:
+Thank you for trusting us. I know what you're sitting on. I know 
+the risk.
+
+PAPER CRANE:
+Well, that’s all part of it, I’ve been doing this for many years but I think this is my first interview in a while. But you know what the risk is the point, you know? Yeah, if it wasn't dangerous, it wouldn't need protecting.
+
+SWITCHBOARD:
+[Laughs softly]
+I like that. Okay - for anyone just tuning in, let's establish 
+what we're talking about. The Ancient Lantern. It's a BBS. What's 
+on it?
+
+PAPER CRANE:
+Books. Scanned pages. Historical documents. Poetry. Religious 
+texts. Things that were supposed to disappear.
+
+SWITCHBOARD:
+Supposed to disappear. You mean—
+
+PAPER CRANE:
+After annexation. The burnings. The "cultural hygiene" programs. 
+You know the official story - they told us it was about preventing 
+ultranationalist resurgence. Protecting us from dangerous ideas.
+
+[BEAT]
+
+But they didn't just burn war propaganda. They burned everything. 
+Novels. Children's stories. Dictionaries. Anything with the old 
+language. Anything that reminded us we existed before 1945.
+
+SWITCHBOARD:
+How did you even start? Where do you find books that were 
+supposedly destroyed forty years ago?
+
+PAPER CRANE:
+People hid things. That's what people do. My grandmother had a 
+wooden box buried under her garden shed. She never told anyone 
+what was inside - not even my mother. When she died, I found it.
+
+[PAUSE]
+
+Twelve books. Water-damaged. Some pages missing. But readable.
+
+SWITCHBOARD:
+What were they?
+
+PAPER CRANE:
+[Voice softens]
+One was a collection of poetry. Matsuo… Bashō…. Do you know that 
+name?
+
+SWITCHBOARD:
+I've heard it. Haiku…. right?
+
+PAPER CRANE:
+Yes. Seventeenth century. He walked across the old country and 
+wrote about what he saw. Mountains. Rivers. The moon over temple 
+towns.
+
+[BEAT]
+
+I couldn't read it at first. The characters - I had to teach 
+myself. There's no school for this. No teacher you can ask. I 
+sat with those pages for two years before I understood my first 
+complete poem.
+
+SWITCHBOARD:
+[Quietly]
+Can you... would you share one? For the listeners?
+
+PAPER CRANE:
+[Long pause]
+
+On the broadcast? You understand what you're asking.
+
+SWITCHBOARD:
+I'm asking.
+
+PAPER CRANE:
+[Slow breath]
+
+Furu… ike… ya… / kawazu…. tobikomu…. / mizu…. no…. oto…..
+
+[SILENCE - 3 SECONDS]
+
+SWITCHBOARD:
+[Almost whispered]
+What does it mean?
+
+PAPER CRANE:
+An old pond. A frog jumps in. The sound of water.
+
+[BEAT]
+
+That's all. That's the whole poem. Three hundred years old. 
+Seventeen syllables. It almost didn't survive.
+
+SWITCHBOARD:
+[Exhales]
+God.
+
+[BEAT]
+
+Okay. We are just going to take a quick break listeners, Paper Plane and I, well, I mean me, Paper Plane is there a word for a nostalgia you never knew? 
+
+PAPER PLANE
+Natsukashii
+
+SWITCHBOARD:
+Beautiful, I’m looking forward to diving right back in after this. This is SWITCHBOARD You’re listening to Tokyo Yamoto Forever - ninety nine seventy Kay H Zeee, and this is Magnetta with their new track Hunting Candles…
+
+
+SWITCHBOARD:
+Alright we are back. This is your man Switchboard here and we are talking, today with PaperPlane of the Ancient Lantern BBS. It’s a small archive…You wouldn’t mind If I said small would you? Of our nation’s past
+Okay, let's - let me ask about the archive itself. I know it’s not small but how 
+big is it now?
+
+PAPER CRANE:
+I like to think of it as a curated collection.
+
+SWITCHBOARD:
+Sure.
+
+PAPER CRANE:
+It currently hosts a few documents. Some are single 
+pages - a letter, a certificate, a hand-drawn map. Some are 
+complete books. I have most of *The Tale of Genji* - that's 
+an eleventh-century novel, considered one of the first novels 
+ever written. Anywhere. In any language.
+
+SWITCHBOARD:
+And it's banned.
+
+PAPER CRANE:
+It's banned. It's a love story written by a court lady a 
+thousand years ago, and it's classified as seditious material.
+
+SWITCHBOARD:
+[Bitter laugh]
+Because it's in the old language.
+
+PAPER CRANE:
+Because it proves we had a civilization. A literature. An 
+identity. That's the real crime. Not the content - the context.
+
+SWITCHBOARD:
+What else? What should people look for if they log in?
+
+PAPER CRANE:
+There's a section on folklore. Ghost stories, mostly. Yūrei - 
+the dead who return with unfinished business. Yōkai - spirits 
+that live in the spaces between things. The stories our 
+grandparents were told, that they couldn't tell us.
+
+[BEAT]
+
+There's a collection of woodblock prints. Ukiyo-e. "Pictures 
+of the floating world." Hokusai, Hiroshige. You've probably 
+seen the wave - the great wave off Kanagawa. It's everywhere 
+now, on American coffee mugs and t-shirts. But they don't 
+tell you who made it. They don't tell you it's ours.
+
+SWITCHBOARD:
+Sanitized. Stripped of origin.
+
+PAPER CRANE:
+Exactly. They'll sell us our own culture as decoration, but 
+they won't let us have the context. The name. The history.
+
+SWITCHBOARD:
+[Pause]
+Why Hiroshima?
+
+PAPER CRANE:
+[Long silence]
+
+SWITCHBOARD:
+You don't have to answer.
+
+PAPER CRANE:
+No. It's fair.
+
+[BEAT]
+
+My family is from Hiroshima. We were outside the city when 
+it happened. My grandmother lost her sister, her parents, 
+her home. Everything.
+
+[BEAT]
+
+And then she lost her country. Her language. Her name - they 
+made her take an American one for the registry. Twice 
+orphaned. Once by the bomb. Once by the peace.
+
+[BEAT]
+
+I run the Board from Hiroshima because that's where it 
+started. That's where they broke us. If anything's going to 
+grow back, it should grow back from that ground.
+
+SWITCHBOARD:
+Paper Crane, I don't know what to say except thank you.
+
+PAPER CRANE:
+Don't thank me. Log in. Download. Read. Share. That's how 
+this survives - not on my server, but in people's heads. 
+They can't burn what you've memorized.
+
+SWITCHBOARD:
+Speaking of which - I know you're careful about this, but 
+is there a way for listeners to reach the Board?
+
+PAPER CRANE:
+[Pause]
+
+PAPER CRANE:
+Hiroshima exchange. 082-7734-1945.
+
+SWITCHBOARD:
+Got it.
+
+PAPER CRANE:
+Login as GUEST, password ORIGAMI. The 
+archives are in the second menu. Download what you can. Read 
+it. Then delete your logs.
+
+SWITCHBOARD:
+You heard her. The Ancient Lantern. A library that shouldn't 
+exist, keeping alive what shouldn't have died.
+
+[BEAT]
+
+Paper Crane - stay safe.
+
+PAPER CRANE:
+You too, Switchboard. Keep the signal alive.
+
+[CLICK - LINE DISCONNECTS]
+
+SWITCHBOARD:
+
+Furu ike ya. An old pond.
+
+[BEAT]
+
+We're the frogs, people. And the water remembers the sound 
+we make.
+
+[BEAT]
+
+Stay hidden. Stay angry. Stay awake.You’re listening to Tokyo Yamoto Forever - ninety nine seventy Kay H Zeee. And this is Dogma by Crowman.
+

@@ -813,6 +813,21 @@ class OSMode:
                         icon["dragging"] = False
                         return True
         
+        elif event.type == pygame.MOUSEWHEEL:
+            # Handle mouse wheel scrolling for notes modal
+            if "notes" in self.active_modals and not self.notes_modal_edit_mode:
+                modal_x, modal_y = self.modal_positions.get("notes", (0, 0))
+                modal_w, modal_h = self._get_modal_size("notes")
+                modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
+                modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
+                mouse_x, mouse_y = pygame.mouse.get_pos()
+                
+                if modal_rect.collidepoint(mouse_x, mouse_y):
+                    # Scroll the notes view
+                    scroll_amount = int(event.y * 3)  # Scroll 3 lines per wheel tick
+                    self.notes_modal_view_scroll = max(0, self.notes_modal_view_scroll - scroll_amount)
+                    return True
+        
         elif event.type == pygame.KEYDOWN:
             # Handle keyboard input for modals in z-order (top-most first)
             for modal_name in reversed(self.active_modals):
@@ -3135,8 +3150,7 @@ class OSMode:
             "content_field": None,
             "save_button": None,
             "cancel_button": None,
-            "format_buttons": [],
-            "scroll_arrow": None
+            "format_buttons": []
         }
 
         modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
@@ -3229,18 +3243,6 @@ class OSMode:
             self._draw_note_editor(note, content_area_rect, modal_x, modal_y, modal_w)
         else:
             self._draw_note_view(note, content_area_rect, modal_x, modal_y, modal_w)
-
-        scroll_arrow_size = int(30 * self.scale)
-        scroll_arrow_x = modal_x + modal_w - gap - scroll_arrow_size
-        scroll_arrow_y = modal_y + modal_h - gap - scroll_arrow_size
-        scroll_arrow_rect = pygame.Rect(scroll_arrow_x, scroll_arrow_y, scroll_arrow_size, scroll_arrow_size)
-        pygame.draw.polygon(self.screen, COLOR_GREY, [
-            (scroll_arrow_x + scroll_arrow_size // 2, scroll_arrow_y + scroll_arrow_size),
-            (scroll_arrow_x, scroll_arrow_y),
-            (scroll_arrow_x + scroll_arrow_size, scroll_arrow_y)
-        ])
-        pygame.draw.rect(self.screen, COLOR_GREY, scroll_arrow_rect, 1)
-        self.notes_modal_hitboxes["scroll_arrow"] = scroll_arrow_rect
         
     def _get_icon_positions_file_path(self) -> str:
         """Get the path to the icon positions JSON file."""
@@ -3443,6 +3445,8 @@ class OSMode:
         # Check if player has tokens
         has_radio_access1 = self.has_token("RADIO_ACCESS1")
         has_jax1 = self.has_token("JAX1")
+        has_papercranebbs = self.has_token("PAPERCRANEBBS")
+        has_echochamber = self.has_token("ECHOCHAMBER")
         
         # Build content dynamically
         content = (
@@ -3464,8 +3468,12 @@ class OSMode:
         else:
             content += "6. Obtain access to the group's Pirate Radio Stream!\n"
         
-        # Add new items 7, 8, 9
-        content += "7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.\n"
+        # Item 7: Strike through if player has both PAPERCRANEBBS and ECHOCHAMBER tokens
+        if has_papercranebbs and has_echochamber:
+            content += "[s]7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.[/s]\n"
+        else:
+            content += "7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.\n"
+        
         content += "8. Dial into at least 3 more BBS sites.\n"
         content += "9. Crack games, play them and attempt to dominate the leaderboards\n"
         
@@ -3480,7 +3488,6 @@ class OSMode:
         username, pin = self.get_user_credentials()
         content = f"{BBS_NAME}\n"
         content += f"Dial-in: (03) 45 72 88 91\n"
-        content += f"\n"
         content += f"Username: {username if username else 'Not Set'}\n"
         content += f"Login PIN: {pin if pin else 'Not Set'}"
         
@@ -3590,6 +3597,8 @@ class OSMode:
                     # Check if tokens require content update
                     has_radio_access1 = self.has_token("RADIO_ACCESS1")
                     has_jax1 = self.has_token("JAX1")
+                    has_papercranebbs = self.has_token("PAPERCRANEBBS")
+                    has_echochamber = self.has_token("ECHOCHAMBER")
                     existing_content = notes[0].get("content", "")
                     
                     # Check if item 5 needs to be updated (strike through if JAX1 present)
@@ -3599,6 +3608,10 @@ class OSMode:
                     # Check if item 6 needs to be updated (strike through if token present)
                     item_6_struck = "[s]6. Obtain access to the group's Pirate Radio Stream![/s]" in existing_content
                     item_6_unstruck = "6. Obtain access to the group's Pirate Radio Stream!" in existing_content and not item_6_struck
+                    
+                    # Check if item 7 needs to be updated (strike through if both PAPERCRANEBBS and ECHOCHAMBER present)
+                    item_7_struck = "[s]7. Observe the Underground Radio Scene" in existing_content
+                    item_7_unstruck = "7. Observe the Underground Radio Scene" in existing_content and not item_7_struck
                     
                     # Check if items 7-9 exist
                     has_item_7 = "7. Observe the Underground Radio Scene" in existing_content
@@ -3641,6 +3654,22 @@ class OSMode:
                         )
                         needs_update = True
                     
+                    # Update item 7 strike-through status if token status changed
+                    if has_papercranebbs and has_echochamber and item_7_unstruck:
+                        # Need to strike through item 7
+                        updated_content = updated_content.replace(
+                            "7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.\n",
+                            "[s]7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.[/s]\n"
+                        )
+                        needs_update = True
+                    elif not (has_papercranebbs and has_echochamber) and item_7_struck:
+                        # Need to remove strike-through from item 7
+                        updated_content = updated_content.replace(
+                            "[s]7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.[/s]\n",
+                            "7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.\n"
+                        )
+                        needs_update = True
+                    
                     # Add items 7-9 if they don't exist
                     if not has_item_7 or not has_item_8 or not has_item_9:
                         # Remove any existing items 7-9 to avoid duplicates
@@ -3659,7 +3688,11 @@ class OSMode:
                         updated_content = '\n'.join(filtered_lines)
                         if updated_content and not updated_content.endswith('\n'):
                             updated_content += '\n'
-                        updated_content += "7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.\n"
+                        # Item 7: Strike through if player has both PAPERCRANEBBS and ECHOCHAMBER tokens
+                        if has_papercranebbs and has_echochamber:
+                            updated_content += "[s]7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.[/s]\n"
+                        else:
+                            updated_content += "7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.\n"
                         updated_content += "8. Dial into at least 3 more BBS sites.\n"
                         updated_content += "9. Crack games, play them and attempt to dominate the leaderboards\n"
                         needs_update = True

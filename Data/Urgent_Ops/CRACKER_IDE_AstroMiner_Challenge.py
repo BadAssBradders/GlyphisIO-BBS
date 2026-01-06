@@ -1771,6 +1771,13 @@ Press SPACE to continue."""
                 message = self.chat_typing_state["message"]
                 from_queue = self.chat_typing_state.get("from_queue", False)
                 self._append_chat(speaker, message)
+                
+                # Grant ASTROMINER token when jaxkando says "FREE THE GAMES! *raises fist*"
+                if speaker.upper() == "JAX" and "FREE THE GAMES" in message.upper() and "RAISES FIST" in message.upper():
+                    if "ASTROMINER" not in self.pending_token_grants:
+                        self.pending_token_grants.append("ASTROMINER")
+                        print("[CRACKER_IDE] Granting ASTROMINER token - jaxkando said 'FREE THE GAMES! *raises fist*'")
+                
                 self.chat_typing_state = None
                 if from_queue: self.chat_next_queue_time = now + 900
         elif self.chat_message_queue and now >= self.chat_next_queue_time:
@@ -1942,7 +1949,7 @@ Press SPACE to continue."""
                 self._protection_bypassed = True
                 self.challenge_completed = True
                 self.pending_token_grants.append("AMnode4")
-                self.pending_token_grants.append("ASTROMINER")  # Grant ASTROMINER token when Node 4 completes
+                # ASTROMINER token will be granted when jaxkando says "FREE THE GAMES! *raises fist*"
             
             self.success_modal_active = True
             

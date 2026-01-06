@@ -1264,6 +1264,9 @@ class GLYPHIS_IOBBS:
         self.email_scroll_y = 0  # Scroll position for email reading
         self.post_scroll_y = 0   # Scroll position for post reading
         self.bio_scroll_y = 0    # Scroll position for team bio
+        self.inbox_scroll = 0    # Scroll position for inbox list
+        self.outbox_scroll = 0   # Scroll position for outbox list
+        self.sent_scroll = 0     # Scroll position for sent list
 
         # Game management
         self.game_definitions = GAME_DEFINITIONS
@@ -1707,6 +1710,9 @@ class GLYPHIS_IOBBS:
         self.email_scroll_y = 0
         self.post_scroll_y = 0
         self.bio_scroll_y = 0
+        self.inbox_scroll = 0
+        self.outbox_scroll = 0
+        self.sent_scroll = 0
         
         # Reset module selection
         self.current_module = 0
@@ -3539,8 +3545,39 @@ class GLYPHIS_IOBBS:
 
         self._draw_footer_status()
     
+    def _draw_email_scroll_indicator(self, surface: pygame.Surface, rect: pygame.Rect, start_line: int, visible_lines: int, total_lines: int) -> None:
+        """Draws the Paper Crane BBS-style GOLD scroll bar indicator."""
+        if total_lines <= visible_lines:
+            return
+
+        # Calculate bar geometry
+        max_scroll = total_lines - visible_lines
+        if max_scroll <= 0:
+            return
+        scroll_pct = start_line / max_scroll if max_scroll > 0 else 0
+        
+        # GOLD color for scroll indicator (matching Paper Crane BBS)
+        GOLD = (255, 215, 0)
+        bar_w = int(4 * self.scale)
+        bar_h = int(30 * self.scale)
+        
+        track_h = rect.height - int(20 * self.scale)
+        available_track = track_h - bar_h
+        
+        bar_x = rect.right - bar_w - int(4 * self.scale)
+        bar_y = rect.y + int(10 * self.scale) + int(scroll_pct * available_track)
+        
+        # Draw the handle
+        pygame.draw.rect(surface, GOLD, (bar_x, bar_y, bar_w, bar_h), 0, border_radius=2)
+        
+        # Optional: draw a very faint track line
+        track_color = (GOLD[0], GOLD[1], GOLD[2])
+        pygame.draw.line(surface, track_color, 
+                         (bar_x + bar_w//2, rect.y + int(10 * self.scale)), 
+                         (bar_x + bar_w//2, rect.y + rect.height - int(10 * self.scale)), 1)
+
     def draw_email_list(self, emails, title):
-        """Draw a list of emails"""
+        """Draw a list of emails with scrolling support"""
         _, panel_rect, _ = self._prepare_bbs_screen(
             f"EMAIL // {title}",
             ["UP/DOWN: navigate mail   ENTER: read   ESC: return"],
@@ -3559,14 +3596,63 @@ class GLYPHIS_IOBBS:
 
         entry_height = int(80 * self.scale)
         gap = int(12 * self.scale)
-
-        for i, email in enumerate(emails[:12]):
+        
+        # Calculate visible entries based on panel height
+        available_height = panel_rect.bottom - y - int(20 * self.scale)
+        visible_entries = max(1, available_height // (entry_height + gap))
+        
+        # Get the appropriate scroll variable based on state
+        if self.state == "inbox":
+            scroll_pos = self.inbox_scroll
+        elif self.state == "outbox":
+            scroll_pos = self.outbox_scroll
+        elif self.state == "sent":
+            scroll_pos = self.sent_scroll
+        else:
+            scroll_pos = 0
+        
+        # Clamp scroll position
+        max_scroll = max(0, len(emails) - visible_entries)
+        scroll_pos = max(0, min(scroll_pos, max_scroll))
+        
+        # Update the scroll variable
+        if self.state == "inbox":
+            self.inbox_scroll = scroll_pos
+        elif self.state == "outbox":
+            self.outbox_scroll = scroll_pos
+        elif self.state == "sent":
+            self.sent_scroll = scroll_pos
+        
+        # Auto-scroll to keep selected item visible
+        if self.current_module < scroll_pos:
+            scroll_pos = self.current_module
+        elif self.current_module >= scroll_pos + visible_entries:
+            scroll_pos = self.current_module - visible_entries + 1
+        
+        # Update scroll again after auto-scroll
+        if self.state == "inbox":
+            self.inbox_scroll = scroll_pos
+        elif self.state == "outbox":
+            self.outbox_scroll = scroll_pos
+        elif self.state == "sent":
+            self.sent_scroll = scroll_pos
+        
+        # Draw visible emails
+        start_idx = scroll_pos
+        end_idx = min(len(emails), start_idx + visible_entries)
+        
+        for i in range(start_idx, end_idx):
+            email = emails[i]
+            display_idx = i - start_idx
+            entry_y = y + display_idx * (entry_height + gap)
+            
             entry_rect = pygame.Rect(
                 panel_rect.x + int(16 * self.scale),
-                y,
+                entry_y,
                 panel_rect.width - int(32 * self.scale),
                 entry_height,
             )
+            
             if i == self.current_module:
                 pygame.draw.rect(self.bbs_surface, HIGHLIGHT_BLUE, entry_rect)
                 pygame.draw.rect(self.bbs_surface, ACCENT_CYAN, entry_rect, 2)
@@ -3578,7 +3664,7 @@ class GLYPHIS_IOBBS:
                 prefix = "[*]" if not email.read else "[ ]"
 
             text_x = entry_rect.x + int(14 * self.scale)
-            line_y = y + int(10 * self.scale)
+            line_y = entry_y + int(10 * self.scale)
             line_y = self.draw_text(
                 f"{prefix} FROM: {email.sender}",
                 self.font_small,
@@ -3597,9 +3683,8 @@ class GLYPHIS_IOBBS:
             ) + int(8 * self.scale)
             self.draw_text(f"TIME: {email.timestamp}", self.font_tiny, DARK_CYAN, text_x, line_y)
 
-            y += entry_height + gap
-            if y + entry_height > panel_rect.bottom - int(20 * self.scale):
-                break
+        # Draw scroll indicator
+        self._draw_email_scroll_indicator(self.bbs_surface, panel_rect, scroll_pos, visible_entries, len(emails))
 
         self._draw_footer_status()
     
@@ -4845,6 +4930,16 @@ class GLYPHIS_IOBBS:
                 emails = self.inbox if self.state == "inbox" else (self.outbox if self.state == "outbox" else self.sent)
                 if emails:
                     self.current_module = max(0, self.current_module - 1)
+                    # Auto-scroll to keep selected item visible
+                    if self.state == "inbox":
+                        if self.current_module < self.inbox_scroll:
+                            self.inbox_scroll = self.current_module
+                    elif self.state == "outbox":
+                        if self.current_module < self.outbox_scroll:
+                            self.outbox_scroll = self.current_module
+                    elif self.state == "sent":
+                        if self.current_module < self.sent_scroll:
+                            self.sent_scroll = self.current_module
             elif self.state == "front_post":
                 if self.current_post is None:
                     # Get list of unread posts
@@ -4881,6 +4976,7 @@ class GLYPHIS_IOBBS:
                 emails = self.inbox if self.state == "inbox" else (self.outbox if self.state == "outbox" else self.sent)
                 if emails:
                     self.current_module = min(len(emails) - 1, self.current_module + 1)
+                    # Auto-scroll will be handled in draw_email_list to keep selected item visible
             elif self.state == "front_post":
                 if self.current_post is None:
                     # Get list of unread posts
@@ -4947,12 +5043,15 @@ class GLYPHIS_IOBBS:
                 elif self.current_module == 1:
                     self.state = "inbox"
                     self.current_module = 0
+                    self.inbox_scroll = 0  # Reset scroll when entering inbox
                 elif self.current_module == 2:
                     self.state = "outbox"
                     self.current_module = 0
+                    self.outbox_scroll = 0  # Reset scroll when entering outbox
                 elif self.current_module == 3:
                     self.state = "sent"
                     self.current_module = 0
+                    self.sent_scroll = 0  # Reset scroll when entering sent
             
             elif self.state == "inbox" or self.state == "outbox" or self.state == "sent":
                 emails = self.inbox if self.state == "inbox" else (self.outbox if self.state == "outbox" else self.sent)
@@ -5035,6 +5134,10 @@ class GLYPHIS_IOBBS:
             elif self.state == "inbox" or self.state == "outbox" or self.state == "sent":
                 self.state = "email_menu"
                 self.current_module = 0
+                # Reset scroll positions when leaving email lists
+                self.inbox_scroll = 0
+                self.outbox_scroll = 0
+                self.sent_scroll = 0
             elif self.state == "reading":
                 # Go back to the list we came from
                 if self.previous_email_state:
@@ -7525,6 +7628,17 @@ class GLYPHIS_IOBBS:
             if self.inventory.has_token(Tokens.JAX1):
                 # User has both tokens - deliver Jaxkando's ASTRO-MINER email
                 self._deliver_jaxkando_astrominer_email()
+        
+        # When ASTROMINER token is granted (after completing the crack), deliver congratulatory emails from 3 team members
+        if token == Tokens.ASTROMINER:
+            # Deliver 3 congratulatory emails (jaxkando's comes later when they play)
+            self.deliver_email_to_player("uncle_am_astrominer_congrats_001")
+            self.deliver_email_to_player("rain_astrominer_congrats_001")
+            self.deliver_email_to_player("glyphis_astrominer_congrats_001")
+        
+        # When ASTROMINER1 token is granted (after playing the game), deliver jaxkando's email
+        if token == Tokens.ASTROMINER1:
+            self.deliver_email_to_player("jaxkando_astrominer_congrats_001")
     
     def _deliver_jaxkando_astrominer_email(self):
         """Deliver Jaxkando's email introducing ASTRO-MINER game cracking task."""
@@ -7574,6 +7688,18 @@ class GLYPHIS_IOBBS:
             self.save_user_state()
             self.refresh_main_terminal_feed()
             self._handle_token_acquired(code)
+            
+            # Create flag file when ASTROMINER1 token is granted (for leaderboard)
+            if code == Tokens.ASTROMINER1:
+                import os
+                flag_path = os.path.join("Data", "games", "AstroMiner", ".astrominer1_granted")
+                try:
+                    os.makedirs(os.path.dirname(flag_path), exist_ok=True)
+                    with open(flag_path, 'w') as f:
+                        f.write("")  # Create empty flag file
+                    log_event(f"Created ASTROMINER1 flag file for jaxkando leaderboard entry")
+                except Exception as e:
+                    log_event(f"Warning: Could not create ASTROMINER1 flag file: {e}")
             
             # Unlock Steam achievements for key milestones
             if hasattr(self, 'steam'):
