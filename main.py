@@ -1755,6 +1755,8 @@ class GLYPHIS_IOBBS:
         self.paper_crane_return_to_os = False
         self._reset_to_beginning()
         if should_return_to_os and self.os_mode:
+            # Disconnect network when BBS closes and returning to OS mode
+            self.os_mode._set_network_disconnected()
             self.os_mode_active = True
             self.os_mode.update_scale(self.scale)
             self._update_audio_power_state()
@@ -1781,6 +1783,8 @@ class GLYPHIS_IOBBS:
         self.echo_chamber_return_to_os = False
         self._reset_to_beginning()
         if should_return_to_os and self.os_mode:
+            # Disconnect network when BBS closes and returning to OS mode
+            self.os_mode._set_network_disconnected()
             self.os_mode_active = True
             self.os_mode.update_scale(self.scale)
             self._update_audio_power_state()
@@ -2784,7 +2788,7 @@ class GLYPHIS_IOBBS:
                     "Come on, it'll be fun! Promise!"
                 ),
                 "required_tokens": [Tokens.LAPC1A],
-                "forbidden_tokens": [],
+                "forbidden_tokens": [Tokens.ASTROMINER],
                 "exclusive_tokens": []
             }
         ]
@@ -3885,6 +3889,69 @@ class GLYPHIS_IOBBS:
             self.os_boot_video_playing = False
             self.os_boot_video_cap = None
 
+    def _play_bradsonic_loading_video(self) -> None:
+        """Play BRADSONIC LOADING.mp4 video at startup."""
+        if not _cv2_available:
+            log_event("cv2 not available, cannot play BRADSONIC LOADING video")
+            return
+        
+        video_path = get_data_path("Videos", "BRADSONIC LOADING.mp4")
+        if not os.path.exists(video_path):
+            log_event(f"BRADSONIC LOADING.mp4 not found at {video_path}, skipping")
+            return
+        
+        cap = None
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap or not cap.isOpened():
+                if cap:
+                    cap.release()
+                log_event("Failed to open BRADSONIC LOADING video")
+                return
+
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            frame_delay = 1.0 / fps
+            last_time = time.time()
+
+            log_event("Playing BRADSONIC LOADING.mp4")
+
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame_resized = cv2.resize(frame_rgb, (self.screen_width, self.screen_height))
+                frame_surface = pygame.surfarray.make_surface(np.swapaxes(frame_resized, 0, 1))
+
+                self.screen.fill(BLACK)
+                self.screen.blit(frame_surface, (0, 0))
+                pygame.display.flip()
+
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        cap.release()
+                        pygame.quit()
+                        sys.exit()
+                    elif event.type == pygame.KEYDOWN:
+                        if event.key in (pygame.K_ESCAPE, pygame.K_SPACE, pygame.K_RETURN):
+                            log_event("BRADSONIC LOADING video skipped by user")
+                            cap.release()
+                            return
+
+                elapsed = time.time() - last_time
+                if elapsed < frame_delay:
+                    time.sleep(frame_delay - elapsed)
+                last_time = time.time()
+        except Exception as exc:
+            log_event(f"BRADSONIC LOADING video playback failed: {exc}")
+        finally:
+            if cap:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+
     def _play_ops_intro_video(self, video_path: str) -> None:
         if not os.path.exists(video_path):
             return
@@ -4099,6 +4166,9 @@ class GLYPHIS_IOBBS:
                 # Create callback function to reset BBS and exit OS mode
                 def reset_bbs_and_exit_os():
                     self._reset_to_beginning()
+                    # Disconnect network when BBS closes
+                    if self.os_mode:
+                        self.os_mode._set_network_disconnected()
                     self.os_mode_active = False
                     # Immediately update video state when exiting OS Mode
                     self._update_audio_power_state()
@@ -5769,6 +5839,9 @@ class GLYPHIS_IOBBS:
                         self._launch_echo_chamber_bbs(return_to_os=was_os_mode)
                     elif hasattr(self.os_mode, 'modem_modal_should_reset_bbs') and self.os_mode.modem_modal_should_reset_bbs:
                         self._reset_to_beginning()
+                        # Disconnect network when BBS closes
+                        if self.os_mode:
+                            self.os_mode._set_network_disconnected()
                         self.os_mode_active = False
                         # Immediately update video state when exiting OS Mode
                         # This ensures the OS video is stopped and the regular video starts right away

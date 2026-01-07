@@ -111,6 +111,17 @@ class CRACKER_IDE_AstroMiner_Challenge:
         except:
             self.font_caption = self.font_medium
 
+        # Load Retro Gaming font for completion text animations
+        try:
+            retro_gaming_path = get_data_path("Retro Gaming.ttf")
+            if os.path.exists(retro_gaming_path):
+                # Store the path for dynamic font loading
+                self.retro_gaming_font_path = retro_gaming_path
+            else:
+                self.retro_gaming_font_path = None
+        except Exception as e:
+            self.retro_gaming_font_path = None
+
         self.width = self.surface.get_width()
         self.height = self.surface.get_height()
 
@@ -1274,8 +1285,7 @@ F4 = access computer documentation (assembly reference, hardware specs)"""
         if self.modal_active: self._draw_initial_modal()
         elif self.success_modal_active: self._draw_success_modal()
         
-        # Draw completion text animations AFTER modals so they appear on top
-        self._draw_completion_text_animations()
+        # Completion text animations are now drawn in get_screen_overlays() to render after modals but before scanlines
 
     def _draw_editor_pane(self):
         accent = self.HIGHLIGHT_CYAN if self.focus_target == "editor" else self.DARK_CYAN
@@ -1511,12 +1521,16 @@ Press SPACE to continue."""
 
     def get_screen_overlays(self):
         """Return list of (surface, offset) tuples for screen-level overlays.
-        Order matters: later items render on top. Modal is last to be above everything."""
+        Order matters: later items render on top. Completion text is last (before scanlines)."""
         overlays = []
         if self.parrot_overlay:
             overlays.append(self.parrot_overlay)
         if self.modal_overlay:
             overlays.append(self.modal_overlay)
+        # Draw completion text animations last so they appear on top of modals but before scanlines
+        completion_overlay = self._draw_completion_text_animations()
+        if completion_overlay:
+            overlays.append((completion_overlay, (0, 0)))
         return overlays
     def should_exit(self): return self.exit_requested
 
@@ -2219,16 +2233,27 @@ Press SPACE to continue."""
                 anim["alpha"] = int(255 * (anim["life"] / (anim["max_life"] * 0.3)))
 
     def _draw_completion_text_animations(self):
-        """Draw completion text animations."""
+        """Draw completion text animations to a separate surface for overlay rendering.
+        Returns a surface with the completion text, or None if no animations active."""
+        if not self.completion_text_animations:
+            return None
+        
+        # Create a transparent surface matching the game surface size
+        overlay_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        
         for anim in self.completion_text_animations:
             if anim["alpha"] <= 0:
                 continue
             
-            # Create text surface with scaling using Courier font to match app style
+            # Use Retro Gaming font if available, otherwise fall back to Courier
             font_size = int(self.font_large.get_height() * anim["scale"])
             try:
-                # Use Courier font (bold for main text) to match app fonts
-                scaled_font = pygame.font.SysFont("Courier", max(12, font_size), bold=True)
+                if self.retro_gaming_font_path:
+                    # Scale the Retro Gaming font
+                    scaled_font = pygame.font.Font(self.retro_gaming_font_path, max(12, font_size))
+                else:
+                    # Fallback to Courier if Retro Gaming font not available
+                    scaled_font = pygame.font.SysFont("Courier", max(12, font_size), bold=True)
             except:
                 scaled_font = self.font_large
             
@@ -2236,20 +2261,26 @@ Press SPACE to continue."""
             text_surf = scaled_font.render(anim["text"], True, anim["color"])
             text_surf.set_alpha(anim["alpha"])
             text_rect = text_surf.get_rect(center=(anim["x"], anim["y"] - 20))
-            self.surface.blit(text_surf, text_rect)
+            overlay_surface.blit(text_surf, text_rect)
             
             # Subtext (smaller)
             if anim["subtext"]:
                 sub_size = int(self.font_medium.get_height() * anim["scale"] * 0.6)
                 try:
-                    # Use Courier font (not bold) for subtext to match app fonts
-                    sub_font = pygame.font.SysFont("Courier", max(10, sub_size))
+                    if self.retro_gaming_font_path:
+                        # Scale the Retro Gaming font for subtext
+                        sub_font = pygame.font.Font(self.retro_gaming_font_path, max(10, sub_size))
+                    else:
+                        # Fallback to Courier if Retro Gaming font not available
+                        sub_font = pygame.font.SysFont("Courier", max(10, sub_size))
                 except:
                     sub_font = self.font_medium
                 sub_surf = sub_font.render(anim["subtext"], True, self.YELLOW)
                 sub_surf.set_alpha(anim["alpha"])
                 sub_rect = sub_surf.get_rect(center=(anim["x"], anim["y"] + 30))
-                self.surface.blit(sub_surf, sub_rect)
+                overlay_surface.blit(sub_surf, sub_rect)
+        
+        return overlay_surface
 
     def _check_code_patterns(self):
         """Check if user has typed correct code patterns and create particles."""

@@ -265,6 +265,8 @@ class AstroMinerSession(BaseGameSession):
         # Leaderboard tracking
         self.last_uploaded_score = 0
         self.score_check_counter = 0
+        # Token tracking - grant ASTROMINER1 token when player quits for the first time
+        self.astrominer1_token_granted = False
     
     def _get_desktop_pos(self) -> Tuple[int, int]:
         """Get the desktop area position in screen coordinates."""
@@ -360,10 +362,8 @@ class AstroMinerSession(BaseGameSession):
             pygame.mouse.set_visible(False)
             print("[AstroMinerSession.enter] Cursor hidden, mouse input now controlled by game")
             
-            # Grant ASTROMINER1 token when player enters the game
-            if hasattr(self.app, 'grant_token'):
-                from tokens import Tokens
-                self.app.grant_token(Tokens.ASTROMINER1, reason="player entered AstroMiner game")
+            # Reset token grant flag so it can be granted when player quits
+            self.astrominer1_token_granted = False
             
         except ImportError as e:
             print(f"Failed to import astrominer_embed: {e}")
@@ -628,12 +628,20 @@ class AstroMinerSession(BaseGameSession):
                     # Silently fail if function doesn't exist yet (DLL not recompiled)
                     pass
         
+        
         # Check if game wants to exit (from menu quit option)
         if self.embed_module:
             try:
                 if hasattr(self.embed_module, 'should_exit') and callable(self.embed_module.should_exit):
                     if self.embed_module.should_exit():
                         self.exit_requested = True
+                        # Grant ASTROMINER1 token when player quits for the first time
+                        if not self.astrominer1_token_granted:
+                            if hasattr(self.app, 'grant_token'):
+                                from tokens import Tokens
+                                self.app.grant_token(Tokens.ASTROMINER1, reason="player quit AstroMiner for the first time")
+                                self.astrominer1_token_granted = True
+                                print("[AstroMinerSession] ASTROMINER1 token granted - player quit game")
             except Exception as e:
                 pass  # Ignore errors checking exit flag
         

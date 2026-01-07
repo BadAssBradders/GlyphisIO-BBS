@@ -245,6 +245,17 @@ def initialize() -> bool:
         except (AttributeError, OSError, TypeError) as e:
             _dll._has_get_score = False
         
+        # Try to set up IsShipDestroyed function (optional)
+        _dll._has_ship_destroyed = False
+        try:
+            ship_destroyed_func = getattr(_dll, 'IsShipDestroyed', None)
+            if ship_destroyed_func is not None:
+                _dll.IsShipDestroyed.restype = ctypes.c_bool
+                _dll.IsShipDestroyed.argtypes = []
+                _dll._has_ship_destroyed = True
+        except (AttributeError, OSError, TypeError) as e:
+            _dll._has_ship_destroyed = False
+        
         # Try to set up SetUsername function (optional)
         _dll._has_set_username = False
         try:
@@ -437,6 +448,15 @@ def get_last_final_score() -> int:
         except Exception:
             return 0
     return 0
+
+def is_ship_destroyed() -> bool:
+    """Check if the player's ship has been destroyed (hull <= 0)."""
+    if _dll and hasattr(_dll, '_has_ship_destroyed') and _dll._has_ship_destroyed:
+        try:
+            return _dll.IsShipDestroyed()
+        except Exception:
+            return False
+    return False
 
 def set_username(username: str) -> bool:
     """Set the current BBS username for leaderboard entries."""

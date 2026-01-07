@@ -52,7 +52,7 @@
       "body7": "I'll hook you up with the hex editor.",
       "body8": "\nLet's see what's hiding inside the sectors of ASTRO MINER! Shall we!",
       "required_tokens": ["LAPC1A"],
-      "forbidden_tokens": [],
+      "forbidden_tokens": ["ASTROMINER"],
       "exclusive_tokens": []
     },
     {

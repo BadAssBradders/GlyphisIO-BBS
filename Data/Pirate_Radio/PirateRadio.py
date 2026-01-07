@@ -504,10 +504,11 @@ class RadioStationManager:
 
 class ChatSystem:
     def __init__(self, font, max_x, start_x, live_y, header_pos):
-        self.queue = []
+        self.queue = []  # List of (message, priority, skip_animation) tuples
         self.history = []
         self.live_text = ""
         self.current_full_msg = ""
+        self.current_priority = False  # Track if current message is priority
         self.state = "IDLE"  # IDLE, ANIM_DOTS, TYPING, WAIT_WRAP, WAIT_NEXT
         self.timer = 0
         self.typing_idx = 0
@@ -525,8 +526,40 @@ class ChatSystem:
         self.cursor_blink_timer = 0
         self.on_message_complete: Optional[Callable[[str], None]] = None
 
-    def queue_message(self, msg):
-        self.queue.append(msg)
+    def queue_message(self, msg, priority=False, skip_animation=False):
+        """
+        Queue a message for display.
+        
+        Args:
+            msg: The message text to display
+            priority: If True, this message will interrupt non-priority messages
+            skip_animation: If True, message appears instantly without "..." animation
+        """
+        # If skip_animation is True, add directly to history and return
+        if skip_animation:
+            self.add_to_history(msg)
+            # Callback for message completion
+            if self.on_message_complete:
+                self.on_message_complete(msg)
+            return
+        
+        # If a priority message arrives while typing a non-priority message, interrupt it immediately
+        if priority and self.state == "TYPING" and not self.current_priority:
+            # Save current partial message to history
+            if self.live_text:
+                self.add_to_history(self.live_text)
+            # Immediately switch to the priority message
+            self.current_full_msg = msg
+            self.current_priority = True
+            self.live_text = ""
+            self.typing_idx = 0
+            self.timer = pygame.time.get_ticks()
+            # Don't add to queue since we're showing it immediately
+            return
+        
+        # Add to queue normally
+        self.queue.append((msg, priority, skip_animation))
+        
         if self.state == "IDLE":
             self.start_anim()
 
@@ -558,16 +591,55 @@ class ChatSystem:
                 self.start_anim()
         
         elif self.state == "ANIM_DOTS":
+            # Check if a priority message has been queued - skip animation if so
+            if self.queue:
+                # Check if there's a priority message in the queue
+                priority_found = False
+                priority_index = -1
+                for i, item in enumerate(self.queue):
+                    # Handle both old format (msg, priority) and new format (msg, priority, skip_anim)
+                    if len(item) == 2:
+                        msg, priority = item
+                        skip_anim = False
+                    else:
+                        msg, priority, skip_anim = item
+                    if priority:
+                        priority_found = True
+                        priority_index = i
+                        break
+                
+                if priority_found:
+                    # Skip animation and go straight to typing priority message
+                    self.state = "TYPING"
+                    item = self.queue.pop(priority_index)
+                    if len(item) == 2:
+                        msg, priority = item
+                    else:
+                        msg, priority, skip_anim = item
+                    self.current_full_msg = msg
+                    self.current_priority = priority
+                    self.live_text = ""
+                    self.typing_idx = 0
+                    self.timer = now
+                    return
+            
             elapsed = now - self.timer
             if elapsed >= self.anim_duration:
                 self.state = "TYPING"
                 if self.queue:
-                    self.current_full_msg = self.queue.pop(0)
+                    item = self.queue.pop(0)
+                    if len(item) == 2:
+                        msg, priority = item
+                    else:
+                        msg, priority, skip_anim = item
+                    self.current_full_msg = msg
+                    self.current_priority = priority
                     self.live_text = ""
                     self.typing_idx = 0
                     self.timer = now
                 else:
                     self.state = "IDLE"
+                    self.current_priority = False  # Reset priority flag
             else:
                 step = int(elapsed / 300) % 3
                 if step == 0: self.live_text = "..."
@@ -575,6 +647,39 @@ class ChatSystem:
                 elif step == 2: self.live_text = "."
 
         elif self.state == "TYPING":
+            # Check if a priority message has been queued while typing a non-priority message
+            if not self.current_priority and self.queue:
+                # Check if there's a priority message in the queue
+                priority_found = False
+                priority_index = -1
+                for i, item in enumerate(self.queue):
+                    # Handle both old format (msg, priority) and new format (msg, priority, skip_anim)
+                    if len(item) == 2:
+                        msg, priority = item
+                    else:
+                        msg, priority, skip_anim = item
+                    if priority:
+                        priority_found = True
+                        priority_index = i
+                        break
+                
+                if priority_found:
+                    # Interrupt current message - save partial text to history
+                    if self.live_text:
+                        self.add_to_history(self.live_text)
+                    # Switch to priority message
+                    item = self.queue.pop(priority_index)
+                    if len(item) == 2:
+                        msg, priority = item
+                    else:
+                        msg, priority, skip_anim = item
+                    self.current_full_msg = msg
+                    self.current_priority = True
+                    self.live_text = ""
+                    self.typing_idx = 0
+                    self.timer = now
+                    return  # Skip the rest of typing logic this frame
+            
             if now - self.timer > 40:
                 self.timer = now
                 if self.typing_idx < len(self.current_full_msg):
@@ -603,18 +708,57 @@ class ChatSystem:
                         self.on_message_complete(self.current_full_msg)
                     self.state = "WAIT_NEXT"
                     self.timer = now
+                    self.current_priority = False  # Reset priority flag
 
         elif self.state == "WAIT_NEXT":
+            # Check if a priority message has been queued - interrupt wait if so
+            if self.queue:
+                # Check if there's a priority message in the queue
+                priority_found = False
+                priority_index = -1
+                for i, item in enumerate(self.queue):
+                    # Handle both old format (msg, priority) and new format (msg, priority, skip_anim)
+                    if len(item) == 2:
+                        msg, priority = item
+                    else:
+                        msg, priority, skip_anim = item
+                    if priority:
+                        priority_found = True
+                        priority_index = i
+                        break
+                
+                if priority_found:
+                    # Interrupt wait and show priority message immediately
+                    self.live_text = ""
+                    self.state = "TYPING"
+                    item = self.queue.pop(priority_index)
+                    if len(item) == 2:
+                        msg, priority = item
+                    else:
+                        msg, priority, skip_anim = item
+                    self.current_full_msg = msg
+                    self.current_priority = priority
+                    self.typing_idx = 0
+                    self.timer = now
+                    return
+            
             elapsed = now - self.timer
             if elapsed > self.msg_pause:
                 self.live_text = ""
                 if self.queue:
                     self.state = "TYPING"
-                    self.current_full_msg = self.queue.pop(0)
+                    item = self.queue.pop(0)
+                    if len(item) == 2:
+                        msg, priority = item
+                    else:
+                        msg, priority, skip_anim = item
+                    self.current_full_msg = msg
+                    self.current_priority = priority
                     self.typing_idx = 0
                     self.timer = now
                 else:
                     self.state = "IDLE"
+                    self.current_priority = False  # Reset priority flag
             else:
                 step = int(elapsed / 300) % 3
                 if step == 0: self.live_text = "..."
@@ -642,6 +786,51 @@ class ChatSystem:
         elif self.scroll_offset > max_offset:
             self.scroll_offset = max_offset
 
+    def _wrap_text(self, text, font, max_width):
+        """
+        Wrap text to fit within max_width, returning a list of lines.
+        """
+        if max_width <= 0:
+            return [text]
+        
+        words = text.split(' ')
+        lines = []
+        current_line = ""
+        
+        for word in words:
+            if not current_line:
+                test_line = word
+            else:
+                test_line = current_line + " " + word
+            
+            test_width = font.size(test_line)[0]
+            if test_width <= max_width:
+                current_line = test_line
+            else:
+                if current_line:
+                    lines.append(current_line)
+                # If a single word is too long, break it character by character
+                word_width = font.size(word)[0]
+                if word_width > max_width:
+                    # Break the word itself character by character
+                    char_line = ""
+                    for char in word:
+                        test_char_line = char_line + char
+                        if font.size(test_char_line)[0] <= max_width:
+                            char_line = test_char_line
+                        else:
+                            if char_line:
+                                lines.append(char_line)
+                            char_line = char
+                    current_line = char_line
+                else:
+                    current_line = word
+        
+        if current_line:
+            lines.append(current_line)
+        
+        return lines if lines else [""]
+
     def draw(self, surface, offset_x=0, offset_y=0):
         # Apply window offset to drawing positions
         header_x, header_y = self.header_pos
@@ -649,6 +838,9 @@ class ChatSystem:
         
         prompt_surf = self.font.render("> ", True, OPERATOR_GREEN)
         prompt_w = prompt_surf.get_width()
+        
+        # Calculate available width for text wrapping
+        available_width = self.max_x - self.start_x - prompt_w
 
         y = self.live_y - 15
         
@@ -661,9 +853,29 @@ class ChatSystem:
             end_idx = len(self.history) - self.scroll_offset
             start_idx = max(0, end_idx - visible_count)
             visible_slice = self.history[start_idx:end_idx]
-            
-        for i, msg in enumerate(reversed(visible_slice)):
-            factor = 1.0 - (i * 0.1)
+        
+        # Build list of all wrapped lines with their message indices
+        all_wrapped_lines = []
+        for msg_idx, msg in enumerate(reversed(visible_slice)):
+            wrapped_lines = self._wrap_text(msg, self.font, available_width)
+            for line in wrapped_lines:
+                all_wrapped_lines.append((line, msg_idx))
+        
+        # Limit visible lines to fit on screen (working backwards from live_y)
+        line_height = 15
+        # Calculate max lines based on available vertical space
+        available_height = self.live_y - (self.header_pos[1] + 30)  # Space between header and live line
+        max_visible_lines = min(len(all_wrapped_lines), max(1, available_height // line_height))
+        visible_lines = all_wrapped_lines[-max_visible_lines:] if len(all_wrapped_lines) > max_visible_lines else all_wrapped_lines
+        
+        # Draw history messages with wrapping
+        min_y = self.header_pos[1] + 30  # Don't draw above header
+        for line, msg_idx in reversed(visible_lines):
+            # Stop if we've reached the top of the message log area
+            if y + offset_y < min_y:
+                break
+                
+            factor = 1.0 - (msg_idx * 0.1)
             if factor < 0.2: factor = 0.2
             
             curr_color = (
@@ -676,13 +888,18 @@ class ChatSystem:
             prompt_surf_faded = self.font.render("> ", True, prompt_color)
             
             surface.blit(prompt_surf_faded, (self.start_x + offset_x, y + offset_y))
-            surface.blit(self.font.render(msg, True, curr_color), (self.start_x + prompt_w + offset_x, y + offset_y))
-            y -= 15
+            surface.blit(self.font.render(line, True, curr_color), (self.start_x + prompt_w + offset_x, y + offset_y))
+            y -= line_height
             
         surface.blit(prompt_surf, (self.start_x + offset_x, self.live_y + offset_y))
         
+        # Draw live text with wrapping
         if self.live_text:
-            surface.blit(self.font.render(self.live_text, True, LIVE_MSG_PINK), (self.start_x + prompt_w + offset_x, self.live_y + offset_y))
+            wrapped_live = self._wrap_text(self.live_text, self.font, available_width)
+            # Only show the last line of wrapped live text (most recent)
+            if wrapped_live:
+                live_line = wrapped_live[-1]
+                surface.blit(self.font.render(live_line, True, LIVE_MSG_PINK), (self.start_x + prompt_w + offset_x, self.live_y + offset_y))
 
 
 class PirateRadioApp:
@@ -1164,7 +1381,7 @@ class PirateRadioApp:
                     # Stop current playback
                     self.radio_manager.stop_current()
                     self._notify_station_stop()
-                    self.chat.queue_message("Radio stream paused.")
+                    self.chat.queue_message("Radio stream paused.", priority=True, skip_animation=True)
                 return True
 
             if self.game_state == "AWAIT_INPUT":
@@ -1212,7 +1429,9 @@ class PirateRadioApp:
         
         # Check if station is initialized
         if station_name not in self.radio_manager.station_channels:
-            self.chat.queue_message(f"Station '{station_name}' not initialized.")
+            # Skip animation for automatic status messages when stations are displayed
+            skip_anim = self.radio_ui_active
+            self.chat.queue_message(f"Station '{station_name}' not initialized.", priority=True, skip_animation=skip_anim)
             return
         
         # Reset tuning state when switching to any station
@@ -1266,7 +1485,9 @@ class PirateRadioApp:
         minutes, seconds = self.radio_manager.get_station_time_formatted(station_name)
         freq = station.get("freq")
         freq_suffix = f" ({freq} kHz)" if freq else ""
-        self.chat.queue_message(f"Now tuned to: {station_name}{freq_suffix} ({minutes:02d}:{seconds:02d})")
+        # Skip animation for automatic status messages when stations are displayed
+        skip_anim = self.radio_ui_active
+        self.chat.queue_message(f"Now tuned to: {station_name}{freq_suffix} ({minutes:02d}:{seconds:02d})", priority=True, skip_animation=skip_anim)
         if self.on_station_tune:
             try:
                 self.on_station_tune(station)
@@ -1751,30 +1972,34 @@ class PirateRadioApp:
                 return
             self.tuner_index = (self.tuner_index + direction) % len(self.tuner_reduction_levels)
             self._apply_noise_volume()
-            self.chat.queue_message("Fine tuning noise")
+            # Skip animation for automatic status messages when stations are displayed
+            skip_anim = self.radio_ui_active
+            self.chat.queue_message("Fine tuning noise", priority=True, skip_animation=skip_anim)
             return
         
         # Fine tune the selected station
+        # Skip animation for automatic status messages when stations are displayed
+        skip_anim = self.radio_ui_active
         if direction == 1:  # Right arrow - increase tuned, decrease detuned
             self.radio_manager.fine_tune_right()
             tune_level = self.radio_manager.tune_level
             if tune_level == 0:
-                self.chat.queue_message("Signal: Detuned (80%)")
+                self.chat.queue_message("Signal: Detuned (80%)", priority=True, skip_animation=skip_anim)
             elif tune_level == 1:
-                self.chat.queue_message("Signal: Tuning... (50% detuned, 30% tuned)")
+                self.chat.queue_message("Signal: Tuning... (50% detuned, 30% tuned)", priority=True, skip_animation=skip_anim)
             elif tune_level == 2:
-                self.chat.queue_message("Signal: Almost there... (20% detuned, 60% tuned)")
+                self.chat.queue_message("Signal: Almost there... (20% detuned, 60% tuned)", priority=True, skip_animation=skip_anim)
             elif tune_level == 3:
-                self.chat.queue_message("Signal locked! Clear transmission (0% detuned, 80% tuned)")
+                self.chat.queue_message("Signal locked! Clear transmission (0% detuned, 80% tuned)", priority=True, skip_animation=skip_anim)
         else:  # Left arrow - decrease tuned, increase detuned
             self.radio_manager.fine_tune_left()
             tune_level = self.radio_manager.tune_level
             if tune_level == 0:
-                self.chat.queue_message("Signal: Detuned (80%)")
+                self.chat.queue_message("Signal: Detuned (80%)", priority=True, skip_animation=skip_anim)
             elif tune_level == 1:
-                self.chat.queue_message("Signal: Tuning... (50% detuned, 30% tuned)")
+                self.chat.queue_message("Signal: Tuning... (50% detuned, 30% tuned)", priority=True, skip_animation=skip_anim)
             elif tune_level == 2:
-                self.chat.queue_message("Signal: Almost there... (20% detuned, 60% tuned)")
+                self.chat.queue_message("Signal: Almost there... (20% detuned, 60% tuned)", priority=True, skip_animation=skip_anim)
             else:
-                self.chat.queue_message("Signal locked! Clear transmission (0% detuned, 80% tuned)")
+                self.chat.queue_message("Signal locked! Clear transmission (0% detuned, 80% tuned)", priority=True, skip_animation=skip_anim)
     

@@ -1774,6 +1774,10 @@ __declspec(dllexport) __cdecl int GetLastFinalScore() {
     return g_lastFinalScore;
 }
 
+__declspec(dllexport) __cdecl bool IsShipDestroyed() {
+    return G_Player.hull <= 0.0f;
+}
+
 __declspec(dllexport) __cdecl void SetUsername(const char* username) {
     if (username) {
         strncpy(g_currentUsername, username, MAX_USERNAME_LENGTH - 1);
@@ -4409,15 +4413,17 @@ void DrawShopPurchaseModal(GameState* state, int* menuSelection) {
 // BAR LOGIC
 // ------------------------------------------------------------
 void CheckBarEvents() {
-    // Initialize drunk threshold on first call if not set
-    // This should happen before checking drunk status
-    if (g_drunkThreshold == 0) {
-        g_drunkThreshold = GetRandomValue(5, 10);  // Random threshold between 5-10 drinks
-        printf("[CheckBarEvents] Drunk threshold set to %d drinks\n", g_drunkThreshold);
+    // Safety check: ensure threshold is valid (should be 5-10, but protect against edge cases)
+    // This should only happen if threshold wasn't initialized when entering bar
+    if (g_drunkThreshold < 5 || g_drunkThreshold > 10) {
+        int oldThreshold = g_drunkThreshold;
+        g_drunkThreshold = GetRandomValue(5, 10);
+        printf("[CheckBarEvents] Drunk threshold was invalid (%d), reset to %d drinks\n", oldThreshold, g_drunkThreshold);
     }
     
     // Check for negative effects when reaching the random threshold
-    if (g_barDrinksPurchased >= g_drunkThreshold && !g_isDrunk) {
+    // Only check if threshold is valid and drinks purchased meets or exceeds threshold
+    if (g_drunkThreshold >= 5 && g_barDrinksPurchased >= g_drunkThreshold && !g_isDrunk) {
         // Player is drunk! (100% chance when threshold is reached)
         g_isDrunk = true;
         g_drunkGravityIncrease = GetRandomValue(10, 30);  // 10-30% increase (hungover effect)
@@ -5779,7 +5785,9 @@ void DrawPageDepotHome(GameState* state, int* menuSelection, Vector3* shipPos, V
             g_barJustOpened = true; // Set flag to prevent Enter from immediately purchasing
             g_barModalTimer = 0.0f; // Start fresh delay before showing options
             g_barDrinksPurchased = 0;
-            g_drunkThreshold = 0; // Reset drunk threshold for new bar visit
+            // Initialize drunk threshold when entering bar (5-10 drinks)
+            g_drunkThreshold = GetRandomValue(5, 10);
+            printf("[EnterBar] Drunk threshold initialized to %d drinks\n", g_drunkThreshold);
             g_barMenuSelection = 0; // Reset menu selection to first item
             g_barRandomMood = GetRandomValue(0, g_numBarMoods - 1);
             

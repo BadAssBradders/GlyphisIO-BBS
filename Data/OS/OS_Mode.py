@@ -479,6 +479,8 @@ class OSMode:
         self.network_connected = OSMode.persisted_network_connected
         self.modem_modal_error_message = ""
         self.modem_modal_error_timer = 0.0
+        self.modem_modal_key_flash_label: Optional[str] = None
+        self.modem_modal_key_flash_timer: float = 0.0
         
         # Games modal state
         self.games_icon_defs = [
@@ -747,6 +749,8 @@ class OSMode:
                                 self.modem_modal_should_reset_bbs = False
                                 self.modem_modal_should_exit_os = False
                                 self.modem_modal_connection_started = False
+                                self.modem_modal_key_flash_label = None
+                                self.modem_modal_key_flash_timer = 0.0
                             elif "games-folder" in icon_name:
                                 modal_name = "games"
                             elif "notes-icon" in icon_name:
@@ -1103,6 +1107,7 @@ class OSMode:
                 btn_rect = pygame.Rect(btn_x, btn_y, button_size, button_size)
                 
                 if btn_rect.collidepoint(mouse_x, mouse_y):
+                    self._flash_modem_dial_key(button_label)
                     # Add to dialed sequence
                     if len(self.modem_modal_dialed_sequence) < 20:  # Limit length
                         # Insert at cursor position
@@ -1241,6 +1246,13 @@ class OSMode:
             except Exception:
                 pass
 
+    def _flash_modem_dial_key(self, label: str, duration: float = 0.12) -> None:
+        """Briefly highlight a dial pad key (mouse + keyboard)."""
+        if self.modem_modal_connection_started:
+            return
+        self.modem_modal_key_flash_label = label
+        self.modem_modal_key_flash_timer = max(0.0, float(duration))
+
     def _disconnect_network(self) -> None:
         """Tear down network link and stop any radio audio."""
         self.network_connected = False
@@ -1248,6 +1260,8 @@ class OSMode:
         self.modem_modal_dialed_sequence = ""
         self.modem_modal_cursor_position = 0
         self.modem_modal_cursor_blink_timer = 0.0
+        self.modem_modal_key_flash_label = None
+        self.modem_modal_key_flash_timer = 0.0
         self.modem_modal_connection_started = False
         self.modem_modal_connection_messages = []
         self.modem_modal_message_index = 0
@@ -1366,6 +1380,7 @@ class OSMode:
         
         # Only accept digits, *, and #
         if text and text in "0123456789*#":
+            self._flash_modem_dial_key(text)
             if len(self.modem_modal_dialed_sequence) < 20:  # Limit length
                 cursor_pos = self.modem_modal_cursor_position
                 self.modem_modal_dialed_sequence = (
@@ -2000,6 +2015,15 @@ class OSMode:
         # Update modem modal cursor blink timer
         if "modem" in self.active_modals and not self.modem_modal_connection_started:
             self.modem_modal_cursor_blink_timer += dt
+            if self.modem_modal_key_flash_timer > 0.0:
+                self.modem_modal_key_flash_timer = max(0.0, self.modem_modal_key_flash_timer - dt)
+                if self.modem_modal_key_flash_timer <= 0.0:
+                    self.modem_modal_key_flash_label = None
+        else:
+            # Avoid keeping a stale highlight around when the modem isn't actively taking input
+            if self.modem_modal_key_flash_label is not None or self.modem_modal_key_flash_timer != 0.0:
+                self.modem_modal_key_flash_label = None
+                self.modem_modal_key_flash_timer = 0.0
         
         # Update modem modal connection messages and FX
         if "modem" in self.active_modals and self.modem_modal_connection_started and self.modem_modal_connection_messages:
@@ -3009,17 +3033,25 @@ class OSMode:
                 # Dim buttons when connection is in progress
                 if self.modem_modal_connection_started:
                     is_hovered = False
+                    is_pressed = False
                     btn_color = (15, 25, 40)  # Dimmed color
                 else:
                     is_hovered = self.hovered_button == ("modem", f"dial_{button_label}")
-                    btn_color = (35, 65, 110) if is_hovered else (25, 35, 60)
+                    is_pressed = (
+                        self.modem_modal_key_flash_timer > 0.0 and
+                        self.modem_modal_key_flash_label == button_label
+                    )
+                    btn_color = (35, 65, 110) if (is_hovered or is_pressed) else (25, 35, 60)
                 
                 pygame.draw.rect(self.screen, btn_color, btn_rect, border_radius=8)
-                pygame.draw.rect(self.screen, COLOR_CYAN, btn_rect, 2 if is_hovered else 1, border_radius=8)
+                border_color = COLOR_NEON_GREEN if is_pressed else COLOR_CYAN
+                border_w = 3 if is_pressed else (2 if is_hovered else 1)
+                pygame.draw.rect(self.screen, border_color, btn_rect, border_w, border_radius=8)
                 
                 try:
                     font = pygame.font.Font(None, max(int(24 * self.scale), 16))
-                    text_surface = font.render(button_label, True, COLOR_CYAN)
+                    text_color = COLOR_NEON_GREEN if is_pressed else COLOR_CYAN
+                    text_surface = font.render(button_label, True, text_color)
                     text_rect = text_surface.get_rect(center=btn_rect.center)
                     self.screen.blit(text_surface, text_rect)
                 except Exception:

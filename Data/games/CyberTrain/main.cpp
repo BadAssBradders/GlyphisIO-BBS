@@ -102,11 +102,31 @@ static Color g_pointsColor = {255, 0, 0, 200};
 static int g_debugPreviousComponentCount = 0;
 static int g_debugCurrentComponentCount = 0;
 
+// UI Globals
+static Texture2D g_texUI = { 0 };
+static Texture2D g_texCursor = { 0 };
+static bool g_uiAssetsLoaded = false;
+static bool g_isMouseOverUI = false; // Tracks if mouse is over UI (blocking 3D interaction)
+static Rectangle g_viewfinderRect = { 135, 115, 930, 485 }; // Approximate 3D viewport area within UI.png (will need calibration)
+
+// Forward declarations
+static void LoadUIAssets();
+static void UnloadUIAssets();
+static void DrawUIOverlay();
+static void DrawCustomCursor();
+
 // Input helpers for embedded mode
 static bool CustomIsKeyDown(int k) { return g_standalone_mode ? IsKeyDown(k) : (k>=0 && k<512 ? g_inputState.keys[k] : false); }
 static bool CustomIsKeyPressed(int k) { return g_standalone_mode ? IsKeyPressed(k) : (k>=0 && k<512 ? g_inputState.keysPressed[k] : false); }
-static bool CustomIsMouseButtonPressed(int b) { return g_standalone_mode ? IsMouseButtonPressed(b) : (b>=0 && b<8 ? g_inputState.mouseButtonsPressed[b] : false); }
-static bool CustomIsMouseButtonDown(int b) { return g_standalone_mode ? IsMouseButtonDown(b) : (b>=0 && b<8 ? g_inputState.mouseButtons[b] : false); }
+// Mouse clicks blocked by UI if not in viewfinder
+static bool CustomIsMouseButtonPressed(int b) { 
+    if (g_isMouseOverUI) return false;
+    return g_standalone_mode ? IsMouseButtonPressed(b) : (b>=0 && b<8 ? g_inputState.mouseButtonsPressed[b] : false); 
+}
+static bool CustomIsMouseButtonDown(int b) { 
+    if (g_isMouseOverUI) return false;
+    return g_standalone_mode ? IsMouseButtonDown(b) : (b>=0 && b<8 ? g_inputState.mouseButtons[b] : false); 
+}
 static Vector2 CustomGetMousePosition() { return g_standalone_mode ? GetMousePosition() : g_inputState.mousePosition; }
 static Vector2 CustomGetMouseDelta() { return g_standalone_mode ? GetMouseDelta() : g_inputState.mouseDelta; }
 static float CustomGetMouseWheelMove() { return g_standalone_mode ? GetMouseWheelMove() : g_inputState.mouseWheelMove; }
@@ -2427,6 +2447,9 @@ __declspec(dllexport) bool InitializeGame() {
     }
     if (!fontLoaded) gameFont = GetFontDefault();
     
+    // Load UI Assets
+    LoadUIAssets();
+    
     // Load scanline texture (from main Data/images folder)
     printf("[InitializeGame] Loading scanline texture...\n");
     fflush(stdout);
@@ -2500,7 +2523,7 @@ __declspec(dllexport) void SetMouseDelta(float dx, float dy) { g_inputState.mous
 __declspec(dllexport) void SetMouseWheelMove(float m) { g_inputState.mouseWheelMove = m; }
 // ClearInputFrame is already defined above as a static function
 __declspec(dllexport) bool ShouldExit() { return g_exit_requested; }
-__declspec(dllexport) void CleanupGame() { if (g_framebuffer_initialized) UnloadRenderTexture(g_framebuffer); if (g_frame_buffer_data) MemFree(g_frame_buffer_data); g_game_initialized = false; if (g_audio_initialized) CloseAudioDevice(); }
+__declspec(dllexport) void CleanupGame() { if (g_framebuffer_initialized) UnloadRenderTexture(g_framebuffer); UnloadUIAssets(); if (g_frame_buffer_data) MemFree(g_frame_buffer_data); g_game_initialized = false; if (g_audio_initialized) CloseAudioDevice(); }
 __declspec(dllexport) void SetRenderResolution(int width, int height) { if (!g_framebuffer_initialized) { g_renderWidth = width; g_renderHeight = height; } }
 __declspec(dllexport) unsigned int GetFrameTextureHandle() { return g_framebuffer_initialized ? g_framebuffer.texture.id : 0; }
 __declspec(dllexport) void SetRenderResolutionPreset(int preset) { 
@@ -2515,6 +2538,140 @@ __declspec(dllexport) int GetLastFinalScore() { return g_lastFinalScore; }
 __declspec(dllexport) void SaveGameData() { /* TODO: implement */ }
 __declspec(dllexport) bool LoadGameData() { /* TODO: implement */ return false; }
 
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// UI IMPLEMENTATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+static void LoadUIAssets() {
+    if (g_uiAssetsLoaded) return;
+    
+    printf("[LoadUIAssets] Loading UI textures...\n");
+    
+    // Try multiple paths
+    const char* uiPaths[] = { "images/UI.png", "Data/games/CyberTrain/images/UI.png", "../../images/UI.png" };
+    const char* cursorPaths[] = { "images/mouse_cursor.png", "Data/games/CyberTrain/images/mouse_cursor.png", "../../images/mouse_cursor.png" };
+    
+    // Load UI BG
+    for (int i = 0; i < 3; i++) {
+        if (FileExists(uiPaths[i])) {
+            g_texUI = LoadTexture(uiPaths[i]);
+            if (g_texUI.id != 0) {
+                printf("[LoadUIAssets] Loaded UI BG from %s (%dx%d)\n", uiPaths[i], g_texUI.width, g_texUI.height);
+                // Set texture filter to bilinear for smoother scaling if needed, or point for pixel art
+                SetTextureFilter(g_texUI, TEXTURE_FILTER_POINT); 
+                break;
+            }
+        }
+    }
+    
+    // Load Cursor
+    for (int i = 0; i < 3; i++) {
+        if (FileExists(cursorPaths[i])) {
+            g_texCursor = LoadTexture(cursorPaths[i]);
+            if (g_texCursor.id != 0) {
+                printf("[LoadUIAssets] Loaded Cursor from %s (%dx%d)\n", cursorPaths[i], g_texCursor.width, g_texCursor.height);
+                SetTextureFilter(g_texCursor, TEXTURE_FILTER_POINT);
+                break;
+            }
+        }
+    }
+    
+    if (g_texUI.id == 0) printf("[LoadUIAssets] WARNING: Failed to load UI.png\n");
+    else g_uiAssetsLoaded = true;
+}
+
+static void UnloadUIAssets() {
+    if (g_texUI.id != 0) UnloadTexture(g_texUI);
+    if (g_texCursor.id != 0) UnloadTexture(g_texCursor);
+    g_texUI = { 0 };
+    g_texCursor = { 0 };
+    g_uiAssetsLoaded = false;
+}
+
+static void DrawUIOverlay() {
+    if (!g_uiAssetsLoaded) return;
+
+    // Use render dimensions to ensure UI matches BBS screen dimensions exactly
+    int sw = g_renderWidth;
+    int sh = g_renderHeight;
+    
+    // Draw UI background scaled to match BBS screen dimensions
+    // UI.png should be designed to match the BBS screen size (BBS_WIDTH x BBS_HEIGHT)
+    Rectangle src = { 0, 0, (float)g_texUI.width, (float)g_texUI.height };
+    Rectangle dst = { 0, 0, (float)sw, (float)sh };
+    DrawTexturePro(g_texUI, src, dst, {0,0}, 0.0f, WHITE);
+    
+    // Update g_viewfinderRect based on scale?
+    // If we stretch the UI, we must stretch the viewfinder rect too.
+    // Original UI size = ? (we don't know until loaded, but let's assume the user provided values match the image)
+    // g_viewfinderRect = { 135, 115, 930, 485 };
+    // We need to scale this rect relative to the screen size vs original text size.
+    // Let's assume the original image size corresponds to the coordinates.
+    // If g_texUI is loaded, we can calculate ratios.
+    if (g_texUI.width > 0 && g_texUI.height > 0) {
+        float scaleX = (float)sw / (float)g_texUI.width;
+        float scaleY = (float)sh / (float)g_texUI.height;
+        
+        // Transform the hardcoded viewfinder rect to current screen space
+        // Base coords are 135, 115, 930(w), 485(h)
+        Rectangle scaledViewfinder = {
+            135.0f * scaleX,
+            115.0f * scaleY,
+            930.0f * scaleX,
+            485.0f * scaleY
+        };
+        
+        // Debug draw viewfinder bounds (toggle via key?)
+        // DrawRectangleLinesEx(scaledViewfinder, 1, RED);
+        
+        // Update global mouse-over-UI state
+        Vector2 m = CustomGetMousePosition();
+        if (CheckCollisionPointRec(m, scaledViewfinder)) {
+            g_isMouseOverUI = false; // Inside viewfinder = interacting with world
+        } else {
+            g_isMouseOverUI = true; // Outside viewfinder = interacting with UI
+        }
+    }
+}
+
+static void DrawCustomCursor() {
+    // Always hide system cursor (it disappears in 3D environment)
+    if (IsCursorHidden() == false) HideCursor();
+    
+    Vector2 cursorPos;
+    bool shouldShowCursor = false;
+    
+    // In map mode, always show cursor at mouse position
+    if (g_mapMode) {
+        cursorPos = CustomGetMousePosition();
+        shouldShowCursor = true;
+    }
+    // In 3D mode
+    else {
+        if (g_isMouseOverUI) {
+            // When hovering over non-transparent UI areas, cursor is visible at mouse position
+            cursorPos = CustomGetMousePosition();
+            shouldShowCursor = true;
+        } else {
+            // When in 3D viewport, cursor follows mouse position directly
+            // The 3D world position (g_mouseWorldPos) is already synced with the mouse ray,
+            // so we use the actual mouse screen position to keep cursor aligned with what the user sees
+            cursorPos = CustomGetMousePosition();
+            shouldShowCursor = true;
+        }
+    }
+    
+    // Draw cursor when it should be visible
+    if (shouldShowCursor) {
+        if (g_texCursor.id != 0) {
+            DrawTexture(g_texCursor, (int)cursorPos.x, (int)cursorPos.y, WHITE);
+        } else {
+            // Fallback cursor
+            DrawCircleV(cursorPos, 5, RED);
+        }
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3965,10 +4122,25 @@ static void GameLoopBody() {
 
             EndMode2D();
 
-            // UI overlay
+            // Draw UI Overlay first (before all text)
+            DrawUIOverlay();
+            
+            // Now draw all text on top of UI overlay
             DrawTextEx(gameFont, "MAP VIEW (M to return)", (Vector2){10, 10}, 20, 0.0f, WHITE);
             DrawTextEx(gameFont, "Pan: WASD/Arrows or Middle-Mouse Drag | Zoom: Mouse Wheel", (Vector2){10, 36}, 16, 0.0f, GRAY);
             DrawTextEx(gameFont, "Pulsing cyan train = selected", (Vector2){10, 56}, 16, 0.0f, DARKGRAY);
+            
+            // Display mouse coordinates in map mode
+            Vector2 mousePos = CustomGetMousePosition();
+            char mouseCoordText[64];
+            snprintf(mouseCoordText, sizeof(mouseCoordText), "Mouse: X:%.0f Y:%.0f", mousePos.x, mousePos.y);
+            DrawTextEx(gameFont, mouseCoordText, (Vector2){(float)(g_renderWidth - 200), 10}, 14, 0.0f, (Color){ 200, 200, 255, 255 });
+            
+            // Draw cursor after all text
+            DrawCustomCursor();
+            
+            // Draw scanline overlay
+            DrawScanlines();
 
             EndDrawing();
             return; // skip 3D draw while in map mode
@@ -4284,9 +4456,20 @@ static void GameLoopBody() {
                 }
             }
 
+            // Store gate status for drawing after UI overlay
+            bool gateOpen = false;
+            bool hasGate = false;
             if (gateKey != kNoStation) {
-                bool open = (gateComp >= 0 && gateComp < (int)stationGateOpen.size() && stationGateOpen[gateComp] != 0);
-                if (open) {
+                hasGate = true;
+                gateOpen = (gateComp >= 0 && gateComp < (int)stationGateOpen.size() && stationGateOpen[gateComp] != 0);
+            }
+            
+            // Draw UI Overlay first (before all text)
+            DrawUIOverlay();
+            
+            // Now draw all text on top of UI overlay
+            if (hasGate) {
+                if (gateOpen) {
                     DrawTextEx(gameFont, "STATION GATE: OPEN", (Vector2){10, 110}, 16, 0.0f, (Color){ 120, 255, 120, 255 });
                 } else {
                     DrawTextEx(gameFont, "STATION GATE: CLOSED", (Vector2){10, 110}, 16, 0.0f, (Color){ 255, 140, 140, 255 });
@@ -4299,7 +4482,7 @@ static void GameLoopBody() {
         
         // Display credits
         const char* creditsText = TextFormat("Credits: %d", g_playerCredits);
-        DrawTextEx(gameFont, creditsText, (Vector2){(float)(GetScreenWidth() - 150), 10}, 18, 0.0f, (Color){ 255, 255, 0, 255 });
+        DrawTextEx(gameFont, creditsText, (Vector2){(float)(g_renderWidth - 150), 10}, 18, 0.0f, (Color){ 255, 255, 0, 255 });
 
         // In-game clock UI (top-right)
         // Map 0..1 cycle to 0..24 hours for a readable clock
@@ -4308,15 +4491,21 @@ static void GameLoopBody() {
         int clockM = clockMinutesTotal % 60;
         const char* clockText = TextFormat("%02d:%02d  %s", clockH, clockM, phaseName);
         int clockW = (int)MeasureTextEx(gameFont, clockText, 18, 0.0f).x;
-        DrawTextEx(gameFont, clockText, (Vector2){(float)(GetScreenWidth() - clockW - 10), 35}, 18, 0.0f, (Color){ 220, 220, 220, 255 });
+        DrawTextEx(gameFont, clockText, (Vector2){(float)(g_renderWidth - clockW - 10), 35}, 18, 0.0f, (Color){ 220, 220, 220, 255 });
         
         // Display game speed
         const char* speedText = TextFormat("Speed: %s (SPACE)", GetSpeedName());
         int speedW = (int)MeasureTextEx(gameFont, speedText, 16, 0.0f).x;
-        DrawTextEx(gameFont, speedText, (Vector2){(float)(GetScreenWidth() - speedW - 10), 60}, 16, 0.0f, (Color){ 255, 255, 0, 255 });
+        DrawTextEx(gameFont, speedText, (Vector2){(float)(g_renderWidth - speedW - 10), 60}, 16, 0.0f, (Color){ 255, 255, 0, 255 });
+        
+        // Display mouse coordinates
+        mousePos = CustomGetMousePosition(); // Reuse variable declared earlier in function
+        char mouseCoordText[64];
+        snprintf(mouseCoordText, sizeof(mouseCoordText), "Mouse: X:%.0f Y:%.0f", mousePos.x, mousePos.y);
+        DrawTextEx(gameFont, mouseCoordText, (Vector2){(float)(g_renderWidth - 200), 85}, 14, 0.0f, (Color){ 200, 200, 255, 255 });
         
         // Draw line modal (on top of everything)
-        DrawLineModal(g_lineModal, g_lines, GetScreenWidth(), GetScreenHeight());
+        DrawLineModal(g_lineModal, g_lines, g_renderWidth, g_renderHeight);
         if (g_trainPlacementMode) {
             DrawTextEx(gameFont, "Mode: Train Placement | LEFT CLICK = Place Train (REQUIRES STATION-TRACK)", (Vector2){10, 35}, 16, 0.0f, YELLOW);
             DrawTextEx(gameFont, "Controls: T = Exit Train Mode | C = Cargo Train | D = Depot | ARROWS = Move | +/- = Zoom", (Vector2){10, 55}, 16, 0.0f, GRAY);
@@ -4370,6 +4559,9 @@ static void GameLoopBody() {
         snprintf(debugPlatforms, sizeof(debugPlatforms), "DEBUG: Platforms: %d stations, %d track, %d total", 
                  debugStationCount, debugTrackCount, (int)g_placedPlatforms.size());
         DrawTextEx(gameFont, debugPlatforms, (Vector2){10, 135}, 14, 0.0f, YELLOW);
+        
+        // Draw cursor after all text
+        DrawCustomCursor();
         
         // Draw scanline overlay
         DrawScanlines();
@@ -4432,12 +4624,16 @@ int main() {
     
     g_game_initialized = true;
     
+    // Load UI Assets (Standalone)
+    LoadUIAssets();
+    
     // Main game loop
     while (!WindowShouldClose()) {
         GameLoopBody();
     }
     
     // Cleanup
+    UnloadUIAssets();
     DebugLog("=== Game Ended ===");
     if (debugFile.is_open()) {
         debugFile.close();
