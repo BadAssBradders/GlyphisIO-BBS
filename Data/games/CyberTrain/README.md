@@ -38,8 +38,10 @@ The scene includes a procedurally generated “cyber city” skyline backdrop (r
    - Or add g++ to your system PATH
 
 3. **Build and run**:
-   - **Double-click `build_and_run.bat`** - Builds and runs the game in one step!
-   - **Double-click `run.bat`** - Runs the game (after building)
+   - **Double-click `build_both.bat`** - **RECOMMENDED**: Builds BOTH standalone AND BBS versions from the same source (ensures they stay in sync!)
+   - **Double-click `build_and_run.bat`** - Builds and runs the standalone version only
+   - **Double-click `build_dll.bat`** - Builds the BBS DLL version only
+   - **Double-click `run.bat`** - Runs the standalone game (after building)
 
 4. **Or use Notepad++ with NppExec**:
    - Open `main.cpp` in Notepad++

@@ -134,6 +134,32 @@ except Exception as e:
     SolitaireGame = None
     print(f"Warning: Could not import SolitaireGame: {e}")
 
+# Snooker game is now in a separate module
+try:
+    import sys
+    import os
+    import importlib.util
+    # Add the snooker directory to the path for import
+    # Get the directory containing this file (OS_Mode.py)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    snooker_dir = os.path.join(current_dir, "Snooker")
+    if snooker_dir not in sys.path:
+        sys.path.insert(0, snooker_dir)
+    # Import the snooker module
+    snooker_module_path = os.path.join(snooker_dir, "snooker.py")
+    if os.path.exists(snooker_module_path):
+        spec = importlib.util.spec_from_file_location("snooker_module", snooker_module_path)
+        snooker_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(snooker_module)
+        SnookerGame = snooker_module.SnookerGame
+        _snooker_available = True
+    else:
+        raise ImportError(f"Snooker module not found at {snooker_module_path}")
+except Exception as e:
+    _snooker_available = False
+    SnookerGame = None
+    print(f"Warning: Could not import SnookerGame: {e}")
+
 # Pirate Radio App is now in a separate module
 try:
     import sys
@@ -499,11 +525,18 @@ class OSMode:
                 "default_pos": (140, 40)
             },
             {
+                "name": "snooker",
+                "file": "snooker.png",
+                "selected_file": "S-snooker.png",
+                "label": "Snooker",
+                "default_pos": (260, 40)
+            },
+            {
                 "name": "civitas",
                 "file": "civitas_nihilium.png",
                 "selected_file": "S-civitas_nihilium.png",
                 "label": "Civitas Nihilium",
-                "default_pos": (260, 40)
+                "default_pos": (380, 40)
             }
         ]
         self.games_modal_icons: List[Dict[str, object]] = []
@@ -566,6 +599,31 @@ class OSMode:
             self.solitaire_game = None
             if not _solitaire_available:
                 print(f"Warning: Solitaire module not available. _solitaire_available={_solitaire_available}, SolitaireGame={SolitaireGame}")
+
+        # Snooker game instance
+        if _snooker_available and SnookerGame:
+            try:
+                health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
+                self.snooker_game = SnookerGame(
+                    self.screen,
+                    self.scale,
+                    self.desktop_x,
+                    self.desktop_y,
+                    self.desktop_size,
+                    health_monitor_y,
+                    self.bbs_x or 0,
+                    self.bbs_width or 0,
+                    self.get_radio_music
+                )
+            except Exception as e:
+                print(f"Warning: Failed to initialize SnookerGame: {e}")
+                import traceback
+                traceback.print_exc()
+                self.snooker_game = None
+        else:
+            self.snooker_game = None
+            if not _snooker_available:
+                print(f"Warning: Snooker module not available. _snooker_available={_snooker_available}, SnookerGame={SnookerGame}")
         
         # Pirate Radio App instance
         self.pirate_radio_app = None
@@ -596,6 +654,8 @@ class OSMode:
         if self.chess_game and self.chess_game.active and self.chess_game.handle_event(event):
             return True
         if self.solitaire_game and self.solitaire_game.active and self.solitaire_game.handle_event(event):
+            return True
+        if self.snooker_game and self.snooker_game.active and self.snooker_game.handle_event(event):
             return True
         if event.type == pygame.MOUSEMOTION:
             self.mouse_pos = event.pos
@@ -1514,6 +1574,35 @@ class OSMode:
                         print(f"Failed to initialize SolitaireGame on demand: {e}")
                         import traceback
                         traceback.print_exc()
+        elif icon_name == "snooker":
+            if self.snooker_game:
+                # Calculate health monitor Y position
+                health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
+                # Update desktop coordinates before starting
+                self.snooker_game.update_desktop(self.desktop_x, self.desktop_y, self.desktop_size, health_monitor_y)
+                self.snooker_game.start()
+            else:
+                print(f"Snooker game module not available. _snooker_available={_snooker_available}, SnookerGame={SnookerGame}, self.snooker_game={getattr(self, 'snooker_game', 'NOT SET')}")
+                # Try to initialize if it wasn't initialized before
+                if _snooker_available and SnookerGame:
+                    try:
+                        health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
+                        self.snooker_game = SnookerGame(
+                            self.screen,
+                            self.scale,
+                            self.desktop_x,
+                            self.desktop_y,
+                            self.desktop_size,
+                            health_monitor_y,
+                            self.bbs_x or 0,
+                            self.bbs_width or 0,
+                            self.get_radio_music
+                        )
+                        self.snooker_game.start()
+                    except Exception as e:
+                        print(f"Failed to initialize SnookerGame on demand: {e}")
+                        import traceback
+                        traceback.print_exc()
         else:
             print(f"{icon_name.title()} is not available yet.")
 
@@ -2193,6 +2282,9 @@ class OSMode:
             self.chess_game.draw()
         if self.solitaire_game and self.solitaire_game.active:
             self.solitaire_game.draw()
+        if self.snooker_game and self.snooker_game.active:
+            self.snooker_game.update(0.016)  # Update with ~60fps delta
+            self.snooker_game.draw()
         if self.pirate_radio_app and self.pirate_radio_app.active:
             self.pirate_radio_app.draw()
     
@@ -5244,9 +5336,9 @@ class OSMode:
         # Close solitaire game if active
         if self.solitaire_game and self.solitaire_game.active:
             self.solitaire_game.close()
-        # Close solitaire game if active
-        if self.solitaire_game and self.solitaire_game.active:
-            self.solitaire_game.close()
+        # Close snooker game if active
+        if self.snooker_game and self.snooker_game.active:
+            self.snooker_game.close()
     
     def toggle_overlay(self):
         """Toggle the overlay rectangle state."""
@@ -5434,6 +5526,14 @@ class OSMode:
                     self.solitaire_game._load_assets()
                 except Exception as e:
                     print(f"Warning: Failed to reload solitaire assets: {e}")
+
+        # Update snooker game desktop coordinates and scale
+        if self.snooker_game:
+            health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
+            self.snooker_game.update_desktop(self.desktop_x, self.desktop_y, self.desktop_size, health_monitor_y)
+            self.snooker_game.scale = self.scale
+            # Update fonts after scale is set
+            self.snooker_game._update_fonts()
     
     def _update_hover_states(self, mouse_x: int, mouse_y: int):
         """Update hover states for icons and buttons based on mouse position."""

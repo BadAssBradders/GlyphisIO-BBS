@@ -2,6 +2,9 @@
 setlocal EnableDelayedExpansion
 REM Build script for CyberTrain DLL (for BBS embedding)
 REM This compiles main.cpp into cybertrain.dll for framebuffer-based embedding
+REM
+REM NOTE: This uses the SAME main.cpp source as build_and_run.bat
+REM       For unified builds of both versions, use build_both.bat instead
 
 echo Building cybertrain.dll for BBS integration...
 echo.

@@ -988,6 +988,11 @@ class GLYPHIS_IOBBS:
         self.fps_frame_times = []  # List of frame times for FPS calculation
         self.fps_last_update_time = time.time()
         
+        # Slider knob state (0.0 to 1.0, starting at 0.5 for 50%) - initialized early for use in audio setup
+        self.music_volume = 0.5  # Top knob controls music volume
+        self.ambient_volume = 0.5  # Bottom knob controls ambient volume
+        self.dragging_knob = None  # "music" or "ambient" or None
+        
         # Baseline resolution and dimensions (2560x1440)
         # This is the reference resolution where the position and size were originally set
         self.baseline_width = BASELINE_WIDTH
@@ -1318,7 +1323,8 @@ class GLYPHIS_IOBBS:
                 pirate_radio_audio_path = get_data_path("Pirate_Radio", "TSW.wav")
                 if os.path.exists(pirate_radio_audio_path):
                     self.pirate_radio_intro_sound = pygame.mixer.Sound(pirate_radio_audio_path)
-                    self.pirate_radio_intro_sound.set_volume(0.8)  # Set volume to 80%
+                    # Base volume is 0.8, will be multiplied by music_volume in _apply_music_volume()
+                    self.pirate_radio_intro_sound.set_volume(0.8 * self.music_volume)
                     # Pass the sound reference to PirateRadio so it can stop it when needed
                     self.pirate_radio_app.external_intro_sound = self.pirate_radio_intro_sound
                 
@@ -1415,6 +1421,8 @@ class GLYPHIS_IOBBS:
         self.video_cap = None
         self.video_frame = None
         self.scanline_image = None
+        self.slider_image = None
+        self.slider_knob_image = None
         self.desktop_video_filename: Optional[str] = None
         self.desktop_state = "default"
         
@@ -1441,6 +1449,30 @@ class GLYPHIS_IOBBS:
         except Exception:
             logger.warning("images/scanline.png not found")
             self.scanline_image = None
+        
+        # Load slider image
+        try:
+            slider_path = get_data_path("images", "slider.png")
+            original_slider = pygame.image.load(slider_path).convert_alpha()
+            # Scale slider by scale factor to match current resolution
+            new_width = int(original_slider.get_width() * self.scale)
+            new_height = int(original_slider.get_height() * self.scale)
+            self.slider_image = pygame.transform.smoothscale(original_slider, (new_width, new_height))
+        except Exception:
+            logger.warning("images/slider.png not found")
+            self.slider_image = None
+        
+        # Load slider knob image
+        try:
+            slider_knob_path = get_data_path("images", "slider-knob.png")
+            original_knob = pygame.image.load(slider_knob_path).convert_alpha()
+            # Scale knob by scale factor to match current resolution
+            new_width = int(original_knob.get_width() * self.scale)
+            new_height = int(original_knob.get_height() * self.scale)
+            self.slider_knob_image = pygame.transform.smoothscale(original_knob, (new_width, new_height))
+        except Exception:
+            logger.warning("images/slider-knob.png not found")
+            self.slider_knob_image = None
         
         # Initialize audio mixer for ambient track
         try:
@@ -1477,7 +1509,7 @@ class GLYPHIS_IOBBS:
                         logger.debug("Starting ambient room track immediately with fade-in")
                         self.ambient_channel = self.ambient_sound.play(loops=-1)  # Loop indefinitely
                         if self.ambient_channel:
-                            self.ambient_channel.set_volume(0.0)  # Start at 0 for fade-in
+                            self.ambient_channel.set_volume(0.0, 0.0)  # Start at 0 for fade-in, panned 20% left / 80% right
                             self.ambient_playing = True
                             self.ambient_fade_in = True
                             self.ambient_fade_start_time = pygame.time.get_ticks() / 1000.0
@@ -1596,12 +1628,111 @@ class GLYPHIS_IOBBS:
         self.current_station_name = station.get("name")
         freq = station.get("freq")
         self.current_frequency = int(freq) if freq else None
+        # Apply music volume to the newly tuned station
+        self._apply_music_volume()
 
     def _on_pirate_station_stop(self) -> None:
         """Clear station metadata when Pirate Radio stops playback."""
         self.radio_playing = False
         self.current_station_name = None
         self.current_frequency = None
+    
+    def _apply_ambient_volume(self) -> None:
+        """Apply ambient volume to all ambient sounds (OSBoot, datasette audio, ambient room sound)."""
+        # Apply to OSBoot sound if playing
+        if self.os_boot_sound_channel:
+            try:
+                self.os_boot_sound_channel.set_volume(self.ambient_volume)
+            except Exception:
+                pass  # Silently fail if channel is invalid
+        
+        # Apply to datasette audio (pygame.mixer.music) if playing
+        try:
+            if pygame.mixer.music.get_busy():
+                pygame.mixer.music.set_volume(self.ambient_volume)
+        except Exception:
+            pass  # Silently fail if music mixer is not available
+        
+        # Apply to ambient room sound (window-loop.wav) - handled in fade-in logic below
+    
+    def _apply_music_volume(self) -> None:
+        """Apply music volume to all music sources: radio stations, Pirate Radio intro, radio noise, game music, etc."""
+        # Apply to Pirate Radio intro sound (TSW.wav)
+        # Note: Setting volume on a Sound object affects all channels playing that sound
+        if self.pirate_radio_intro_sound:
+            try:
+                # Base volume was 0.8, apply music_volume as multiplier
+                self.pirate_radio_intro_sound.set_volume(0.8 * self.music_volume)
+            except Exception:
+                pass  # Silently fail if sound is invalid
+        
+        # Apply to radio noise if Pirate Radio app is active
+        if self.pirate_radio_app and hasattr(self.pirate_radio_app, 'noise_sound') and self.pirate_radio_app.noise_sound:
+            try:
+                # Noise has base volume and tuner reduction levels
+                # Calculate the current noise volume with tuner reduction, then apply music_volume multiplier
+                noise_base_vol = getattr(self.pirate_radio_app, 'noise_base_volume', 0.45)
+                tuner_reduction_levels = getattr(self.pirate_radio_app, 'tuner_reduction_levels', [0.10, 0.15, 0.30])
+                tuner_index = getattr(self.pirate_radio_app, 'tuner_index', 0)
+                if tuner_reduction_levels and 0 <= tuner_index < len(tuner_reduction_levels):
+                    reduction = tuner_reduction_levels[tuner_index]
+                    base_noise_vol = noise_base_vol * (1.0 - reduction)
+                else:
+                    base_noise_vol = noise_base_vol
+                
+                # Apply music volume multiplier
+                final_noise_vol = base_noise_vol * self.music_volume
+                
+                # Set volume on noise sound and channel
+                self.pirate_radio_app.noise_sound.set_volume(final_noise_vol)
+                if hasattr(self.pirate_radio_app, 'noise_channel') and self.pirate_radio_app.noise_channel:
+                    self.pirate_radio_app.noise_channel.set_volume(final_noise_vol)
+            except Exception:
+                pass  # Silently fail if noise sound/channel is invalid
+        
+        # Apply to currently selected radio station
+        if self.pirate_radio_app and self.pirate_radio_app.radio_manager:
+            radio_manager = self.pirate_radio_app.radio_manager
+            selected_station = radio_manager.selected_station
+            
+            if selected_station and selected_station in radio_manager.station_channels:
+                channels = radio_manager.station_channels[selected_station]
+                
+                # Base volumes: detuned is 80% when selected, tuned depends on tune_level
+                # tune_level: 0 = 80% detuned 0% tuned, 1 = 50% detuned 30% tuned, 
+                #             2 = 20% detuned 60% tuned, 3 = 0% detuned 80% tuned
+                tune_level = radio_manager.tune_level
+                base_detuned_vol = max(0.0, 0.8 - (tune_level * 0.3))
+                base_tuned_vol = min(0.8, tune_level * 0.3)
+                
+                # Apply music volume multiplier
+                final_detuned_vol = base_detuned_vol * self.music_volume
+                final_tuned_vol = base_tuned_vol * self.music_volume
+                
+                # Set volumes on channels
+                if channels.get("detuned_channel"):
+                    try:
+                        if not channels["detuned_channel"].get_busy():
+                            # Channel stopped, restart it if we have the sound
+                            if channels.get("detuned_sound"):
+                                channels["detuned_channel"] = channels["detuned_sound"].play(-1)
+                        if channels["detuned_channel"]:
+                            channels["detuned_channel"].set_volume(final_detuned_vol)
+                            channels["detuned_volume"] = final_detuned_vol
+                    except Exception:
+                        pass  # Silently fail if channel is invalid
+                
+                if channels.get("tuned_channel"):
+                    try:
+                        if not channels["tuned_channel"].get_busy():
+                            # Channel stopped, restart it if we have the sound
+                            if channels.get("tuned_sound"):
+                                channels["tuned_channel"] = channels["tuned_sound"].play(-1)
+                        if channels["tuned_channel"]:
+                            channels["tuned_channel"].set_volume(final_tuned_vol)
+                            channels["tuned_volume"] = final_tuned_vol
+                    except Exception:
+                        pass  # Silently fail if channel is invalid
 
     def _stop_pirate_radio_audio(self, close_app: bool = True) -> None:
         """Stop Pirate Radio playback (noise + station) when leaving the BBS surface."""
@@ -3871,6 +4002,9 @@ class GLYPHIS_IOBBS:
                         pygame.mixer.init()
                     self.os_boot_sound = pygame.mixer.Sound(audio_path)
                     self.os_boot_sound_channel = self.os_boot_sound.play()
+                    # Apply ambient volume to OSBoot sound
+                    if self.os_boot_sound_channel:
+                        self.os_boot_sound_channel.set_volume(self.ambient_volume)
                     log_event("OSBoot.wav audio started")
                 except Exception as audio_exc:
                     log_event(f"Failed to load/play OSBoot.wav: {audio_exc}")
@@ -5303,6 +5437,27 @@ class GLYPHIS_IOBBS:
                         self.scroll_image = pygame.transform.scale(original_scroll, (self.bbs_width, new_height))
                 except Exception:
                     pass  # If we can't reload, keep the existing scaled image
+            
+            # Rescale slider images if they exist (maintain aspect ratio)
+            if self.slider_image:
+                try:
+                    original_slider = pygame.image.load(get_data_path("images", "slider.png")).convert_alpha()
+                    # Scale slider by scale factor to match resolution changes
+                    new_width = int(original_slider.get_width() * self.scale)
+                    new_height = int(original_slider.get_height() * self.scale)
+                    self.slider_image = pygame.transform.smoothscale(original_slider, (new_width, new_height))
+                except Exception:
+                    pass  # If we can't reload, keep the existing scaled image
+            
+            if self.slider_knob_image:
+                try:
+                    original_knob = pygame.image.load(get_data_path("images", "slider-knob.png")).convert_alpha()
+                    # Scale knob by scale factor to match resolution changes
+                    new_width = int(original_knob.get_width() * self.scale)
+                    new_height = int(original_knob.get_height() * self.scale)
+                    self.slider_knob_image = pygame.transform.smoothscale(original_knob, (new_width, new_height))
+                except Exception:
+                    pass  # If we can't reload, keep the existing scaled image
         
         elif event.key == pygame.K_SPACE:
             if self.state == "bbs_scroll" and self.scroll_final_paused:
@@ -5499,6 +5654,13 @@ class GLYPHIS_IOBBS:
             if self.ghost_user_active:
                 self._update_ghost_user_sequence()
             
+            # Apply music volume to selected station continuously (in case fine-tuning changed volumes)
+            if self.pirate_radio_app and self.pirate_radio_app.radio_manager:
+                self._apply_music_volume()
+            
+            # Apply ambient volume to all ambient sounds (OSBoot, datasette, ambient room sound)
+            self._apply_ambient_volume()
+            
             # Ensure ambient track keeps playing and update fade-in
             if self.ambient_sound:
                 # Check if channel stopped playing (shouldn't happen with loops=-1, but just in case)
@@ -5509,25 +5671,31 @@ class GLYPHIS_IOBBS:
                             pygame.mixer.init()
                         self.ambient_channel = self.ambient_sound.play(loops=-1)
                         if self.ambient_channel:
-                            self.ambient_channel.set_volume(0.0)
+                            self.ambient_channel.set_volume(0.0, 0.0)  # Start at 0 for fade-in, panned 20% left / 80% right
                             self.ambient_fade_in = True
                             self.ambient_fade_start_time = pygame.time.get_ticks() / 1000.0
                     except Exception as e:
                         logger.warning(f"Failed to restart ambient track: {e}")
                 
-                # Update fade-in
+                # Update fade-in for ambient room sound
                 if self.ambient_fade_in and self.ambient_playing and self.ambient_channel:
                     current_time = pygame.time.get_ticks() / 1000.0
                     elapsed = current_time - self.ambient_fade_start_time
                     if elapsed < self.ambient_fade_duration:
-                        # Fade in from 0.0 to 1.0 over fade_duration seconds
-                        volume = min(1.0, elapsed / self.ambient_fade_duration)
-                        self.ambient_channel.set_volume(volume)
+                        # Fade in from 0.0 to ambient_volume over fade_duration seconds
+                        fade_progress = elapsed / self.ambient_fade_duration
+                        volume = fade_progress * self.ambient_volume
+                        # Pan 20% left / 80% right
+                        self.ambient_channel.set_volume(0.2 * volume, 0.8 * volume)
                     else:
-                        # Fade-in complete, set to full volume
-                        self.ambient_channel.set_volume(1.0)
+                        # Fade-in complete, set to ambient_volume (panned 20% left / 80% right)
+                        self.ambient_channel.set_volume(0.2 * self.ambient_volume, 0.8 * self.ambient_volume)
                         self.ambient_fade_in = False
-                        logger.debug("Ambient room track fade-in complete, volume at 1.0")
+                        logger.debug(f"Ambient room track fade-in complete, volume at {self.ambient_volume}")
+                elif not self.ambient_fade_in and self.ambient_playing and self.ambient_channel:
+                    # Apply ambient volume if not fading in (update continuously in case user changed it)
+                    # Pan 20% left / 80% right
+                    self.ambient_channel.set_volume(0.2 * self.ambient_volume, 0.8 * self.ambient_volume)
 
             # Handle events
             for event in pygame.event.get():
@@ -5631,9 +5799,81 @@ class GLYPHIS_IOBBS:
                             self.cancel_delete_email_modal()
                     continue
 
+                # Check for slider knob clicks and drags (skip on new_game_prompt and quit_confirm)
+                if self.state not in ("new_game_prompt", "quit_confirm") and self.slider_image and self.slider_knob_image:
+                    slider_width = self.slider_image.get_width()
+                    slider_height = self.slider_image.get_height()
+                    knob_width = self.slider_knob_image.get_width()
+                    knob_height = self.slider_knob_image.get_height()
+                    
+                    # Slider track constraints: knob can move from 33.5% to 47.7% of screen width
+                    knob_min_x_pct = 0.335  # 33.5% of screen width (left limit)
+                    knob_max_x_pct = 0.477  # 47.7% of screen width (right limit)
+                    knob_range_pct = knob_max_x_pct - knob_min_x_pct  # 14.2% range
+                    
+                    # Calculate slider positions
+                    slider1_x = int(self.screen_width * 0.33)
+                    slider1_y = int(self.screen_height * 0.94)
+                    slider2_x = int(self.screen_width * 0.33)
+                    slider2_y = int(self.screen_height * 0.97)
+                    
+                    # Calculate knob positions (map volume 0.0-1.0 to screen position 33.5%-47.7%)
+                    knob1_x_pct = knob_min_x_pct + (self.music_volume * knob_range_pct)
+                    knob1_x = int(self.screen_width * knob1_x_pct) - knob_width // 2
+                    knob1_y = slider1_y + (slider_height - knob_height) // 2
+                    knob2_x_pct = knob_min_x_pct + (self.ambient_volume * knob_range_pct)
+                    knob2_x = int(self.screen_width * knob2_x_pct) - knob_width // 2
+                    knob2_y = slider2_y + (slider_height - knob_height) // 2
+                    
+                    # Create knob hitboxes
+                    knob1_rect = pygame.Rect(knob1_x, knob1_y, knob_width, knob_height)
+                    knob2_rect = pygame.Rect(knob2_x, knob2_y, knob_width, knob_height)
+                    
+                    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        mouse_x, mouse_y = pygame.mouse.get_pos()
+                        
+                        # Check if clicking on a knob
+                        if knob1_rect.collidepoint(mouse_x, mouse_y):
+                            self.dragging_knob = "music"
+                        elif knob2_rect.collidepoint(mouse_x, mouse_y):
+                            self.dragging_knob = "ambient"
+                    
+                    elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                        self.dragging_knob = None
+                    
+                    elif event.type == pygame.MOUSEMOTION and self.dragging_knob:
+                        mouse_x, mouse_y = pygame.mouse.get_pos()
+                        
+                        if self.dragging_knob == "music":
+                            # Calculate new volume based on mouse x position (screen percentage)
+                            # Map mouse position (constrained to 33.5%-47.7% of screen width) to volume (0.0-1.0)
+                            mouse_x_pct = mouse_x / self.screen_width
+                            # Constrain to knob range
+                            constrained_x_pct = max(knob_min_x_pct, min(knob_max_x_pct, mouse_x_pct))
+                            # Map from screen position to volume (0.0-1.0)
+                            new_volume = (constrained_x_pct - knob_min_x_pct) / knob_range_pct
+                            self.music_volume = new_volume
+                            # Apply music volume to selected radio station
+                            self._apply_music_volume()
+                        elif self.dragging_knob == "ambient":
+                            # Calculate new volume based on mouse x position (screen percentage)
+                            # Map mouse position (constrained to 33.5%-47.7% of screen width) to volume (0.0-1.0)
+                            mouse_x_pct = mouse_x / self.screen_width
+                            # Constrain to knob range
+                            constrained_x_pct = max(knob_min_x_pct, min(knob_max_x_pct, mouse_x_pct))
+                            # Map from screen position to volume (0.0-1.0)
+                            new_volume = (constrained_x_pct - knob_min_x_pct) / knob_range_pct
+                            self.ambient_volume = new_volume
+                            # Apply ambient volume to all ambient sounds
+                            self._apply_ambient_volume()
+                
                 # Check for hotspot clicks
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     mouse_x, mouse_y = pygame.mouse.get_pos()
+                    
+                    # Skip hotspot checks if dragging a knob
+                    if self.dragging_knob:
+                        continue
                     
                     # Reset hotspot (scaled from baseline coordinates)
                     reset_x, reset_y, reset_w, reset_h = RESET_HOTSPOT
@@ -6258,13 +6498,19 @@ class GLYPHIS_IOBBS:
                 # Draw mouse coordinates (skip during new_game_prompt/quit_confirm)
                 if self.state not in ("new_game_prompt", "quit_confirm"):
                     mouse_x, mouse_y = pygame.mouse.get_pos()
-                    mouse_text = f"Mouse: {mouse_x}, {mouse_y}"
+                    # Convert mouse coordinates to percentages (0-100)
+                    mouse_x_pct = (mouse_x / self.screen_width) * 100
+                    mouse_y_pct = (mouse_y / self.screen_height) * 100
+                    mouse_text = f"Mouse: {mouse_x_pct:.1f}%, {mouse_y_pct:.1f}%"
                     mouse_surface = self.font_tiny.render(mouse_text, True, CYAN)
                     self.screen.blit(mouse_surface, (10, 10))
 
                     bbs_local_x = (mouse_x - self.bbs_x) / self.scale
                     bbs_local_y = (mouse_y - self.bbs_y) / self.scale
-                    bbs_text = f"BBS Window: {int(bbs_local_x)}, {int(bbs_local_y)}"
+                    # Convert BBS window coordinates to percentages (0-100)
+                    bbs_x_pct = (bbs_local_x / self.bbs_width) * 100
+                    bbs_y_pct = (bbs_local_y / self.bbs_height) * 100
+                    bbs_text = f"BBS Window: {bbs_x_pct:.1f}%, {bbs_y_pct:.1f}%"
                     bbs_surface = self.font_tiny.render(bbs_text, True, CYAN)
                     bbs_text_y = 10 + mouse_surface.get_height() + int(4 * self.scale)
                     self.screen.blit(bbs_surface, (10, bbs_text_y))
@@ -6377,6 +6623,44 @@ class GLYPHIS_IOBBS:
                 self.draw_new_game_prompt()
             elif self.state == "quit_confirm":
                 self.draw_quit_confirm()
+            
+                # Draw slider images at specified percentage positions (last, before display flip)
+            # Skip rendering on new_game_prompt and quit_confirm screens
+            if self.slider_image and self.state not in ("new_game_prompt", "quit_confirm"):
+                slider_width = self.slider_image.get_width()
+                slider_height = self.slider_image.get_height()
+                
+                # Slider track constraints: knob can move from 33.5% to 47.7% of screen width
+                knob_min_x_pct = 0.335  # 33.5% of screen width (left limit)
+                knob_max_x_pct = 0.477  # 47.7% of screen width (right limit)
+                knob_range_pct = knob_max_x_pct - knob_min_x_pct  # 14.2% range
+                
+                # First slider at 33%, 94% (music volume)
+                slider1_x = int(self.screen_width * 0.33)
+                slider1_y = int(self.screen_height * 0.94)
+                self.screen.blit(self.slider_image, (slider1_x, slider1_y))
+                
+                # Second slider at 33%, 97% (ambient volume)
+                slider2_x = int(self.screen_width * 0.33)
+                slider2_y = int(self.screen_height * 0.97)
+                self.screen.blit(self.slider_image, (slider2_x, slider2_y))
+                
+                # Draw slider knob images positioned along the horizontal limits
+                if self.slider_knob_image:
+                    knob_width = self.slider_knob_image.get_width()
+                    knob_height = self.slider_knob_image.get_height()
+                    
+                    # First slider knob (music volume) - map volume (0.0-1.0) to screen position (33.5%-47.7%)
+                    knob1_x_pct = knob_min_x_pct + (self.music_volume * knob_range_pct)
+                    knob1_x = int(self.screen_width * knob1_x_pct) - knob_width // 2
+                    knob1_y = slider1_y + (slider_height - knob_height) // 2
+                    self.screen.blit(self.slider_knob_image, (knob1_x, knob1_y))
+                    
+                    # Second slider knob (ambient volume) - map volume (0.0-1.0) to screen position (33.5%-47.7%)
+                    knob2_x_pct = knob_min_x_pct + (self.ambient_volume * knob_range_pct)
+                    knob2_x = int(self.screen_width * knob2_x_pct) - knob_width // 2
+                    knob2_y = slider2_y + (slider_height - knob_height) // 2
+                    self.screen.blit(self.slider_knob_image, (knob2_x, knob2_y))
             
             # Update display
             # Draw settings modal on top of everything (letterboxing already drawn above)

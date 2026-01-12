@@ -1,7 +1,10 @@
 @echo off
-REM Build and run script for Wireframe City Skyline
+REM Build and run script for CyberTrain standalone version
 REM Based on working Torus project pattern
 REM Can be called from Notepad++
+REM
+REM NOTE: This uses the SAME main.cpp source as build_dll.bat
+REM       For unified builds of both versions, use build_both.bat instead
 
 REM Get the script's directory
 set "SCRIPT_DIR=%~dp0"

@@ -11,6 +11,18 @@
 #include <fstream>
 #include <ctime>
 #include <cstdarg>
+#ifdef _WIN32
+// Forward declare only what we need - avoid including windows.h to prevent conflicts
+extern "C" {
+    __declspec(dllimport) unsigned long __stdcall GetModuleFileNameA(void*, char*, unsigned long);
+    __declspec(dllimport) int __stdcall SetCurrentDirectoryA(const char*);
+}
+#define MAX_PATH 260
+#include <direct.h>
+#else
+#include <unistd.h>
+#include <limits.h>
+#endif
 
 // --- Debug file logging ---
 static std::ofstream debugFile;
@@ -33,8 +45,8 @@ static bool g_game_initialized = false;
 static bool g_standalone_mode = true;
 static bool g_exit_requested = false;
 static bool g_audio_initialized = false;
-static int g_renderWidth = 600;
-static int g_renderHeight = 400;
+static int g_renderWidth = 1200;
+static int g_renderHeight = 800;
 #define VIRTUAL_WIDTH 1200
 #define VIRTUAL_HEIGHT 800
 
@@ -69,6 +81,25 @@ static float g_cameraYaw = 0.0f;
 static float g_cameraRadius = 0.0f;
 static Vector3 g_mouseWorldPos = {0.0f, 0.0f, 0.0f};
 
+// Scrolling ticker for game tips and controls
+static float g_tickerPosition = 0.0f;
+static const char* g_tickerText = "TIP: ARROW KEYS = MOVE CAMERA | SHIFT+LEFT/RIGHT = ROTATE CAMERA | +/- = ZOOM IN/OUT | CLICK ON PLACED TRAINS TO SELECT THEM | CLICK JUNCTIONS (RED/GREEN) TO CONFIGURE ROUTES | T = TRAIN MODE | C = CARGO TRAIN MODE | D = DEPOT MODE | F = FACTORY MODE | S = STATION MODE | B = BUREAU MODE | X = DEMOLISH MODE | SPACE = PAUSE/SPEED | M = MAP VIEW | LEFT CLICK = PLACE/SELECT | ESC = DESELECT";
+static const float g_tickerSpeed = 80.0f; // pixels per second
+
+// Terminal feedback system
+struct TerminalMessage {
+    char text[128];
+    float age; // Time since message was added
+    int visibleChars; // Number of characters currently visible (for typing effect)
+    float typingProgress; // Progress of typing animation (0.0 to 1.0)
+};
+static std::vector<TerminalMessage> g_terminalMessages;
+static const float g_terminalCursorX = 0.66f; // 66% of screen width
+static const float g_terminalCursorY = 0.96f; // 96% of screen height
+static const float g_terminalMaxY = 0.83f; // Messages disappear beyond 83% (will be adjusted for extra line)
+static const float g_terminalLineHeight = 25.0f; // Line spacing
+static const float g_terminalTypingSpeed = 30.0f; // Characters per second
+
 // Scalar game state
 static int g_playerCredits = 100000;
 static int g_nextLineId = 1;
@@ -91,7 +122,7 @@ static bool g_demolishMode = false;
 
 // Game speed
 enum GameSpeedEnum { SPEED_PAUSE=0, SPEED_SLOW=1, SPEED_MEDIUM=2, SPEED_QUICK=3, SPEED_QUICKEST=4 };
-static int g_currentGameSpeed = SPEED_MEDIUM;
+static int g_currentGameSpeed = SPEED_PAUSE;
 
 // Colors
 static Color g_platformColor = {0, 255, 255, 200};
@@ -107,7 +138,7 @@ static Texture2D g_texUI = { 0 };
 static Texture2D g_texCursor = { 0 };
 static bool g_uiAssetsLoaded = false;
 static bool g_isMouseOverUI = false; // Tracks if mouse is over UI (blocking 3D interaction)
-static Rectangle g_viewfinderRect = { 135, 115, 930, 485 }; // Approximate 3D viewport area within UI.png (will need calibration)
+static Rectangle g_viewfinderRect = { 143, 81, 823, 429 }; // 3D viewport area within UI.png: from (143, 81) to (966, 510)
 
 // Forward declarations
 static void LoadUIAssets();
@@ -130,6 +161,33 @@ static bool CustomIsMouseButtonDown(int b) {
 static Vector2 CustomGetMousePosition() { return g_standalone_mode ? GetMousePosition() : g_inputState.mousePosition; }
 static Vector2 CustomGetMouseDelta() { return g_standalone_mode ? GetMouseDelta() : g_inputState.mouseDelta; }
 static float CustomGetMouseWheelMove() { return g_standalone_mode ? GetMouseWheelMove() : g_inputState.mouseWheelMove; }
+
+// Resolution-relative font size calculation
+// Base resolution is 1200x800, font sizes are scaled proportionally
+static float GetScaledFontSize(float baseSize) {
+    // Scale based on height (800 is base height)
+    float scaleFactor = (float)g_renderHeight / 800.0f;
+    return baseSize * scaleFactor;
+}
+
+// Base font sizes (will be scaled based on resolution)
+#define BASE_FONT_SIZE 18.0f
+#define BASE_FONT_SIZE_LARGE 27.0f  // 50% larger than base (for mouse coordinates)
+
+// Flag to track if line modal is open (set by modal code, checked by cursor code)
+static bool g_lineModalOpen = false;
+
+// Check if cursor is visible (mouse is outside the 3D viewport rectangle)
+// Cursor is hidden in rectangle from (143, 81) to (966, 510)
+static bool IsCursorVisible() {
+    // Always visible when modal is open so user can interact with things behind it
+    if (g_lineModalOpen) return true;
+    if (g_mapMode) return true; // Always visible in map mode
+    Vector2 mousePos = CustomGetMousePosition();
+    // Cursor is visible when mouse is OUTSIDE the viewport rectangle
+    return !(mousePos.x >= 143.0f && mousePos.x <= 966.0f && 
+             mousePos.y >= 81.0f && mousePos.y <= 510.0f);
+}
 static int CustomGetCharPressed() { return g_standalone_mode ? GetCharPressed() : 0; }
 
 static float GetGameTimeScale() {
@@ -598,6 +656,83 @@ void DrawPlatform(Vector3 position, float gridSize, Color color) {
     );
 }
 
+// Draw animated cyberpunk billboards on stations
+void DrawStationBillboards(Vector3 position, float gridSize, float currentTime) {
+    // Calculate top platform position
+    float legHeight = gridSize * 0.7f;
+    float topThickness = gridSize * 0.1f;
+    float topY = position.y + legHeight + topThickness / 2.0f;
+    float billboardHeight = gridSize * 0.4f;  // Height of billboard
+    float billboardWidth = gridSize * 0.3f;   // Width of billboard
+    float billboardThickness = gridSize * 0.05f; // Thickness/depth
+    
+    // Billboard positions around the station (one on each side)
+    // Using offset from center to position billboards at edges
+    float offset = gridSize * 0.35f; // Position near edge of platform
+    
+    // Define billboard colors: pink, blue (yellow and orange removed)
+    Color billboardColors[2] = {
+        {255, 20, 147, 255},  // Pink (DeepPink)
+        {0, 191, 255, 255}    // Blue (DeepSkyBlue)
+    };
+    
+    // Positions: front (pink), back (blue) - keeping exact positions
+    Vector3 billboardPositions[2] = {
+        {position.x, topY + billboardHeight / 2.0f, position.z + offset},      // Front (+Z) - Pink
+        {position.x, topY + billboardHeight / 2.0f, position.z - offset}       // Back (-Z) - Blue
+    };
+    
+    // Draw 2 billboards (pink front, blue back), each with different animation phases
+    for (int i = 0; i < 2; i++) {
+        // Create pulsing/flashing effect with different phases for each billboard
+        // Each billboard pulses at slightly different rate for variety
+        float pulseSpeed = 3.0f + i * 0.5f; // Different speed per billboard (3.0, 3.5)
+        float phase = currentTime * pulseSpeed + i * 1.57f; // Different phase offset
+        
+        // Pulsing brightness: oscillates between 0.4 and 1.0
+        float pulse = (sinf(phase) + 1.0f) / 2.0f; // 0 to 1
+        float minBrightness = 0.4f;
+        float brightness = minBrightness + pulse * (1.0f - minBrightness);
+        
+        // Flashing effect: occasionally flash bright
+        float flashPhase = currentTime * 8.0f + i * 2.0f; // Fast flash cycle
+        float flash = sinf(flashPhase);
+        if (flash > 0.9f) { // Flash when sine is near peak
+            brightness = 1.0f + (flash - 0.9f) * 5.0f; // Extra bright flash
+            brightness = Clamp(brightness, 0.0f, 1.5f);
+        }
+        
+        // Apply brightness to color
+        Color billboardColor = billboardColors[i];
+        billboardColor.r = (unsigned char)Clamp((int)(billboardColor.r * brightness), 0, 255);
+        billboardColor.g = (unsigned char)Clamp((int)(billboardColor.g * brightness), 0, 255);
+        billboardColor.b = (unsigned char)Clamp((int)(billboardColor.b * brightness), 0, 255);
+        
+        // Add a subtle glow effect by drawing a slightly larger, more transparent version first (behind)
+        Color glowColor = billboardColors[i];
+        float glowBrightness = brightness * 0.4f; // Glow is dimmer
+        glowColor.r = (unsigned char)Clamp((int)(glowColor.r * glowBrightness), 0, 255);
+        glowColor.g = (unsigned char)Clamp((int)(glowColor.g * glowBrightness), 0, 255);
+        glowColor.b = (unsigned char)Clamp((int)(glowColor.b * glowBrightness), 0, 255);
+        glowColor.a = (unsigned char)(150 * brightness); // Semi-transparent glow
+        
+        // Draw glow behind billboard (slightly offset back)
+        Vector3 glowPos = billboardPositions[i];
+        if (i == 0) {
+            glowPos.z -= billboardThickness * 0.3f; // Front billboard (pink) - move glow back
+        } else {
+            glowPos.z += billboardThickness * 0.3f; // Back billboard (blue) - move glow forward
+        }
+        
+        // Both billboards face forward/back (not sideways)
+        DrawCube(glowPos, billboardWidth * 1.15f, billboardHeight * 1.1f, billboardThickness * 0.6f, glowColor);
+        
+        // Draw billboard as a thin vertical rectangle (simple 3D form)
+        // Both front and back face forward/back (toward/away from center)
+        DrawCube(billboardPositions[i], billboardWidth, billboardHeight, billboardThickness, billboardColor);
+    }
+}
+
 // Materials-Depot: same footprint as a platform but 50% shorter (legs + top thickness halved)
 void DrawMaterialsDepot(Vector3 position, float gridSize, Color color, int cargoCount) {
     float legWidth = gridSize * 0.15f;
@@ -765,6 +900,156 @@ void SpawnBuildParticles(Vector3 position, Color baseColor, float gridSize) {
 }
 
 // Update particles (move and age them)
+static void UpdateTicker(float deltaTime) {
+    // Update ticker position (scrolls right to left)
+    g_tickerPosition -= g_tickerSpeed * deltaTime;
+    
+    // Calculate ticker text width to determine when to loop
+    float tickerFontSize = GetScaledFontSize(BASE_FONT_SIZE) * 2.0f; // 200% larger
+    float textWidth = MeasureTextEx(gameFont, g_tickerText, tickerFontSize, 0.0f).x;
+    
+    // Calculate ticker area (top-left: 5.7% X, 93.8% Y | bottom-right: 60.8% X, 96.4% Y)
+    float tickerStartX = (float)g_renderWidth * 0.057f;
+    float tickerEndX = (float)g_renderWidth * 0.608f;
+    float tickerWidth = tickerEndX - tickerStartX;
+    
+    // Reset position when text has scrolled completely off screen
+    if (g_tickerPosition + textWidth < tickerStartX) {
+        g_tickerPosition = tickerEndX; // Start from right side
+    }
+    
+    // Initialize position on first frame
+    if (g_tickerPosition == 0.0f) {
+        g_tickerPosition = tickerEndX;
+    }
+}
+
+static void DrawTicker() {
+    // Calculate ticker area (top-left: 5.7% X, 93.8% Y | bottom-right: 60.8% X, 96.4% Y)
+    float tickerStartX = (float)g_renderWidth * 0.057f;
+    float tickerEndX = (float)g_renderWidth * 0.608f;
+    float tickerStartY = (float)g_renderHeight * 0.938f;
+    float tickerEndY = (float)g_renderHeight * 0.964f;
+    float tickerCenterY = (tickerStartY + tickerEndY) * 0.5f;
+    
+    // Calculate font size (200% larger)
+    float tickerFontSize = GetScaledFontSize(BASE_FONT_SIZE) * 2.0f;
+    
+    // Bright green color
+    Color tickerColor = (Color){ 0, 255, 0, 255 }; // Bright green
+    
+    // Set up scissor mode to clip text to ticker area
+    Rectangle tickerRect = { tickerStartX, tickerStartY, tickerEndX - tickerStartX, tickerEndY - tickerStartY };
+    BeginScissorMode((int)tickerRect.x, (int)tickerRect.y, (int)tickerRect.width, (int)tickerRect.height);
+    
+    // Draw ticker text (centered vertically in the ticker area)
+    DrawTextEx(gameFont, g_tickerText, (Vector2){g_tickerPosition, tickerCenterY - tickerFontSize * 0.5f}, tickerFontSize, 0.0f, tickerColor);
+    
+    EndScissorMode();
+}
+
+// Terminal feedback system
+static void AddTerminalMessage(const char* message) {
+    TerminalMessage msg;
+    snprintf(msg.text, sizeof(msg.text), "%s", message);
+    msg.age = 0.0f;
+    msg.visibleChars = 0; // Start with no characters visible
+    msg.typingProgress = 0.0f;
+    g_terminalMessages.push_back(msg);
+}
+
+static void UpdateTerminal(float deltaTime) {
+    // Update age and typing progress of all messages
+    for (auto& msg : g_terminalMessages) {
+        msg.age += deltaTime;
+        
+        // Update typing progress
+        int textLength = (int)strlen(msg.text);
+        if (msg.typingProgress < 1.0f) {
+            msg.typingProgress += deltaTime * g_terminalTypingSpeed / (float)textLength;
+            if (msg.typingProgress > 1.0f) msg.typingProgress = 1.0f;
+            msg.visibleChars = (int)(msg.typingProgress * (float)textLength);
+        } else {
+            msg.visibleChars = textLength; // Fully typed
+        }
+    }
+    
+    // Remove messages that are too old (beyond calculated max Y)
+    // Calculate how many lines fit between 96% and 83%, plus one extra line
+    float terminalStartY = (float)g_renderHeight * g_terminalCursorY;
+    float baseMaxY = (float)g_renderHeight * g_terminalMaxY;
+    float fontSize = GetScaledFontSize(BASE_FONT_SIZE);
+    float scaledLineHeight = g_terminalLineHeight * (fontSize / BASE_FONT_SIZE); // Scale line height with font
+    float terminalMaxY = baseMaxY - scaledLineHeight; // Subtract one line height to add extra row at top
+    float availableHeight = terminalStartY - terminalMaxY;
+    int maxLines = (int)(availableHeight / scaledLineHeight);
+    
+    // Keep only the most recent messages that fit on screen
+    if ((int)g_terminalMessages.size() > maxLines) {
+        g_terminalMessages.erase(g_terminalMessages.begin(), g_terminalMessages.begin() + ((int)g_terminalMessages.size() - maxLines));
+    }
+}
+
+static void DrawTerminal() {
+    if (g_terminalMessages.empty()) return;
+    
+    float terminalX = (float)g_renderWidth * g_terminalCursorX;
+    float terminalStartY = (float)g_renderHeight * g_terminalCursorY;
+    float baseMaxY = (float)g_renderHeight * g_terminalMaxY;
+    float fontSize = GetScaledFontSize(BASE_FONT_SIZE);
+    float terminalFontSize = fontSize * 1.125f; // 12.5% larger than zoom text (reduced from 50% by 25%)
+    float scaledLineHeight = g_terminalLineHeight * (fontSize / BASE_FONT_SIZE); // Scale line height with font
+    float terminalMaxY = baseMaxY - scaledLineHeight; // Subtract one line height to add extra row at top
+    
+    // Draw messages from bottom to top (newest at bottom)
+    float currentY = terminalStartY;
+    int messageIndex = (int)g_terminalMessages.size() - 1; // Start from newest
+    int lineNumber = 0;
+    
+    for (; messageIndex >= 0 && currentY > terminalMaxY; messageIndex--, lineNumber++) {
+        const TerminalMessage& msg = g_terminalMessages[messageIndex];
+        
+        // Calculate color fade: newest (bottom, line 0) is bright green, older (top) is darker
+        // Calculate how many lines fit between start and max
+        float availableHeight = terminalStartY - terminalMaxY;
+        int totalVisibleLines = (int)(availableHeight / scaledLineHeight);
+        
+        // Fade factor: 1.0 (bright green) at bottom, 0.3 (darker green) at top
+        float fadeFactor = 1.0f - ((float)lineNumber / (float)totalVisibleLines) * 0.7f;
+        fadeFactor = (fadeFactor < 0.3f) ? 0.3f : (fadeFactor > 1.0f) ? 1.0f : fadeFactor;
+        
+        // Bright green (0, 255, 0) at bottom, darker green as we go up
+        unsigned char greenValue = (unsigned char)(255.0f * fadeFactor);
+        Color messageColor = { 0, greenValue, 0, 255 };
+        
+        // Draw only the visible characters (typing effect)
+        char visibleText[129];
+        int textLen = (int)strlen(msg.text);
+        int charsToShow = (msg.visibleChars < textLen) ? msg.visibleChars : textLen;
+        strncpy(visibleText, msg.text, charsToShow);
+        visibleText[charsToShow] = '\0';
+        
+        // Calculate text width to position cursor
+        float textWidth = 0.0f;
+        if (charsToShow > 0) {
+            textWidth = MeasureTextEx(gameFont, visibleText, terminalFontSize, 0.0f).x;
+        }
+        
+        DrawTextEx(gameFont, visibleText, (Vector2){terminalX, currentY}, terminalFontSize, 0.0f, messageColor);
+        
+        // Draw blinking cursor after text if still typing (only on the newest message at bottom)
+        if (messageIndex == (int)g_terminalMessages.size() - 1 && msg.typingProgress < 1.0f) {
+            float realTime = (float)GetTime();
+            float blinkCycle = sinf(realTime * 4.0f); // Blink 4 times per second
+            if (blinkCycle > 0.0f) {
+                DrawTextEx(gameFont, "_", (Vector2){terminalX + textWidth, currentY}, terminalFontSize, 0.0f, (Color){ 0, 255, 0, 255 });
+            }
+        }
+        
+        currentY -= scaledLineHeight;
+    }
+}
+
 void UpdateBuildParticles(float deltaTime) {
     const float gravity = -15.0f; // Gravity pulling particles down
     
@@ -1251,12 +1536,14 @@ static int CountStationComponents(const std::set<long long>& componentKeys) {
 
 // Draw modal UI for line establishment
 static void DrawLineModal(LineModalData& modal, const std::vector<Line>& lines, int screenWidth, int screenHeight) {
+    // Update modal open flag for cursor visibility
+    g_lineModalOpen = (modal.state != LineModalState::None);
     if (modal.state == LineModalState::None) return;
     
     // Draw semi-transparent background
     DrawRectangle(0, 0, screenWidth, screenHeight, (Color){0, 0, 0, 200});
     
-    float modalWidth = 500.0f;
+    float modalWidth = 1000.0f;  // Made wider (was 500.0f)
     float modalHeight = 400.0f;
     float modalX = (screenWidth - modalWidth) / 2.0f;
     float modalY = (screenHeight - modalHeight) / 2.0f;
@@ -1265,20 +1552,29 @@ static void DrawLineModal(LineModalData& modal, const std::vector<Line>& lines, 
     DrawRectangle((int)modalX, (int)modalY, (int)modalWidth, (int)modalHeight, (Color){40, 40, 40, 255});
     DrawRectangleLines((int)modalX, (int)modalY, (int)modalWidth, (int)modalHeight, WHITE);
     
+    float fontSize = GetScaledFontSize(BASE_FONT_SIZE) * 2.0f;  // 200% larger
     float yPos = modalY + 20.0f;
     
     if (modal.state == LineModalState::EstablishLine) {
-        DrawTextEx(gameFont, "Establish New Line?", (Vector2){(float)(modalX + 20), yPos}, 24, 0.0f, WHITE);
-        yPos += 50.0f;
+        DrawTextEx(gameFont, "ESTABLISH NEW LINE?", (Vector2){(float)(modalX + 20), yPos}, fontSize, 0.0f, WHITE);
+        yPos += 60.0f;  // Increased spacing for larger text
         
-        DrawTextEx(gameFont, "Name:", (Vector2){(float)(modalX + 20), yPos}, 18, 0.0f, WHITE);
-        yPos += 30.0f;
+        DrawTextEx(gameFont, "NAME:", (Vector2){(float)(modalX + 20), yPos}, fontSize, 0.0f, WHITE);
+        yPos += 60.0f;  // Increased spacing for larger text
         
         // Text input box
-        Rectangle textBox = {modalX + 20.0f, yPos, 460.0f, 30.0f};
+        Rectangle textBox = {modalX + 20.0f, yPos, modalWidth - 40.0f, 60.0f};  // Wider text box, taller for larger text
         DrawRectangleRec(textBox, (Color){20, 20, 20, 255});
         DrawRectangleLinesEx(textBox, 2, WHITE);
-        DrawTextEx(gameFont, modal.nameBuffer, (Vector2){(float)(modalX + 25), yPos + 5}, 18, 0.0f, WHITE);
+        DrawTextEx(gameFont, modal.nameBuffer, (Vector2){(float)(modalX + 25), yPos + 15}, fontSize, 0.0f, WHITE);
+        
+        // Draw blinking cursor in text input box
+        float textWidth = MeasureTextEx(gameFont, modal.nameBuffer, fontSize, 0.0f).x;
+        float realTime = (float)GetTime();
+        float blinkCycle = sinf(realTime * 4.0f); // Blink 4 times per second
+        if (blinkCycle > 0.0f) {
+            DrawTextEx(gameFont, "_", (Vector2){(float)(modalX + 25 + textWidth), yPos + 15}, fontSize, 0.0f, WHITE);
+        }
         
         // Handle text input
         int key = GetCharPressed();
@@ -1296,14 +1592,14 @@ static void DrawLineModal(LineModalData& modal, const std::vector<Line>& lines, 
             modal.nameBuffer[modal.nameCursorPos] = '\0';
         }
         
-        yPos += 50.0f;
-        DrawTextEx(gameFont, "Color:", (Vector2){(float)(modalX + 20), yPos}, 18, 0.0f, WHITE);
-        yPos += 30.0f;
+        yPos += 80.0f;  // Increased spacing for larger text
+        DrawTextEx(gameFont, "COLOR:", (Vector2){(float)(modalX + 20), yPos}, fontSize, 0.0f, WHITE);
+        yPos += 60.0f;  // Increased spacing for larger text
         
         // Color picker (predefined colors)
         std::vector<Color> colors = GetLineColorPalette();
-        float colorBoxSize = 40.0f;
-        float colorSpacing = 10.0f;
+        float colorBoxSize = 80.0f;  // Larger color boxes for better visibility
+        float colorSpacing = 20.0f;  // Increased spacing
         float startX = modalX + 20.0f;
         
         for (int i = 0; i < (int)colors.size(); i++) {
@@ -1318,11 +1614,11 @@ static void DrawLineModal(LineModalData& modal, const std::vector<Line>& lines, 
         if (IsKeyPressed(KEY_RIGHT) && modal.colorIndex < (int)colors.size() - 1) modal.colorIndex++;
         modal.selectedColor = colors[modal.colorIndex];
         
-        yPos += 70.0f;
+        yPos += 100.0f;  // Increased spacing for larger text
         
-        // Buttons
-        Rectangle establishBtn = {modalX + 20.0f, yPos, 220.0f, 40.0f};
-        Rectangle cancelBtn = {modalX + 260.0f, yPos, 220.0f, 40.0f};
+        // Buttons - adjusted for wider modal
+        Rectangle establishBtn = {modalX + 20.0f, yPos, 460.0f, 80.0f};  // Wider and taller buttons
+        Rectangle cancelBtn = {modalX + 520.0f, yPos, 460.0f, 80.0f};  // Wider and taller buttons
         
         bool establishHover = CheckCollisionPointRec(CustomGetMousePosition(), establishBtn);
         bool cancelHover = CheckCollisionPointRec(CustomGetMousePosition(), cancelBtn);
@@ -1330,8 +1626,11 @@ static void DrawLineModal(LineModalData& modal, const std::vector<Line>& lines, 
         DrawRectangleRec(establishBtn, establishHover ? (Color){100, 200, 100, 255} : (Color){80, 150, 80, 255});
         DrawRectangleRec(cancelBtn, cancelHover ? (Color){200, 100, 100, 255} : (Color){150, 80, 80, 255});
         
-        DrawTextEx(gameFont, "Establish", (Vector2){establishBtn.x + 70, establishBtn.y + 10}, 20, 0.0f, WHITE);
-        DrawTextEx(gameFont, "Continue Building", (Vector2){cancelBtn.x + 20, cancelBtn.y + 10}, 18, 0.0f, WHITE);
+        // Center text in buttons
+        float establishTextWidth = MeasureTextEx(gameFont, "ESTABLISH", fontSize, 0.0f).x;
+        float cancelTextWidth = MeasureTextEx(gameFont, "CONTINUE BUILDING", fontSize, 0.0f).x;
+        DrawTextEx(gameFont, "ESTABLISH", (Vector2){establishBtn.x + (establishBtn.width - establishTextWidth) / 2.0f, establishBtn.y + 25}, fontSize, 0.0f, WHITE);
+        DrawTextEx(gameFont, "CONTINUE BUILDING", (Vector2){cancelBtn.x + (cancelBtn.width - cancelTextWidth) / 2.0f, cancelBtn.y + 25}, fontSize, 0.0f, WHITE);
         
         if (CustomIsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             if (establishHover) {
@@ -1342,25 +1641,25 @@ static void DrawLineModal(LineModalData& modal, const std::vector<Line>& lines, 
         }
         
     } else if (modal.state == LineModalState::AddToLine) {
-        DrawTextEx(gameFont, "Add to Existing Line?", (Vector2){(float)(modalX + 20), yPos}, 24, 0.0f, WHITE);
-        yPos += 50.0f;
+        DrawTextEx(gameFont, "ADD TO EXISTING LINE?", (Vector2){(float)(modalX + 20), yPos}, fontSize, 0.0f, WHITE);
+        yPos += 60.0f;  // Increased spacing for larger text
         
         if (modal.targetLineId >= 0 && modal.targetLineId < (int)g_lines.size()) {
             const Line& targetLine = g_lines[modal.targetLineId];
             char lineInfo[128];
-            snprintf(lineInfo, sizeof(lineInfo), "Line: %s (%d stations)", targetLine.name.c_str(), targetLine.stationCount);
-            DrawTextEx(gameFont, lineInfo, (Vector2){(float)(modalX + 20), yPos}, 18, 0.0f, WHITE);
-            yPos += 40.0f;
+            snprintf(lineInfo, sizeof(lineInfo), "LINE: %s (%d STATIONS)", targetLine.name.c_str(), targetLine.stationCount);
+            DrawTextEx(gameFont, lineInfo, (Vector2){(float)(modalX + 20), yPos}, fontSize, 0.0f, WHITE);
+            yPos += 60.0f;  // Increased spacing for larger text
         }
         
-        DrawTextEx(gameFont, "Add this station to the existing line,", (Vector2){(float)(modalX + 20), yPos}, 16, 0.0f, GRAY);
-        yPos += 25.0f;
-        DrawTextEx(gameFont, "or continue building without adding?", (Vector2){(float)(modalX + 20), yPos}, 16, 0.0f, GRAY);
-        yPos += 50.0f;
+        DrawTextEx(gameFont, "ADD THIS STATION TO THE EXISTING LINE,", (Vector2){(float)(modalX + 20), yPos}, fontSize, 0.0f, WHITE);
+        yPos += 50.0f;  // Increased spacing for larger text
+        DrawTextEx(gameFont, "OR CONTINUE BUILDING WITHOUT ADDING?", (Vector2){(float)(modalX + 20), yPos}, fontSize, 0.0f, WHITE);
+        yPos += 80.0f;  // Increased spacing for larger text
         
-        // Buttons
-        Rectangle yesBtn = {modalX + 20.0f, yPos, 220.0f, 40.0f};
-        Rectangle noBtn = {modalX + 260.0f, yPos, 220.0f, 40.0f};
+        // Buttons - adjusted for wider modal
+        Rectangle yesBtn = {modalX + 20.0f, yPos, 460.0f, 80.0f};  // Wider and taller buttons
+        Rectangle noBtn = {modalX + 520.0f, yPos, 460.0f, 80.0f};  // Wider and taller buttons
         
         bool yesHover = CheckCollisionPointRec(CustomGetMousePosition(), yesBtn);
         bool noHover = CheckCollisionPointRec(CustomGetMousePosition(), noBtn);
@@ -1368,8 +1667,11 @@ static void DrawLineModal(LineModalData& modal, const std::vector<Line>& lines, 
         DrawRectangleRec(yesBtn, yesHover ? (Color){100, 200, 100, 255} : (Color){80, 150, 80, 255});
         DrawRectangleRec(noBtn, noHover ? (Color){200, 100, 100, 255} : (Color){150, 80, 80, 255});
         
-        DrawTextEx(gameFont, "Yes, Add to Line", (Vector2){yesBtn.x + 30, yesBtn.y + 10}, 18, 0.0f, WHITE);
-        DrawTextEx(gameFont, "No, Continue", (Vector2){noBtn.x + 50, noBtn.y + 10}, 18, 0.0f, WHITE);
+        // Center text in buttons
+        float yesTextWidth = MeasureTextEx(gameFont, "YES, ADD TO LINE", fontSize, 0.0f).x;
+        float noTextWidth = MeasureTextEx(gameFont, "NO, CONTINUE", fontSize, 0.0f).x;
+        DrawTextEx(gameFont, "YES, ADD TO LINE", (Vector2){yesBtn.x + (yesBtn.width - yesTextWidth) / 2.0f, yesBtn.y + 25}, fontSize, 0.0f, WHITE);
+        DrawTextEx(gameFont, "NO, CONTINUE", (Vector2){noBtn.x + (noBtn.width - noTextWidth) / 2.0f, noBtn.y + 25}, fontSize, 0.0f, WHITE);
         
         if (CustomIsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             if (yesHover) {
@@ -2472,8 +2774,17 @@ __declspec(dllexport) bool InitializeGame() {
     printf("[InitializeGame] Skyline generated: %d buildings\n", (int)g_buildings.size());
     fflush(stdout);
     
-    // Initialize camera
-    g_camera.position = (Vector3){ 60.0f, 50.0f, 60.0f };
+    // Initialize camera with default zoom distance of 150
+    // Calculate position at distance 150 from target (0,0,0) maintaining same angle as (60,50,60)
+    float defaultZoomDistance = 150.0f;
+    Vector3 defaultDirection = { 60.0f, 50.0f, 60.0f };
+    float currentDistance = sqrtf(defaultDirection.x * defaultDirection.x + 
+                                  defaultDirection.y * defaultDirection.y + 
+                                  defaultDirection.z * defaultDirection.z);
+    float scaleFactor = defaultZoomDistance / currentDistance;
+    g_camera.position = (Vector3){ defaultDirection.x * scaleFactor, 
+                                   defaultDirection.y * scaleFactor, 
+                                   defaultDirection.z * scaleFactor };
     g_camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
     g_camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
     g_camera.fovy = 45.0f;
@@ -2482,6 +2793,9 @@ __declspec(dllexport) bool InitializeGame() {
     g_cameraYaw = atan2f(g_camera.position.x - g_camera.target.x, g_camera.position.z - g_camera.target.z);
     g_cameraRadius = sqrtf((g_camera.position.x - g_camera.target.x) * (g_camera.position.x - g_camera.target.x) +
                            (g_camera.position.z - g_camera.target.z) * (g_camera.position.z - g_camera.target.z));
+    
+    // Initialize ticker position (start at right edge of ticker area - 60.8% of width)
+    g_tickerPosition = (float)g_renderWidth * 0.608f;
     
     // Initialize 2D map camera
     g_mapCamera.target = { 0.0f, 0.0f };
@@ -2530,7 +2844,7 @@ __declspec(dllexport) void SetRenderResolutionPreset(int preset) {
     if (g_framebuffer_initialized) return;
     if (preset == 0) { g_renderWidth = 480; g_renderHeight = 320; }
     else if (preset == 2) { g_renderWidth = 720; g_renderHeight = 480; }
-    else { g_renderWidth = 600; g_renderHeight = 400; }
+    else { g_renderWidth = 1200; g_renderHeight = 800; }
 }
 __declspec(dllexport) bool ShouldCenterMouse() { bool r = g_shouldCenterMouse; g_shouldCenterMouse = false; return r; }
 __declspec(dllexport) void SetUsername(const char* name) { if(name) { strncpy(g_username, name, 63); g_username[63] = '\0'; } }
@@ -2549,9 +2863,21 @@ static void LoadUIAssets() {
     
     printf("[LoadUIAssets] Loading UI textures...\n");
     
-    // Try multiple paths
-    const char* uiPaths[] = { "images/UI.png", "Data/games/CyberTrain/images/UI.png", "../../images/UI.png" };
-    const char* cursorPaths[] = { "images/mouse_cursor.png", "Data/games/CyberTrain/images/mouse_cursor.png", "../../images/mouse_cursor.png" };
+    // Try multiple paths (order matters - try most likely first)
+    // For standalone: images/ should work after we fix working directory
+    // For embedded: Data/games/CyberTrain/images/ should work
+    const char* uiPaths[] = { 
+        "images/UI.png", 
+        "../images/UI.png",  // If running from bin/
+        "Data/games/CyberTrain/images/UI.png", 
+        "../../images/UI.png" 
+    };
+    const char* cursorPaths[] = { 
+        "images/mouse_cursor.png", 
+        "../images/mouse_cursor.png",  // If running from bin/
+        "Data/games/CyberTrain/images/mouse_cursor.png", 
+        "../../images/mouse_cursor.png" 
+    };
     
     // Load UI BG
     for (int i = 0; i < 3; i++) {
@@ -2660,6 +2986,15 @@ static void DrawCustomCursor() {
             // so we use the actual mouse screen position to keep cursor aligned with what the user sees
             cursorPos = CustomGetMousePosition();
             shouldShowCursor = true;
+        }
+    }
+    
+    // Hide cursor if it's within the rectangle from (143, 81) to (966, 510)
+    // This is the main game viewport area where the cursor should not be visible
+    if (shouldShowCursor) {
+        if (cursorPos.x >= 143.0f && cursorPos.x <= 966.0f && 
+            cursorPos.y >= 81.0f && cursorPos.y <= 510.0f) {
+            shouldShowCursor = false;
         }
     }
     
@@ -2818,7 +3153,8 @@ static void GameLoopBody() {
 
         // Get mouse position in 3D world space
         Vector2 mousePos = CustomGetMousePosition();
-        Ray mouseRay = GetMouseRay(mousePos, g_camera);
+        // Use GetScreenToWorldRayEx with framebuffer dimensions for accurate ray calculation in embedded mode
+        Ray mouseRay = GetScreenToWorldRayEx(mousePos, g_camera, g_renderWidth, g_renderHeight);
         
         // Calculate intersection with ground plane (y=0) manually
         if (mouseRay.direction.y < -0.0001f || mouseRay.direction.y > 0.0001f) {
@@ -2925,7 +3261,8 @@ static void GameLoopBody() {
         }
         
         // Handle mouse click to place platform, train, select train, configure junction, or demolish (disabled in map mode and when modal is open)
-        if (!g_mapMode && g_lineModal.state == LineModalState::None && CustomIsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        // Also prevent building when cursor is visible (outside 3D viewport)
+        if (!g_mapMode && g_lineModal.state == LineModalState::None && CustomIsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !IsCursorVisible()) {
             bool clickHandled = false;
             
             // Demolish mode: remove anything at the clicked grid square
@@ -2994,6 +3331,7 @@ static void GameLoopBody() {
                 // Deduct credits if something was demolished
                 if (demolished && g_playerCredits >= 100) {
                     g_playerCredits -= 100;
+                    AddTerminalMessage("OBJECT DEMOLISHED - 100 CREDITS");
                 }
                 
                 clickHandled = true;
@@ -3166,6 +3504,7 @@ static void GameLoopBody() {
 
                 if (canPlace) {
                     g_playerCredits -= 1000; // Deduct station cost
+                    AddTerminalMessage("STATION BUILT - 1000 CREDITS");
                     for (int i = 0; i < 4; i++) {
                         PlacedPlatform p;
                         p.position = segments[i];
@@ -3218,6 +3557,7 @@ static void GameLoopBody() {
 
                 if (canPlace) {
                     g_playerCredits -= 1500; // Deduct depot cost
+                    AddTerminalMessage("DEPOT BUILT - 1500 CREDITS");
                     PlacedPlatform depot;
                     depot.position = g_mouseWorldPos;
                     depot.isStation = false;
@@ -3286,6 +3626,7 @@ static void GameLoopBody() {
 
                 if (canPlace) {
                     g_playerCredits -= 10000; // Deduct factory cost
+                    AddTerminalMessage("FACTORY BUILT - 10000 CREDITS");
                     g_placedFactories.push_back({ factoryPos });
                     
                     // Spawn build particles
@@ -3374,6 +3715,9 @@ static void GameLoopBody() {
                     PlacedBureau bureau;
                     bureau.position = bureauPos;
                     bureau.floors = selectedFloors;
+                    char bureauMsg[128];
+                    snprintf(bureauMsg, sizeof(bureauMsg), "BUREAU BUILT - %d CREDITS", totalCost);
+                    AddTerminalMessage(bureauMsg);
                     g_placedBureaus.push_back(bureau);
                     
                     // Spawn build particles
@@ -3409,6 +3753,7 @@ static void GameLoopBody() {
 
                 if (canPlace) {
                     g_playerCredits -= 150; // Deduct platform cost
+                    AddTerminalMessage("PLATFORM BUILT - 150 CREDITS");
                     PlacedPlatform newPlatform;
                     newPlatform.position = g_mouseWorldPos;
                     newPlatform.isStation = false;
@@ -3441,6 +3786,9 @@ static void GameLoopBody() {
             g_camera.position = Vector3Add(g_camera.position, zoomVector);
             // Maintain fixed altitude after zoom
             g_camera.position.y = g_cameraAltitude;
+            // Recalculate camera radius after zoom
+            g_cameraRadius = sqrtf((g_camera.position.x - g_camera.target.x) * (g_camera.position.x - g_camera.target.x) +
+                                   (g_camera.position.z - g_camera.target.z) * (g_camera.position.z - g_camera.target.z));
         }
         
         // Move left/right with Left/Right arrows (disabled when modal is open)
@@ -3982,6 +4330,12 @@ static void GameLoopBody() {
         // Update particles
         UpdateBuildParticles(deltaTime);
         
+        // Update ticker
+        UpdateTicker(deltaTime);
+        
+        // Update terminal
+        UpdateTerminal(deltaTime);
+        
         // Begin drawing (to window in standalone, to framebuffer in embedded)
         if (!g_standalone_mode && g_framebuffer_initialized) {
             BeginTextureMode(g_framebuffer);
@@ -4126,15 +4480,20 @@ static void GameLoopBody() {
             DrawUIOverlay();
             
             // Now draw all text on top of UI overlay
-            DrawTextEx(gameFont, "MAP VIEW (M to return)", (Vector2){10, 10}, 20, 0.0f, WHITE);
-            DrawTextEx(gameFont, "Pan: WASD/Arrows or Middle-Mouse Drag | Zoom: Mouse Wheel", (Vector2){10, 36}, 16, 0.0f, GRAY);
-            DrawTextEx(gameFont, "Pulsing cyan train = selected", (Vector2){10, 56}, 16, 0.0f, DARKGRAY);
+            float fontSize = GetScaledFontSize(BASE_FONT_SIZE);
+            float fontSizeLarge = GetScaledFontSize(BASE_FONT_SIZE_LARGE);
+            // Map mode text removed - controls now shown in ticker
             
-            // Display mouse coordinates in map mode
+            // Draw scrolling ticker with game tips and controls
+            DrawTicker();
+            
+            // Display mouse position as percentages in map mode
             Vector2 mousePos = CustomGetMousePosition();
+            float mouseXPercent = (mousePos.x / (float)g_renderWidth) * 100.0f;
+            float mouseYPercent = (mousePos.y / (float)g_renderHeight) * 100.0f;
             char mouseCoordText[64];
-            snprintf(mouseCoordText, sizeof(mouseCoordText), "Mouse: X:%.0f Y:%.0f", mousePos.x, mousePos.y);
-            DrawTextEx(gameFont, mouseCoordText, (Vector2){(float)(g_renderWidth - 200), 10}, 14, 0.0f, (Color){ 200, 200, 255, 255 });
+            snprintf(mouseCoordText, sizeof(mouseCoordText), "MOUSE: X:%.1f%% Y:%.1f%%", mouseXPercent, mouseYPercent);
+            DrawTextEx(gameFont, mouseCoordText, (Vector2){(float)(g_renderWidth - 200), 10}, fontSizeLarge, 0.0f, WHITE);
             
             // Draw cursor after all text
             DrawCustomCursor();
@@ -4261,6 +4620,11 @@ static void GameLoopBody() {
                 DrawMaterialsDepot(platform.position, g_gridSpacing, drawColor, platform.depotCargo);
             } else {
                 DrawPlatform(platform.position, g_gridSpacing, drawColor);
+            }
+
+            // Draw animated cyberpunk billboards on stations
+            if (!platform.isDepot && platform.isStation) {
+                DrawStationBillboards(platform.position, g_gridSpacing, currentTime);
             }
 
             // If this station has a depot next to it, always highlight the station PRIME tile.
@@ -4415,6 +4779,10 @@ static void GameLoopBody() {
 
         // Debug: station gate status (hover a station tile, or a depot adjacent to that station)
         {
+            // Calculate font sizes for resolution scaling (needed for STATION GATE text)
+            float fontSize = GetScaledFontSize(BASE_FONT_SIZE);
+            float fontSizeLarge = GetScaledFontSize(BASE_FONT_SIZE_LARGE);
+            
             long long gateKey = kNoStation;
             int gateComp = -1;
 
@@ -4470,95 +4838,87 @@ static void GameLoopBody() {
             // Now draw all text on top of UI overlay
             if (hasGate) {
                 if (gateOpen) {
-                    DrawTextEx(gameFont, "STATION GATE: OPEN", (Vector2){10, 110}, 16, 0.0f, (Color){ 120, 255, 120, 255 });
+                    DrawTextEx(gameFont, "STATION GATE: OPEN", (Vector2){10, 110}, fontSize, 0.0f, WHITE);
                 } else {
-                    DrawTextEx(gameFont, "STATION GATE: CLOSED", (Vector2){10, 110}, 16, 0.0f, (Color){ 255, 140, 140, 255 });
+                    DrawTextEx(gameFont, "STATION GATE: CLOSED", (Vector2){10, 110}, fontSize, 0.0f, WHITE);
                 }
             }
         }
         
-        // Draw UI text
-        DrawTextEx(gameFont, "CyberTrain - Railway Builder", (Vector2){10, 10}, 20, 0.0f, WHITE);
+        // Draw UI text - calculate font sizes for resolution scaling
+        float fontSize = GetScaledFontSize(BASE_FONT_SIZE);
+        float fontSizeLarge = GetScaledFontSize(BASE_FONT_SIZE_LARGE);
         
-        // Display credits
-        const char* creditsText = TextFormat("Credits: %d", g_playerCredits);
-        DrawTextEx(gameFont, creditsText, (Vector2){(float)(g_renderWidth - 150), 10}, 18, 0.0f, (Color){ 255, 255, 0, 255 });
-
-        // In-game clock UI (top-right)
-        // Map 0..1 cycle to 0..24 hours for a readable clock
+        // Draw title at 3.7% X, 2.2% Y with pulsing cyan to white effect
+        float titleX = (float)g_renderWidth * 0.037f;
+        float titleY = (float)g_renderHeight * 0.022f;
+        float titleFontSize = fontSize * 2.0f; // 200% larger
+        float realTime = (float)GetTime(); // Real time for pulsing (ignores game speed/pause)
+        float pulse = (sinf(realTime * 3.0f) + 1.0f) / 2.0f; // 0 to 1
+        // Interpolate between CYAN (0, 255, 255) and WHITE (255, 255, 255)
+        Color titleColor = {
+            (unsigned char)(pulse * 255),
+            255,
+            255,
+            255
+        };
+        DrawTextEx(gameFont, "CYBERTRAIN - RAIL NETWORK SIMULATOR: ONLINE", (Vector2){titleX, titleY}, titleFontSize, 0.0f, titleColor);
+        
+        // Map 0..1 cycle to 0..24 hours for a readable clock (needed for time display)
         int clockMinutesTotal = (int)floorf(dayT * 24.0f * 60.0f) % (24 * 60);
         int clockH = clockMinutesTotal / 60;
         int clockM = clockMinutesTotal % 60;
-        const char* clockText = TextFormat("%02d:%02d  %s", clockH, clockM, phaseName);
-        int clockW = (int)MeasureTextEx(gameFont, clockText, 18, 0.0f).x;
-        DrawTextEx(gameFont, clockText, (Vector2){(float)(g_renderWidth - clockW - 10), 35}, 18, 0.0f, (Color){ 220, 220, 220, 255 });
         
-        // Display game speed
-        const char* speedText = TextFormat("Speed: %s (SPACE)", GetSpeedName());
-        int speedW = (int)MeasureTextEx(gameFont, speedText, 16, 0.0f).x;
-        DrawTextEx(gameFont, speedText, (Vector2){(float)(g_renderWidth - speedW - 10), 60}, 16, 0.0f, (Color){ 255, 255, 0, 255 });
+        // Display credits on same line as title, two character spaces away
+        float titleTextWidth = MeasureTextEx(gameFont, "CYBERTRAIN - RAIL NETWORK SIMULATOR: ONLINE", titleFontSize, 0.0f).x;
+        float twoSpacesWidth = MeasureTextEx(gameFont, "  ", titleFontSize, 0.0f).x;
+        float creditsX = titleX + titleTextWidth + twoSpacesWidth;
+        char creditsText[64];
+        snprintf(creditsText, sizeof(creditsText), "| CREDITS %d", g_playerCredits);
+        Color creditsColor = (Color){ 255, 255, 0, 255 }; // Bright yellow
+        DrawTextEx(gameFont, creditsText, (Vector2){creditsX, titleY}, titleFontSize, 0.0f, creditsColor);
         
-        // Display mouse coordinates
+        // Display time next to credits, two character spaces away, same size, cyan
+        float creditsTextWidth = MeasureTextEx(gameFont, creditsText, titleFontSize, 0.0f).x;
+        float timeX = creditsX + creditsTextWidth + twoSpacesWidth;
+        char timeText[64];
+        snprintf(timeText, sizeof(timeText), "| %02d:%02d %s", clockH, clockM, phaseName);
+        Color timeColor = (Color){ 0, 255, 255, 255 }; // Cyan
+        DrawTextEx(gameFont, timeText, (Vector2){timeX, titleY}, titleFontSize, 0.0f, timeColor);
+        
+        // Display speed at x: 74% y: 81%, keep same size and color
+        char speedText[64];
+        snprintf(speedText, sizeof(speedText), "SPEED %s", GetSpeedName());
+        float speedX = (float)g_renderWidth * 0.74f;
+        float speedY = (float)g_renderHeight * 0.81f;
+        float timeSpeedFontSize = fontSize * 1.5f; // 50% larger (keep same as before)
+        Color timeSpeedColor = (Color){ 0, 255, 255, 255 }; // Bright cyan (keep same as before)
+        DrawTextEx(gameFont, speedText, (Vector2){speedX, speedY}, timeSpeedFontSize, 0.0f, timeSpeedColor);
+        
+        // Display camera zoom level (distance from camera to target)
+        if (!g_mapMode) {
+            float cameraDistance = Vector3Distance(g_camera.position, g_camera.target);
+            const char* zoomText = TextFormat("ZOOM: %.1f (+/-)", cameraDistance);
+            int zoomW = (int)MeasureTextEx(gameFont, zoomText, fontSize, 0.0f).x;
+            DrawTextEx(gameFont, zoomText, (Vector2){(float)(g_renderWidth - zoomW - 10), 85}, fontSize, 0.0f, WHITE);
+        }
+        
+        // Display mouse position as percentages
         mousePos = CustomGetMousePosition(); // Reuse variable declared earlier in function
+        float mouseXPercent = (mousePos.x / (float)g_renderWidth) * 100.0f;
+        float mouseYPercent = (mousePos.y / (float)g_renderHeight) * 100.0f;
         char mouseCoordText[64];
-        snprintf(mouseCoordText, sizeof(mouseCoordText), "Mouse: X:%.0f Y:%.0f", mousePos.x, mousePos.y);
-        DrawTextEx(gameFont, mouseCoordText, (Vector2){(float)(g_renderWidth - 200), 85}, 14, 0.0f, (Color){ 200, 200, 255, 255 });
+        snprintf(mouseCoordText, sizeof(mouseCoordText), "MOUSE: X:%.1f%% Y:%.1f%%", mouseXPercent, mouseYPercent);
+        DrawTextEx(gameFont, mouseCoordText, (Vector2){(float)(g_renderWidth - 200), 110}, fontSizeLarge, 0.0f, WHITE);
         
         // Draw line modal (on top of everything)
         DrawLineModal(g_lineModal, g_lines, g_renderWidth, g_renderHeight);
-        if (g_trainPlacementMode) {
-            DrawTextEx(gameFont, "Mode: Train Placement | LEFT CLICK = Place Train (REQUIRES STATION-TRACK)", (Vector2){10, 35}, 16, 0.0f, YELLOW);
-            DrawTextEx(gameFont, "Controls: T = Exit Train Mode | C = Cargo Train | D = Depot | ARROWS = Move | +/- = Zoom", (Vector2){10, 55}, 16, 0.0f, GRAY);
-        } else if (g_cargoTrainPlacementMode) {
-            DrawTextEx(gameFont, TextFormat("Mode: Cargo Train Placement (%d trailer%s) | LEFT CLICK = Place Cargo Train (REQUIRES STATION-TRACK)",
-                                g_cargoPlacementTrailers, g_cargoPlacementTrailers == 1 ? "" : "s"),
-                     (Vector2){10, 35}, 16, 0.0f, YELLOW);
-            DrawTextEx(gameFont, "Controls: C = Cycle Trailers | T = Passenger Train | D = Depot | S = Station | ARROWS = Move | +/- = Zoom", (Vector2){10, 55}, 16, 0.0f, GRAY);
-        } else if (g_depotPlacementMode) {
-            DrawTextEx(gameFont, "Mode: Materials-Depot Placement | LEFT CLICK = Place Depot (must connect to a Station, directly or via Depots) | Cost: 1,500 credits", (Vector2){10, 35}, 16, 0.0f, LIGHTGRAY);
-            DrawTextEx(gameFont, "Controls: D = Exit Depot Mode | T = Train | C = Cargo | S = Station | F = Factory | B = Bureau | ARROWS = Move | +/- = Zoom", (Vector2){10, 55}, 16, 0.0f, GRAY);
-        } else if (g_factoryPlacementMode) {
-            DrawTextEx(gameFont, "Mode: Factory Placement | LEFT CLICK = Place Factory (MUST be adjacent to a Depot) | Cost: 10,000 credits", (Vector2){10, 35}, 16, 0.0f, LIGHTGRAY);
-            DrawTextEx(gameFont, "Controls: F = Exit Factory Mode | D = Depot | S = Station | T = Train | C = Cargo | B = Bureau | ARROWS = Move | +/- = Zoom", (Vector2){10, 55}, 16, 0.0f, GRAY);
-        } else if (g_bureauPlacementMode) {
-            int selectedFloors = g_bureauFloorOptions[g_bureauFloorIndex];
-            int totalCost = selectedFloors * 10000;
-            DrawTextEx(gameFont, TextFormat("Mode: Bureau Placement (%d floors) | LEFT CLICK = Place Bureau | Cost: %d credits + 5 cargo", selectedFloors, totalCost), (Vector2){10, 35}, 16, 0.0f, (Color){ 0, 255, 255, 255 });
-            DrawTextEx(gameFont, "Requirements: Within 2 grid spaces of Station/Factory/Depot | B = Cycle Floors | ARROWS = Move | +/- = Zoom", (Vector2){10, 55}, 16, 0.0f, GRAY);
-        } else if (g_stationPlacementMode) {
-            DrawTextEx(gameFont, "Mode: Station Placement | LEFT CLICK = Place Station-Track | Cost: 1,000 credits", (Vector2){10, 35}, 16, 0.0f, LIME);
-            DrawTextEx(gameFont, "Controls: S = Exit Station Mode | R = Rotate | ARROWS = Move | +/- = Zoom", (Vector2){10, 55}, 16, 0.0f, GRAY);
-        } else if (g_demolishMode) {
-            DrawTextEx(gameFont, "Mode: Demolish | LEFT CLICK = Remove object at grid square | Cost: 100 credits per demolition", (Vector2){10, 35}, 16, 0.0f, RED);
-            DrawTextEx(gameFont, "Controls: X = Exit Demolish Mode | ARROWS = Move | +/- = Zoom", (Vector2){10, 55}, 16, 0.0f, GRAY);
-        } else if (hasSelectedTrain) {
-            DrawTextEx(gameFont, TextFormat("TRAIN #%d SELECTED - Click JUNCTIONS to configure routes!", g_selectedTrainIndex + 1), (Vector2){10, 35}, 16, 0.0f, (Color){0, 255, 255, 255});
-            DrawTextEx(gameFont, "Controls: CLICK Junction = Change Route | CLICK Train = Deselect | ESC = Deselect", (Vector2){10, 55}, 16, 0.0f, GRAY);
-        } else {
-            DrawTextEx(gameFont, "Controls: ARROWS = Move | SHIFT+LEFT/RIGHT = Rotate | +/- = Zoom | CLICK = Place/Select | T = Train | C = Cargo | D = Depot | F = Factory | S = Station | B = Bureau | X = Demolish", (Vector2){10, 35}, 16, 0.0f, GRAY);
-            DrawTextEx(gameFont, "Click on a placed TRAIN to select it and configure its junction routes!", (Vector2){10, 55}, 14, 0.0f, DARKGRAY);
-        }
-        DrawTextEx(gameFont, "Colors: CYAN = Track/Bureau | DARK CYAN = Station | GRAY = Depot/Factory | RED = Junction | GREEN = Editable Junction", (Vector2){10, 75}, 14, 0.0f, DARKGRAY);
-        DrawFPS(10, 95);
         
-        // DEBUG: Show component counts and modal state on screen
-        char debugOnScreen[256];
-        snprintf(debugOnScreen, sizeof(debugOnScreen), "DEBUG: Components prev=%d curr=%d | Modal=%d", 
-                 g_debugPreviousComponentCount, g_debugCurrentComponentCount, (int)g_lineModal.state);
-        DrawTextEx(gameFont, debugOnScreen, (Vector2){10, 115}, 14, 0.0f, YELLOW);
+        // Draw scrolling ticker with game tips and controls
+        DrawTicker();
         
-        // Count stations and track
-        int debugStationCount = 0;
-        int debugTrackCount = 0;
-        for (const auto& p : g_placedPlatforms) {
-            if (p.isDepot) continue;
-            if (p.isStation) debugStationCount++;
-            else debugTrackCount++;
-        }
-        char debugPlatforms[256];
-        snprintf(debugPlatforms, sizeof(debugPlatforms), "DEBUG: Platforms: %d stations, %d track, %d total", 
-                 debugStationCount, debugTrackCount, (int)g_placedPlatforms.size());
-        DrawTextEx(gameFont, debugPlatforms, (Vector2){10, 135}, 14, 0.0f, YELLOW);
+        // Draw terminal feedback
+        DrawTerminal();
         
         // Draw cursor after all text
         DrawCustomCursor();
@@ -4582,20 +4942,89 @@ int main() {
     // Standalone mode: initialize everything ourselves
     g_standalone_mode = true;
     
+    // Fix working directory for standalone mode (so images can be found)
+    // If running from bin/, change to parent directory (CyberTrain folder)
+#ifdef _WIN32
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(NULL, exePath, MAX_PATH);
+    // Remove filename, get directory
+    char* lastSlash = strrchr(exePath, '\\');
+    if (lastSlash) {
+        *lastSlash = '\0';
+        // Check if directory ends with "\bin" or "/bin" (case-insensitive)
+        int len = (int)strlen(exePath);
+        if (len >= 4) {
+            char* end = exePath + len - 4;
+            // Simple case-insensitive check
+            bool isBin = false;
+            // Check exact match first
+            if (strcmp(end, "\\bin") == 0 || strcmp(end, "/bin") == 0) {
+                isBin = true;
+            } else {
+                // Try case-insensitive - convert to lowercase for comparison
+                char lower[5] = {0};
+                for (int i = 0; i < 4; i++) {
+                    char c = end[i];
+                    lower[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+                }
+                isBin = (strcmp(lower, "\\bin") == 0) || (strcmp(lower, "/bin") == 0);
+            }
+            if (isBin) {
+                // We're in bin/, go up one level
+                *end = '\0';
+            }
+        }
+        SetCurrentDirectoryA(exePath);
+        printf("[main] Changed working directory to: %s\n", exePath);
+    }
+#else
+    char exePath[PATH_MAX];
+    ssize_t count = readlink("/proc/self/exe", exePath, PATH_MAX);
+    if (count != -1) {
+        exePath[count] = '\0';
+        char* lastSlash = strrchr(exePath, '/');
+        if (lastSlash) {
+            *lastSlash = '\0';
+            // Check if directory ends with "/bin"
+            int len = (int)strlen(exePath);
+            if (len >= 4 && strcmp(exePath + len - 4, "/bin") == 0) {
+                // We're in bin/, go up one level
+                exePath[len - 4] = '\0';
+            }
+            chdir(exePath);
+            printf("[main] Changed working directory to: %s\n", exePath);
+        }
+    }
+#endif
+    
     // Initialize window
     const int screenWidth = 1200;
     const int screenHeight = 800;
     InitWindow(screenWidth, screenHeight, "CyberTrain - Railway Builder");
     SetTargetFPS(60);
     
-    // Load custom font
-    gameFont = LoadFont("PixelifySans.ttf");
-    if (gameFont.texture.id == 0) {
+    // Load custom font (try multiple paths)
+    const char* fontPaths[] = {
+        "PixelifySans.ttf",
+        "../PixelifySans.ttf",  // If running from bin/
+        "Data/games/CyberTrain/PixelifySans.ttf",
+        "static/PixelifySans-Regular.ttf"
+    };
+    bool fontLoaded = false;
+    for (int i = 0; i < 4 && !fontLoaded; i++) {
+        if (FileExists(fontPaths[i])) {
+            gameFont = LoadFont(fontPaths[i]);
+            if (gameFont.texture.id != 0) {
+                fontIsCustom = true;
+                fontLoaded = true;
+                printf("[main] Loaded font from: %s\n", fontPaths[i]);
+            }
+        }
+    }
+    if (!fontLoaded) {
         TraceLog(LOG_WARNING, "Failed to load PixelifySans.ttf, using default font");
         gameFont = GetFontDefault();
         fontIsCustom = false;
-    } else {
-        fontIsCustom = true;
     }
     
     // Initialize debug file
@@ -4605,8 +5034,17 @@ int main() {
     // Initialize game state (same initialization as InitializeGame())
     g_buildings = generateCitySkyline();
     
-    // Initialize camera
-    g_camera.position = (Vector3){ 60.0f, 50.0f, 60.0f };
+    // Initialize camera with default zoom distance of 150
+    // Calculate position at distance 150 from target (0,0,0) maintaining same angle as (60,50,60)
+    float defaultZoomDistance = 150.0f;
+    Vector3 defaultDirection = { 60.0f, 50.0f, 60.0f };
+    float currentDistance = sqrtf(defaultDirection.x * defaultDirection.x + 
+                                  defaultDirection.y * defaultDirection.y + 
+                                  defaultDirection.z * defaultDirection.z);
+    float scaleFactor = defaultZoomDistance / currentDistance;
+    g_camera.position = (Vector3){ defaultDirection.x * scaleFactor, 
+                                   defaultDirection.y * scaleFactor, 
+                                   defaultDirection.z * scaleFactor };
     g_camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
     g_camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
     g_camera.fovy = 45.0f;
@@ -4615,6 +5053,9 @@ int main() {
     g_cameraYaw = atan2f(g_camera.position.x - g_camera.target.x, g_camera.position.z - g_camera.target.z);
     g_cameraRadius = sqrtf((g_camera.position.x - g_camera.target.x) * (g_camera.position.x - g_camera.target.x) +
                            (g_camera.position.z - g_camera.target.z) * (g_camera.position.z - g_camera.target.z));
+    
+    // Initialize ticker position (start at right edge of ticker area - 60.8% of width)
+    g_tickerPosition = (float)screenWidth * 0.608f;
     
     // Initialize 2D map camera
     g_mapCamera.target = { 0.0f, 0.0f };
