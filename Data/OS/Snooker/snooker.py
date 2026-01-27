@@ -16,7 +16,7 @@ import math
 import random
 import os
 import sys
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from enum import Enum
 
 # Data path helper - works for both development and built executable
@@ -44,6 +44,11 @@ pygame.init()
 # =============================================================================
 WINDOW_WIDTH, WINDOW_HEIGHT = 1280, 800
 FPS = 60
+FRICTION_SLOWDOWN_FACTOR = 0.76  # 20% less friction for more glide (reduced from 0.95)
+
+def adjust_friction(base_friction: float) -> float:
+    """Reduce friction slightly to make balls glide a bit more."""
+    return 1.0 - (1.0 - base_friction) * FRICTION_SLOWDOWN_FACTOR
 
 COLORS = {
     'bg_dark': (12, 15, 18),
@@ -146,7 +151,8 @@ class Ball:
                 # New: 0.909-0.9909 (9.1% to 0.91% energy loss - 30% reduction)
                 # At speed 15: friction ~0.9909, at speed 5: friction ~0.936, at speed 1: friction ~0.909
                 speed_factor = speed / 15.0  # Normalize to 0-1 range
-                aggressive_friction = 0.909 + (speed_factor * 0.0819)  # Ranges from 0.909 to 0.9909 (30% less friction)
+                base_friction = 0.909 + (speed_factor * 0.0819)  # Ranges from 0.909 to 0.9909 (30% less friction)
+                aggressive_friction = adjust_friction(base_friction)
                 self.vx *= aggressive_friction
                 self.vy *= aggressive_friction
             elif speed < 30:
@@ -154,13 +160,15 @@ class Ball:
                 # Old: 0.987-0.9985 (1.3% to 0.15% energy loss)
                 # New: 0.9909-0.99895 (0.91% to 0.105% energy loss - 30% reduction)
                 speed_factor = (speed - 15) / 15.0  # Normalize 15-30 to 0-1
-                moderate_friction = 0.9909 + (speed_factor * 0.00805)  # Ranges from 0.9909 to 0.99895 (30% less friction)
+                base_friction = 0.9909 + (speed_factor * 0.00805)  # Ranges from 0.9909 to 0.99895 (30% less friction)
+                moderate_friction = adjust_friction(base_friction)
                 self.vx *= moderate_friction
                 self.vy *= moderate_friction
             else:
                 # High speeds: standard rolling friction (30% less friction - less energy loss)
-                self.vx *= friction
-                self.vy *= friction
+                adjusted_friction = adjust_friction(friction)
+                self.vx *= adjusted_friction
+                self.vy *= adjusted_friction
         else:
             # Stop when speed is very low
             self.vx = self.vy = 0
@@ -189,11 +197,334 @@ class Ball:
 # =============================================================================
 
 class AIPlayer:
-    def __init__(self, skill: float = 0.85):
-        self.skill = skill  # 0.0 to 1.0
+    def __init__(
+        self,
+        skill: float = 0.85,
+        aggression: float = 0.5,
+        safety_bias: float = 0.5,
+        combo_bias: float = 0.5,
+        pot_bias: float = 0.5,
+    ):
+        self.skill = self._clamp01(skill)  # 0.0 to 1.0
+        self.aggression = self._clamp01(aggression)  # 0.0 to 1.0
+        self.safety_bias = self._clamp01(safety_bias)  # 0.0 to 1.0
+        self.combo_bias = self._clamp01(combo_bias)  # 0.0 to 1.0
+        self.pot_bias = self._clamp01(pot_bias)  # 0.0 to 1.0
 
-    def calculate_shot(self, cue: Ball, balls: List[Ball], ball_on: str, pockets: List[Tuple[int, int]]) -> Tuple[float, float]:
-        """Calculate best shot angle and power."""
+    def _clamp01(self, value: float) -> float:
+        return max(0.0, min(1.0, value))
+
+    def _get_next_ball_on(self, ball_on: str, reds_remaining: int, potted_ball_type: str) -> Optional[str]:
+        """Determine the next required ball after a successful pot."""
+        if ball_on == "red":
+            return "color"
+        if ball_on == "color":
+            if reds_remaining > 0:
+                return "red"
+            return "yellow"
+        if ball_on in COLOR_SEQUENCE:
+            try:
+                idx = COLOR_SEQUENCE.index(potted_ball_type)
+            except ValueError:
+                return ball_on
+            if idx + 1 < len(COLOR_SEQUENCE):
+                return COLOR_SEQUENCE[idx + 1]
+            return "done"
+        return ball_on
+    
+    def _evaluate_position_quality(self, cue_end_x: float, cue_end_y: float,
+                                   target_ball: Ball, balls: List[Ball],
+                                   pockets: List[Tuple[int, int]], ball_on: str,
+                                   table_bounds: Optional[Tuple[float, float, float, float]] = None) -> float:
+        """Evaluate how good the cue ball position is for the next shot."""
+        position_score = 0.0
+        
+        # Check if cue ball is close to next target (good position)
+        if ball_on == "red":
+            # After potting a color, want cue ball near a red
+            reds = [b for b in balls if not b.potted and b.ball_type == 'red']
+            if reds:
+                min_dist_to_red = min(math.hypot(cue_end_x - r.x, cue_end_y - r.y) for r in reds)
+                if min_dist_to_red < 150:
+                    position_score += 50 - (min_dist_to_red / 3)  # Closer is better
+        elif ball_on == "color":
+            # After potting a red, want cue ball near a color (prefer high-value colors)
+            colors = [b for b in balls if not b.potted and b.ball_type in COLOR_SEQUENCE]
+            if colors:
+                # Prefer being near high-value colors
+                best_color = max(colors, key=lambda b: b.value)
+                dist_to_color = math.hypot(cue_end_x - best_color.x, cue_end_y - best_color.y)
+                if dist_to_color < 150:
+                    position_score += 40 - (dist_to_color / 4)
+                    position_score += best_color.value * 5  # Bonus for high-value colors
+        
+        # Check if cue ball is in a good position for a pot
+        for target in balls:
+            if target.potted or target.ball_type == 'white':
+                continue
+            for pocket in pockets:
+                to_pocket_x = pocket[0] - target.x
+                to_pocket_y = pocket[1] - target.y
+                to_pocket_dist = math.hypot(to_pocket_x, to_pocket_y)
+                if to_pocket_dist < 1:
+                    continue
+                to_pocket_x /= to_pocket_dist
+                to_pocket_y /= to_pocket_dist
+                
+                ghost_x = target.x - to_pocket_x * (target.radius + target.radius) * 1.05
+                ghost_y = target.y - to_pocket_y * (target.radius + target.radius) * 1.05
+                
+                dist_to_ghost = math.hypot(cue_end_x - ghost_x, cue_end_y - ghost_y)
+                if dist_to_ghost < 100:
+                    position_score += 30 - (dist_to_ghost / 3)
+        
+        # Penalize being too close to cushions (harder to control)
+        cushion_margin = target_ball.radius * 3
+        if table_bounds:
+            left, top, right, bottom = table_bounds
+            if (cue_end_x < left + cushion_margin or cue_end_x > right - cushion_margin or
+                cue_end_y < top + cushion_margin or cue_end_y > bottom - cushion_margin):
+                position_score -= 20
+        else:
+            table_width = 1280
+            table_height = 800
+            if (cue_end_x < cushion_margin or cue_end_x > table_width - cushion_margin or
+                cue_end_y < cushion_margin or cue_end_y > table_height - cushion_margin):
+                position_score -= 20
+        
+        return position_score
+    
+    def _evaluate_safety_shot(self, cue: Ball, balls: List[Ball],
+                             pockets: List[Tuple[int, int]], ball_on: str, reds_remaining: int = 15) -> Optional[dict]:
+        """Evaluate a safety shot when no pot is available or strategically better."""
+        best_safety = None
+        best_safety_score = -float('inf')
+        
+        # Get valid target balls (must hit one of them)
+        if ball_on == "red":
+            valid = [b for b in balls if not b.potted and b.ball_type == 'red']
+        elif ball_on == "color":
+            valid = [b for b in balls if not b.potted and b.ball_type in COLOR_SEQUENCE]
+        else:
+            valid = [b for b in balls if not b.potted and b.ball_type == ball_on]
+        
+        if not valid:
+            return None
+        
+        # Determine what the opponent will be on after a safety (no pot)
+        if reds_remaining > 0:
+            next_ball_on = "red"
+        else:
+            remaining_colors = [c for c in COLOR_SEQUENCE if any(
+                b.ball_type == c and not b.potted for b in balls
+            )]
+            next_ball_on = remaining_colors[0] if remaining_colors else "done"
+        
+        # Try different safety approaches
+        for target in valid:
+            # Approach 1: Hit target softly, leave cue ball far from any pottable ball
+            angle = math.atan2(target.y - cue.y, target.x - cue.x)
+            distance = math.hypot(target.x - cue.x, target.y - cue.y)
+            
+            # Estimate cue ball end position (soft hit, minimal follow-through)
+            # Use a thin cut to minimize cue ball movement
+            target_to_cue_x = cue.x - target.x
+            target_to_cue_y = cue.y - target.y
+            target_to_cue_dist = math.hypot(target_to_cue_x, target_to_cue_y)
+            if target_to_cue_dist < 1:
+                continue
+            target_to_cue_x /= target_to_cue_dist
+            target_to_cue_y /= target_to_cue_dist
+            
+            # Hit target with thin cut (aim slightly off-center)
+            cut_factor = 0.3  # Thin cut
+            ghost_x = target.x + target_to_cue_x * (target.radius + cue.radius) * 1.05 * (1 - cut_factor)
+            ghost_y = target.y + target_to_cue_y * (target.radius + cue.radius) * 1.05 * (1 - cut_factor)
+            
+            angle = math.atan2(ghost_y - cue.y, ghost_x - cue.x)
+            cue_end_x, cue_end_y = self._estimate_cue_ball_end(cue, target, ghost_x, ghost_y, angle)
+            
+            # Score this safety shot
+            safety_score = 0
+            
+            # Maximize distance from cue ball to any pottable ball
+            min_dist_to_pottable = float('inf')
+            for other_ball in balls:
+                if other_ball.potted or other_ball.ball_type == 'white' or other_ball == target:
+                    continue
+                dist = math.hypot(cue_end_x - other_ball.x, cue_end_y - other_ball.y)
+                min_dist_to_pottable = min(min_dist_to_pottable, dist)
+            
+            if min_dist_to_pottable < float('inf'):
+                safety_score += min_dist_to_pottable / 2  # Further is better
+            
+            # Minimize opponent's pot risk
+            opponent_risk = self._opponent_pot_risk(cue_end_x, cue_end_y, balls, pockets)
+            safety_score += (1.0 - opponent_risk) * 200  # Lower risk is better
+            
+            # Avoid leaving cue ball near pockets
+            min_dist_to_pocket = min(math.hypot(cue_end_x - px, cue_end_y - py) for px, py in pockets)
+            safety_score += min_dist_to_pocket / 3  # Further from pockets is better
+            
+            # Avoid cue ball scratches
+            if self._cue_ball_scratch_risk(cue, target, ghost_x, ghost_y, angle, pockets):
+                safety_score -= 500
+            
+            # Prefer leaving cue ball behind other balls (snooker)
+            balls_blocking = 0
+            for other_ball in balls:
+                if other_ball.potted or other_ball.ball_type == 'white' or other_ball == target:
+                    continue
+                # Check if this ball could block a pot from cue position
+                for pot_target in balls:
+                    if pot_target.potted or pot_target.ball_type == 'white' or pot_target == other_ball:
+                        continue
+                    # Only consider blocking if pot_target is a valid next target
+                    is_valid_next = False
+                    if next_ball_on == "red" and pot_target.ball_type == 'red':
+                        is_valid_next = True
+                    elif next_ball_on == "color" and pot_target.ball_type in COLOR_SEQUENCE:
+                        is_valid_next = True
+                    elif pot_target.ball_type == next_ball_on:
+                        is_valid_next = True
+                    
+                    if not is_valid_next:
+                        continue
+                    
+                    for pocket in pockets:
+                        # Check if other_ball is between cue_end and a line from pot_target to pocket
+                        line_dist = self._point_to_line_distance(
+                            other_ball.x, other_ball.y,
+                            cue_end_x, cue_end_y,
+                            pot_target.x, pot_target.y
+                        )
+                        if line_dist < other_ball.radius * 2:
+                            balls_blocking += 1
+                            break
+                    if balls_blocking > 0:
+                        break
+            
+            safety_score += balls_blocking * 40  # More blocking balls is better (increased from 30)
+            
+            # Evaluate position quality for next shot (but we want it to be bad for opponent)
+            # Actually, we want to leave the cue ball in a position that makes it hard for opponent
+            # So we want to minimize position quality from opponent's perspective
+            # This is already handled by opponent_pot_risk, but we can add more
+            
+            if safety_score > best_safety_score:
+                best_safety_score = safety_score
+                # Use minimal power for safety (just enough to hit the ball)
+                min_power = max(8, distance / 20)
+                best_safety = {
+                    'angle': angle,
+                    'power': min_power,
+                    'score': safety_score,
+                    'type': 'safety'
+                }
+        
+        return best_safety
+
+    def _estimate_cue_ball_end(self, cue: Ball, target: Ball, ghost_x: float, ghost_y: float, angle: float) -> Tuple[float, float]:
+        """Estimate cue ball end position after contacting the target ball."""
+        n_x = ghost_x - target.x
+        n_y = ghost_y - target.y
+        n_len = math.hypot(n_x, n_y)
+        if n_len <= 0.001:
+            return ghost_x, ghost_y
+        n_x /= n_len
+        n_y /= n_len
+
+        v_x = math.cos(angle)
+        v_y = math.sin(angle)
+        dot = v_x * n_x + v_y * n_y
+        t_x = v_x - dot * n_x
+        t_y = v_y - dot * n_y
+        t_len = math.hypot(t_x, t_y)
+        if t_len <= 0.05:
+            return ghost_x, ghost_y  # Near full-ball hit; cue likely stops
+        t_x /= t_len
+        t_y /= t_len
+
+        travel = cue.radius * (8 + t_len * 18)
+        end_x = ghost_x + t_x * travel
+        end_y = ghost_y + t_y * travel
+        return end_x, end_y
+
+    def _cue_ball_scratch_risk(self, cue: Ball, target: Ball, ghost_x: float, ghost_y: float,
+                               angle: float, pockets: List[Tuple[int, int]]) -> bool:
+        """Heuristic: avoid cue ball trajectory into a pocket after contact."""
+        n_x = ghost_x - target.x
+        n_y = ghost_y - target.y
+        n_len = math.hypot(n_x, n_y)
+        if n_len <= 0.001:
+            return False
+        n_x /= n_len
+        n_y /= n_len
+
+        v_x = math.cos(angle)
+        v_y = math.sin(angle)
+        dot = v_x * n_x + v_y * n_y
+        t_x = v_x - dot * n_x
+        t_y = v_y - dot * n_y
+        t_len = math.hypot(t_x, t_y)
+        if t_len <= 0.05:
+            return False  # Near full-ball hit; cue likely stops
+        t_x /= t_len
+        t_y /= t_len
+
+        pocket_radius = cue.radius * 2.2
+
+        for px, py in pockets:
+            dx = px - ghost_x
+            dy = py - ghost_y
+            proj = dx * t_x + dy * t_y
+            if proj <= 0:
+                continue
+            perp = abs(dx * t_y - dy * t_x)
+            if perp <= pocket_radius:
+                return True
+        return False
+
+    def _opponent_pot_risk(self, cue_x: float, cue_y: float, balls: List[Ball],
+                            pockets: List[Tuple[int, int]]) -> float:
+        """Estimate how easy a pot would be for the opponent from this cue position."""
+        best_risk = 0.0
+        for target in balls:
+            if target.potted or target.ball_type == 'white':
+                continue
+            for pocket in pockets:
+                to_pocket_x = pocket[0] - target.x
+                to_pocket_y = pocket[1] - target.y
+                to_pocket_dist = math.hypot(to_pocket_x, to_pocket_y)
+                if to_pocket_dist < 1:
+                    continue
+                to_pocket_x /= to_pocket_dist
+                to_pocket_y /= to_pocket_dist
+
+                ghost_x = target.x - to_pocket_x * (target.radius + target.radius) * 1.05
+                ghost_y = target.y - to_pocket_y * (target.radius + target.radius) * 1.05
+
+                cue_to_ghost = math.hypot(ghost_x - cue_x, ghost_y - cue_y)
+                if cue_to_ghost < 1:
+                    continue
+
+                cue_angle = math.atan2(ghost_y - cue_y, ghost_x - cue_x)
+                target_angle = math.atan2(to_pocket_y, to_pocket_x)
+                cut_angle = abs(cue_angle - target_angle)
+                if cut_angle > math.pi:
+                    cut_angle = 2 * math.pi - cut_angle
+
+                if cut_angle > 0.45:
+                    continue
+
+                risk = (1.0 - (cut_angle / 0.45)) * max(0.0, 1.0 - (cue_to_ghost / 420.0))
+                best_risk = max(best_risk, risk)
+        return best_risk
+
+    def calculate_shot(self, cue: Ball, balls: List[Ball], ball_on: str, pockets: List[Tuple[int, int]],
+                      reds_remaining: int = 15, ai_score: int = 0, opponent_score: int = 0,
+                      table_bounds: Optional[Tuple[float, float, float, float]] = None) -> Tuple[float, float]:
+        """Calculate best shot angle and power with strategic context."""
         # Get valid target balls
         if ball_on == "red":
             valid = [b for b in balls if not b.potted and b.ball_type == 'red']
@@ -212,14 +543,23 @@ class AIPlayer:
             # Scale fallback power to new max of 30
             return random.uniform(0, 2 * math.pi), 30 * (40.0 / 90.0)  # Scale 40 to ~13
 
-        # Evaluate shots to find best option (including combination shots)
+        # Strategic context
+        score_diff = ai_score - opponent_score
+        points_available = sum(b.value for b in balls if not b.potted and b.ball_type != 'white')
+        is_behind = score_diff < -20  # Significantly behind
+        is_ahead = score_diff > 20  # Significantly ahead
+        is_clearance = reds_remaining == 0
+        
+        # Evaluate shots to find best option (including combination shots and safety)
         best_shot = None
         best_score = -float('inf')
 
         # First, evaluate direct shots (cue → target → pocket)
         for target in valid:
             for pocket in pockets:
-                shot = self._evaluate_shot(cue, target, pocket)
+                shot = self._evaluate_shot(cue, target, pocket, balls, pockets, ball_on,
+                                          reds_remaining, score_diff, is_behind, is_ahead,
+                                          table_bounds)
                 if shot and shot['score'] > best_score:
                     best_score = shot['score']
                     best_shot = shot
@@ -232,31 +572,93 @@ class AIPlayer:
                 if second_target.potted:
                     continue
                 # Check if first target could hit second target
-                combination_shot = self._evaluate_combination_shot(cue, first_target, second_target, balls, pockets)
+                combination_shot = self._evaluate_combination_shot(cue, first_target, second_target,
+                                                                  balls, pockets, ball_on,
+                                                                  reds_remaining, score_diff,
+                                                                  table_bounds)
                 if combination_shot and combination_shot['score'] > best_score:
                     best_score = combination_shot['score']
                     best_shot = combination_shot
 
+        # Evaluate safety shots if:
+        # 1. No good pot available (best_score is low)
+        # 2. Significantly ahead (play safe)
+        # 3. No pot is high enough quality
+        safety_threshold = 50 + (self.safety_bias * 40) - (self.aggression * 25)
+        ahead_threshold = 120 + (self.safety_bias * 30) - (self.aggression * 20)
+        clearance_threshold = 40 + (self.safety_bias * 20) - (self.aggression * 15)
+        should_consider_safety = (
+            best_score < safety_threshold
+            or (is_ahead and best_score < ahead_threshold)
+            or (is_clearance and best_score < clearance_threshold)
+        )
+        if is_clearance and not is_ahead:
+            should_consider_safety = False
+        
+        if should_consider_safety:
+            safety_shot = self._evaluate_safety_shot(cue, balls, pockets, ball_on, reds_remaining)
+            if safety_shot:
+                # Adjust safety score based on game state
+                if is_ahead:
+                    safety_shot['score'] += 100 * (1.0 + (self.safety_bias * 0.5))
+                elif is_behind:
+                    safety_shot['score'] -= 50 * (1.0 + (self.aggression * 0.5))
+                safety_shot['score'] += self.safety_bias * 60
+                safety_shot['score'] -= self.aggression * 40
+                
+                if safety_shot['score'] > best_score:
+                    best_score = safety_shot['score']
+                    best_shot = safety_shot
+
         if best_shot:
-            # Apply skill-based error (reduced for excellent players)
-            error = (1 - self.skill) * 0.10  # Reduced from 0.15 to 0.10 for better precision
+            # Apply skill-based error (much more accurate for high-skill AI)
+            # For skill 0.95+, error is very small (0.001-0.003)
+            # For skill 0.85, error is moderate (0.003)
+            # For skill < 0.8, error increases
+            base_error = 0.003
+            error = base_error * (1.0 - self.skill) * 0.5  # Reduced error for high skill
+            if self.skill > 0.95:
+                error *= 0.3  # Even less error for excellent AI
             angle = best_shot['angle'] + random.gauss(0, error)
-            # Use absolute minimum power - no variance, just the calculated minimum
-            # Scale power to new max of 30 (old max was ~90, so scale by 30/90 = 1/3)
+            
+            # Power calculation - more precise for high-skill AI
             power = best_shot['power'] * (30.0 / 90.0)  # Scale down to new max of 30
-            return angle, max(9, min(30, power))  # New max is 30 (was 90)
+            # Skill-based power adjustment (high-skill AI uses optimal power)
+            power_multiplier = 1.0 + (self.skill * 0.12)
+            if self.skill > 0.95:
+                power_multiplier = 1.0 + (self.skill * 0.08)  # Less variance for excellent AI
+            power *= power_multiplier
+            
+            # Style influence on power
+            if self.aggression > 0.6:
+                power *= 1.0 + ((self.aggression - 0.6) * 0.12)
+            if self.safety_bias > 0.6:
+                power *= 1.0 - ((self.safety_bias - 0.6) * 0.08)
+
+            # Add small random variance only for lower-skill AI
+            if self.skill < 0.9:
+                power += random.uniform(-1, 1)
+            
+            return angle, max(8, min(30, power))
 
         # Fallback: aim at highest value valid ball (more accurate for excellent AI)
         target = max(valid, key=lambda b: b.value)
         angle = math.atan2(target.y - cue.y, target.x - cue.x)
-        error = (1 - self.skill) * 0.03  # Very small error for excellent players
+        error = (1 - self.skill) * 0.003  # Reduced error
+        if self.skill > 0.95:
+            error *= 0.3
         # Calculate absolute minimum power for fallback shot
         distance = math.hypot(target.x - cue.x, target.y - cue.y)
         min_power = (20 + distance / 12) * (30.0 / 90.0)  # Scale to new max of 30
-        return angle + random.gauss(0, error), max(9, min(30, min_power))  # New max is 30
+        min_power *= 1.0 + (self.skill * 0.10)
+        return angle + random.gauss(0, error), max(8, min(30, min_power))
 
-    def _evaluate_shot(self, cue: Ball, target: Ball, pocket: Tuple[int, int]) -> Optional[dict]:
-        """Evaluate a potential shot using ghost ball method."""
+    def _evaluate_shot(self, cue: Ball, target: Ball, pocket: Tuple[int, int],
+                       balls: List[Ball], pockets: List[Tuple[int, int]],
+                       ball_on: str = "red", reds_remaining: int = 15,
+                       score_diff: int = 0, is_behind: bool = False, is_ahead: bool = False,
+                       table_bounds: Optional[Tuple[float, float, float, float]] = None) -> Optional[dict]:
+        """Evaluate a potential shot using ghost ball method with strategic context."""
         # Direction from target to pocket
         to_pocket_x = pocket[0] - target.x
         to_pocket_y = pocket[1] - target.y
@@ -277,6 +679,19 @@ class AIPlayer:
         angle = math.atan2(ghost_y - cue.y, ghost_x - cue.x)
         cue_to_ghost = math.hypot(ghost_x - cue.x, ghost_y - cue.y)
 
+        # Check if path is clear
+        path_blocked = False
+        for ball in balls:
+            if ball.potted or ball == cue or ball == target:
+                continue
+            dist_to_line = self._point_to_line_distance(ball.x, ball.y, cue.x, cue.y, target.x, target.y)
+            if dist_to_line < (ball.radius + cue.radius) * 1.3:
+                path_blocked = True
+                break
+        
+        if path_blocked:
+            return None  # Path is blocked, skip this shot
+
         # Calculate cut angle for difficulty
         cue_to_target = math.atan2(target.y - cue.y, target.x - cue.x)
         target_to_pocket = math.atan2(to_pocket_y, to_pocket_x)
@@ -285,32 +700,89 @@ class AIPlayer:
             cut_angle = 2 * math.pi - cut_angle
 
         # Score the shot (higher is better)
-        score = 100
-        score -= cut_angle * 20  # Penalize difficult cuts
-        score -= cue_to_ghost / 30  # Penalize long shots
-        score -= to_pocket_dist / 50  # Penalize far pockets
-        score += target.value * 4  # Strongly prefer high-value balls (increased from 3)
+        score = 150  # Base score (increased from 100)
         
-        # Bonus for reds when many remain (strategic play)
+        # Difficulty penalties (more nuanced, adjusted by style)
+        cut_difficulty = cut_angle / (math.pi / 2)  # Normalize to 0-1
+        cut_penalty_scale = 1.0 - (self.aggression * 0.35) + (self.safety_bias * 0.2)
+        cut_penalty_scale = max(0.6, min(1.4, cut_penalty_scale))
+        score -= cut_difficulty * 40 * cut_penalty_scale
+        score -= min(cue_to_ghost / 25, 30)  # Penalize long shots (capped)
+        score -= min(to_pocket_dist / 40, 25)  # Penalize far pockets (capped)
+        
+        # Ball value (strongly prefer high-value balls, adjusted by style)
+        value_multiplier = 8 * (1.0 + (self.pot_bias * 0.5) + (self.aggression * 0.2))
+        score += target.value * value_multiplier
+        
+        # Strategic bonuses based on game state
         if target.ball_type == 'red':
-            score += 5
+            # Early game: prefer reds (build breaks)
+            if reds_remaining > 8:
+                score += 15
+            # Late game: still prefer reds but less bonus
+            elif reds_remaining > 0:
+                score += 8
+        else:
+            # Colors: prefer high-value colors, especially in clearance
+            if reds_remaining == 0:
+                score += target.value * 3  # Extra bonus in clearance
+            elif ball_on == "color":
+                # After potting red, prefer colors that leave good position
+                score += target.value * 2
         
-        # Prefer shots that leave good position
-        score += 3 if cut_angle < 0.3 else 0  # Small bonus for straight shots
+        # Position play - evaluate cue ball end position for the next ball on
+        cue_end_x, cue_end_y = self._estimate_cue_ball_end(cue, target, ghost_x, ghost_y, angle)
+        next_ball_on = self._get_next_ball_on(ball_on, reds_remaining, target.ball_type)
+        if next_ball_on and next_ball_on != "done":
+            position_score = self._evaluate_position_quality(
+                cue_end_x, cue_end_y, target, balls, pockets, next_ball_on, table_bounds
+            )
+            position_weight = 0.8 + (self.safety_bias * 0.2) - (self.aggression * 0.1)
+            score += position_score * position_weight
+        
+        # Prefer shots that leave good position for next shot
+        if cut_angle < 0.25:  # Very straight shots (good position control)
+            score += 15
+        elif cut_angle < 0.4:  # Moderately straight
+            score += 8
 
-        # Power calculation - absolute minimum needed for the shot
-        # Calculate minimum power: distance / speed_factor, with minimal base
-        # Ball speed = power * 2.0, so power = distance_needed / 2.0 (with safety margin)
-        total_distance = cue_to_ghost + to_pocket_dist  # Total distance ball needs to travel
-        # Minimum power calculation: base + distance factor (conservative minimum)
-        # Using minimal base (20) and distance factor that ensures ball reaches target
-        min_power = 20 + total_distance / 12  # Minimum power needed - just enough
+        # Avoid cue ball scratches (critical)
+        if self._cue_ball_scratch_risk(cue, target, ghost_x, ghost_y, angle, pockets):
+            score -= 1500  # Massive penalty
+
+        # Safety consideration - avoid leaving easy pots for opponent
+        leave_risk = self._opponent_pot_risk(cue_end_x, cue_end_y, balls, pockets)
+        leave_risk_penalty = 250 * (1.0 + (self.safety_bias * 0.6) - (self.aggression * 0.3))
+        score -= leave_risk * leave_risk_penalty
+        
+        # Strategic adjustments based on score
+        if is_behind:
+            # When behind, take more risks (less penalty for difficult shots)
+            if cut_angle < 0.6:
+                score += 20 + (self.aggression * 10)
+        elif is_ahead:
+            # When ahead, prefer safer shots (more penalty for risky shots)
+            if cut_angle > 0.4:
+                score -= 15 + (self.safety_bias * 10)
+            # Prefer shots that leave safe position
+            if leave_risk < 0.2:
+                score += 25 + (self.safety_bias * 10)
+
+        # Power calculation - more precise
+        total_distance = cue_to_ghost + to_pocket_dist
+        # Calculate optimal power (not just minimum)
+        # Account for cut angle (thinner cuts need more power)
+        cut_power_factor = 1.0 + (cut_angle * 0.3)  # Thinner cuts need more power
+        min_power = 18 + (total_distance / 11) * cut_power_factor
         power = min_power
 
         return {'angle': angle, 'power': power, 'score': score, 'type': 'direct'}
     
-    def _evaluate_combination_shot(self, cue: Ball, first_target: Ball, second_target: Ball, 
-                                   all_balls: List[Ball], pockets: List[Tuple[int, int]]) -> Optional[dict]:
+    def _evaluate_combination_shot(self, cue: Ball, first_target: Ball, second_target: Ball,
+                                   all_balls: List[Ball], pockets: List[Tuple[int, int]],
+                                   ball_on: str = "red", reds_remaining: int = 15,
+                                   score_diff: int = 0,
+                                   table_bounds: Optional[Tuple[float, float, float, float]] = None) -> Optional[dict]:
         """Evaluate a combination shot: cue → first ball → second ball → pocket."""
         # Calculate if first target could hit second target
         # Direction from first target to second target
@@ -403,19 +875,56 @@ class AIPlayer:
                     continue
                 
                 # Score the combination shot (higher is better)
-                combo_score = 100
-                combo_score -= angle_diff * 25  # Penalize difficult cuts on second ball
-                combo_score -= cue_to_ghost / 25  # Penalize long first shot
-                combo_score -= to_second_dist / 40  # Penalize long second shot
-                combo_score -= to_pocket_dist / 50  # Penalize far pocket
-                combo_score += second_target.value * 6  # Strongly prefer high-value second ball (bonus for combinations)
+                combo_score = 140  # Base score (increased from 100)
                 
-                # Bonus for combination shots (they're impressive!)
-                combo_score += 15
+                # Difficulty penalties (more nuanced, adjusted by style)
+                angle_diff_normalized = angle_diff / (math.pi / 3)  # Normalize to 0-1
+                combo_cut_scale = 1.0 - (self.aggression * 0.3) + (self.safety_bias * 0.2)
+                combo_cut_scale = max(0.6, min(1.4, combo_cut_scale))
+                combo_score -= angle_diff_normalized * 35 * combo_cut_scale
+                combo_score -= min(cue_to_ghost / 20, 30)  # Penalize long first shot (capped)
+                combo_score -= min(to_second_dist / 35, 25)  # Penalize long second shot (capped)
+                combo_score -= min(to_pocket_dist / 45, 20)  # Penalize far pocket (capped)
+                
+                # Ball value (strongly prefer high-value second ball)
+                combo_value_multiplier = 10 * (1.0 + (self.pot_bias * 0.5) + (self.aggression * 0.2))
+                combo_score += second_target.value * combo_value_multiplier
+                
+                # Bonus for combination shots (they're impressive and show skill!)
+                combo_score += 25 + (self.combo_bias * 30) - (self.safety_bias * 10)
                 
                 # Prefer shots where second ball is closer to pocket
-                if to_pocket_dist < 100 * (1.0 if not hasattr(cue, 'scale') else cue.radius / 11):
-                    combo_score += 10
+                if to_pocket_dist < 100:
+                    combo_score += 20  # Increased from 10
+                
+                # Position play for combination shots
+                cue_end_x, cue_end_y = self._estimate_cue_ball_end(cue, first_target, cue_ghost_x, cue_ghost_y, angle)
+                next_ball_on = self._get_next_ball_on(ball_on, reds_remaining, second_target.ball_type)
+                if next_ball_on and next_ball_on != "done":
+                    position_score = self._evaluate_position_quality(
+                        cue_end_x, cue_end_y, second_target, all_balls, pockets, next_ball_on, table_bounds
+                    )
+                    combo_position_weight = 0.6 + (self.safety_bias * 0.2) - (self.aggression * 0.1)
+                    combo_score += position_score * combo_position_weight
+
+                # Avoid cue ball scratches (critical)
+                if self._cue_ball_scratch_risk(cue, first_target, cue_ghost_x, cue_ghost_y, angle, pockets):
+                    combo_score -= 1500  # Massive penalty
+
+                # Favor safety: avoid leaving easy pots for the opponent
+                leave_risk = self._opponent_pot_risk(cue_end_x, cue_end_y, all_balls, pockets)
+                combo_leave_penalty = 250 * (1.0 + (self.safety_bias * 0.6) - (self.aggression * 0.3))
+                combo_score -= leave_risk * combo_leave_penalty
+                
+                # Strategic adjustments
+                if score_diff < -20:  # Behind
+                    # When behind, combinations can be worth the risk
+                    if second_target.value >= 5:  # High-value target
+                        combo_score += 15 + (self.aggression * 10)
+                elif score_diff > 20:  # Ahead
+                    # When ahead, be more cautious with combinations
+                    if angle_diff > 0.3:  # Difficult combination
+                        combo_score -= 20 + (self.safety_bias * 10)
                 
                 if combo_score > best_score:
                     best_score = combo_score
@@ -548,11 +1057,29 @@ class SnookerGame:
         # Game objects
         self.balls: List[Ball] = []
         self.cue_ball: Optional[Ball] = None
-        self.ai = AIPlayer(skill=0.96)  # Excellent AI player - very skilled
+        self.ai = AIPlayer(
+            skill=0.985,
+            aggression=0.55,
+            safety_bias=0.55,
+            combo_bias=0.45,
+            pot_bias=0.6,
+        )  # Excellent AI player - balanced and strong
         
         # Tournament AI players
-        self.ai_louis = AIPlayer(skill=0.90)  # Mst. Louis Sonic - strong opponent
-        self.ai_bradley = AIPlayer(skill=0.98)  # Gen. Bradley Sonic - final boss, extremely skilled
+        self.ai_louis = AIPlayer(
+            skill=0.95,
+            aggression=0.4,
+            safety_bias=0.7,
+            combo_bias=0.35,
+            pot_bias=0.5,
+        )  # Mst. Louis Sonic - tactical, safety-first
+        self.ai_bradley = AIPlayer(
+            skill=0.995,
+            aggression=0.75,
+            safety_bias=0.35,
+            combo_bias=0.7,
+            pot_bias=0.8,
+        )  # Gen. Bradley Sonic - aggressive finisher
         
         # Tournament state
         self.tournament_active = False
@@ -567,6 +1094,13 @@ class SnookerGame:
         self.btn_rules = pygame.Rect(0, 0, 0, 0)
         self.name_continue_btn = pygame.Rect(0, 0, 0, 0)
         self.hovered_button: Optional[str] = None
+
+        # Sound effects
+        self._load_sounds()
+        
+        # Sound state tracking
+        self.collision_count_this_frame = 0
+        self.last_collision_time = 0
 
         # Update layout based on desktop
         self._update_layout()
@@ -702,6 +1236,57 @@ class SnookerGame:
             self.cga_font = pygame.font.SysFont("Verdana", int(36 * self.scale), bold=True)
             self.cga_font_small = pygame.font.SysFont("Verdana", int(24 * self.scale), bold=True)
 
+    def _load_sounds(self) -> None:
+        """Load sound effects for the snooker game."""
+        self.sounds = {}
+        
+        # Define sound files
+        sound_files = {
+            'cue_hit': 'cue-ball-hit-by-cue.wav',
+            'ball_hit': 'ball-hits-ball.wav',
+            'multi_hit': 'multi-ball-hit.wav',
+            'pot': 'applause-ball-in-pocket.wav',
+            'foul': 'miss-foul.wav',
+        }
+        
+        # Try to load each sound
+        for sound_name, filename in sound_files.items():
+            try:
+                # Build path to audio folder inside Snooker folder
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                sound_path = os.path.join(script_dir, 'audio', filename)
+                
+                if os.path.exists(sound_path):
+                    self.sounds[sound_name] = pygame.mixer.Sound(sound_path)
+                    # Set default volumes
+                    if sound_name == 'cue_hit':
+                        self.sounds[sound_name].set_volume(0.6)
+                    elif sound_name == 'ball_hit':
+                        self.sounds[sound_name].set_volume(0.4)
+                    elif sound_name == 'multi_hit':
+                        self.sounds[sound_name].set_volume(0.5)
+                    elif sound_name == 'pot':
+                        self.sounds[sound_name].set_volume(0.7)
+                    elif sound_name == 'foul':
+                        self.sounds[sound_name].set_volume(0.6)
+                else:
+                    self.sounds[sound_name] = None
+            except Exception as e:
+                print(f"Warning: Failed to load sound {filename}: {e}")
+                self.sounds[sound_name] = None
+
+    def _play_sound(self, sound_name: str) -> None:
+        """Play a sound effect if it's loaded and radio is not playing."""
+        # Don't play game sounds if radio is playing (optional - you can remove this check)
+        # if self.get_radio_music():
+        #     return
+        
+        if sound_name in self.sounds and self.sounds[sound_name] is not None:
+            try:
+                self.sounds[sound_name].play()
+            except Exception:
+                pass  # Silently fail if sound can't be played
+
     def start(self) -> None:
         """Start the game."""
         self.active = True
@@ -817,6 +1402,9 @@ class SnookerGame:
 
     def resolve_physics(self, dt: float):
         """Handle all physics: movement, collisions, pocketing."""
+        # Reset collision counter for this physics step
+        self.collision_count_this_frame = 0
+        
         # Multiple passes for collision resolution to ensure all collisions are handled
         # This prevents balls from passing through each other
         max_iterations = 5
@@ -922,6 +1510,19 @@ class SnookerGame:
                             b1.vy -= v_dot_n * ny * energy_preservation
                             b2.vx += v_dot_n * nx * energy_preservation
                             b2.vy += v_dot_n * ny * energy_preservation
+                            
+                            # Play collision sound (based on collision intensity)
+                            collision_speed = abs(v_dot_n)
+                            if collision_speed > 2.0:  # Only play for significant collisions
+                                self.collision_count_this_frame += 1
+                                current_time = pygame.time.get_ticks()
+                                # Avoid playing too many sounds in quick succession
+                                if current_time - self.last_collision_time > 50:  # 50ms cooldown
+                                    if self.collision_count_this_frame > 2:
+                                        self._play_sound('multi_hit')
+                                    else:
+                                        self._play_sound('ball_hit')
+                                    self.last_collision_time = current_time
                         
                         collision_occurred = True
             
@@ -950,6 +1551,7 @@ class SnookerGame:
                         b1.potted = True
                         b1.vx = b1.vy = 0
                         self.potted_this_turn.append(b1)
+                        # Sound is played in evaluate_turn() - only for legal pots, not fouls
                         break
                 else:
                     # Normal/medium speed: if ANY part of ball touches pocket, it goes in
@@ -959,6 +1561,7 @@ class SnookerGame:
                         b1.potted = True
                         b1.vx = b1.vy = 0
                         self.potted_this_turn.append(b1)
+                        # Sound is played in evaluate_turn() - only for legal pots, not fouls
                         break
 
     def respot_ball(self, ball: Ball):
@@ -1107,6 +1710,9 @@ class SnookerGame:
             # Award foul points to opponent
             opponent = 1 - self.current_player
             self.scores[opponent] += foul_value
+            
+            # Play foul sound
+            self._play_sound('foul')
 
             # Reset break
             self.current_break[self.current_player] = 0
@@ -1131,6 +1737,8 @@ class SnookerGame:
                 self.highest_break[self.current_player],
                 self.current_break[self.current_player]
             )
+            # Play pot applause for legal pots only
+            self._play_sound('pot')
             # Player continues
 
         else:
@@ -1580,249 +2188,363 @@ class SnookerGame:
             pygame.draw.circle(self.screen, COLORS['pocket_rim'], (px, py), pocket_rim_size)
             pygame.draw.circle(self.screen, COLORS['pocket'], (px, py), pocket_size)
 
+    def _ray_circle_intersection(self, origin_x: float, origin_y: float, dir_x: float, dir_y: float,
+                                 center_x: float, center_y: float, radius: float) -> Optional[float]:
+        """Return the nearest ray-circle intersection distance, or None."""
+        fx = origin_x - center_x
+        fy = origin_y - center_y
+        b = 2.0 * (fx * dir_x + fy * dir_y)
+        c = fx * fx + fy * fy - radius * radius
+        discriminant = b * b - 4.0 * c
+        if discriminant < 0:
+            return None
+        sqrt_disc = math.sqrt(discriminant)
+        t1 = (-b - sqrt_disc) / 2.0
+        t2 = (-b + sqrt_disc) / 2.0
+        if t1 >= 0:
+            return t1
+        if t2 >= 0:
+            return t2
+        return None
+
+    def _ray_rect_intersection_distance(self, origin_x: float, origin_y: float,
+                                        dir_x: float, dir_y: float) -> float:
+        """Return distance to the table boundary along a ray."""
+        candidates = []
+        if abs(dir_x) > 1e-6:
+            t = (self.table_rect.left - origin_x) / dir_x
+            y = origin_y + dir_y * t
+            if t > 0 and self.table_rect.top <= y <= self.table_rect.bottom:
+                candidates.append(t)
+            t = (self.table_rect.right - origin_x) / dir_x
+            y = origin_y + dir_y * t
+            if t > 0 and self.table_rect.top <= y <= self.table_rect.bottom:
+                candidates.append(t)
+        if abs(dir_y) > 1e-6:
+            t = (self.table_rect.top - origin_y) / dir_y
+            x = origin_x + dir_x * t
+            if t > 0 and self.table_rect.left <= x <= self.table_rect.right:
+                candidates.append(t)
+            t = (self.table_rect.bottom - origin_y) / dir_y
+            x = origin_x + dir_x * t
+            if t > 0 and self.table_rect.left <= x <= self.table_rect.right:
+                candidates.append(t)
+        return min(candidates) if candidates else 0.0
+
+    def _ray_table_intersection(self, origin_x: float, origin_y: float,
+                                dir_x: float, dir_y: float) -> Tuple[Optional[float], Optional[str]]:
+        """Return distance and side for first table boundary hit."""
+        best_t = None
+        best_side = None
+
+        if abs(dir_x) > 1e-6:
+            t = (self.table_rect.left - origin_x) / dir_x
+            y = origin_y + dir_y * t
+            if t > 0 and self.table_rect.top <= y <= self.table_rect.bottom:
+                if best_t is None or t < best_t:
+                    best_t, best_side = t, "left"
+            t = (self.table_rect.right - origin_x) / dir_x
+            y = origin_y + dir_y * t
+            if t > 0 and self.table_rect.top <= y <= self.table_rect.bottom:
+                if best_t is None or t < best_t:
+                    best_t, best_side = t, "right"
+
+        if abs(dir_y) > 1e-6:
+            t = (self.table_rect.top - origin_y) / dir_y
+            x = origin_x + dir_x * t
+            if t > 0 and self.table_rect.left <= x <= self.table_rect.right:
+                if best_t is None or t < best_t:
+                    best_t, best_side = t, "top"
+            t = (self.table_rect.bottom - origin_y) / dir_y
+            x = origin_x + dir_x * t
+            if t > 0 and self.table_rect.left <= x <= self.table_rect.right:
+                if best_t is None or t < best_t:
+                    best_t, best_side = t, "bottom"
+
+        return best_t, best_side
+
+    def _get_first_ball_intersection(self, origin_x: float, origin_y: float,
+                                     dir_x: float, dir_y: float) -> Tuple[Optional[Ball], Optional[float], Optional[float], Optional[float]]:
+        """Find the first ball intersected by the cue ray."""
+        hit_ball = None
+        hit_t = None
+        for ball in self.balls:
+            if ball.potted or ball.ball_type == 'white':
+                continue
+            radius = ball.radius + self.cue_ball.radius
+            t = self._ray_circle_intersection(origin_x, origin_y, dir_x, dir_y, ball.x, ball.y, radius)
+            if t is None:
+                continue
+            if hit_t is None or t < hit_t:
+                hit_t = t
+                hit_ball = ball
+        if hit_ball is None or hit_t is None:
+            return None, None, None, None
+        hit_x = origin_x + dir_x * hit_t
+        hit_y = origin_y + dir_y * hit_t
+        return hit_ball, hit_x, hit_y, hit_t
+
+    def _balls_on_line(self, origin_x: float, origin_y: float, dir_x: float, dir_y: float,
+                       exclude: Optional[Ball] = None) -> List[Tuple[Ball, float]]:
+        """Return balls that lie along a line (sorted by projection distance)."""
+        aligned: List[Tuple[Ball, float]] = []
+        for ball in self.balls:
+            if ball.potted or ball.ball_type == 'white' or ball == exclude:
+                continue
+            dx = ball.x - origin_x
+            dy = ball.y - origin_y
+            proj = dx * dir_x + dy * dir_y
+            if proj <= 0:
+                continue
+            perp = abs(dx * dir_y - dy * dir_x)
+            if perp <= (ball.radius + self.cue_ball.radius) * 0.9:
+                aligned.append((ball, proj))
+        aligned.sort(key=lambda item: item[1])
+        return aligned
+
+    def _draw_potential_ball_trajectories(self, origin_x: float, origin_y: float,
+                                          dir_x: float, dir_y: float):
+        """Draw trajectories only for balls aligned with the cue direction."""
+        line_color = (110, 170, 210)
+        dash_spacing = 14 * self.scale
+        max_length = 180 * self.scale
+
+        for ball in self.balls:
+            if ball.potted or ball.ball_type == 'white':
+                continue
+            dx = ball.x - origin_x
+            dy = ball.y - origin_y
+            proj = dx * dir_x + dy * dir_y
+            if proj <= 0:
+                continue
+            # Perpendicular distance from cue ray to ball center
+            perp = abs(dx * dir_y - dy * dir_x)
+            if perp > (ball.radius + self.cue_ball.radius) * 0.9:
+                continue
+
+            boundary_t = self._ray_rect_intersection_distance(ball.x, ball.y, dir_x, dir_y)
+            line_t = min(boundary_t, max_length) if boundary_t > 0 else max_length
+            if line_t <= 0:
+                continue
+
+            step = dash_spacing
+            d = 0
+            while d <= line_t:
+                x = ball.x + dir_x * d
+                y = ball.y + dir_y * d
+                if not self.table_rect.collidepoint(x, y):
+                    break
+                if int(d / step) % 2 == 0:
+                    pygame.draw.circle(self.screen, line_color, (int(x), int(y)), int(2 * self.scale))
+                d += step
+
     def draw_aiming_line(self):
-        """Draw the aiming guide line with enhanced geometry visualization: cue → first ball → second ball."""
+        """Draw the aiming guide line with precise cue → first ball geometry."""
         if not self.cue_ball or self.cue_ball.potted:
             return
 
         mx, my = pygame.mouse.get_pos()
         angle = math.atan2(my - self.cue_ball.y, mx - self.cue_ball.x)
+        dir_x = math.cos(angle)
+        dir_y = math.sin(angle)
 
-        # Draw dotted line and check for ball intersections
-        hit_ball = None
-        hit_point = None
-        for i in range(1, 80):  # Extended range to find intersections
-            t = i / 80
-            x = self.cue_ball.x + math.cos(angle) * ((30 + i * 12) * self.scale)
-            y = self.cue_ball.y + math.sin(angle) * ((30 + i * 12) * self.scale)
+        # Subtle potential trajectories for every ball
+        self._draw_potential_ball_trajectories(self.cue_ball.x, self.cue_ball.y, dir_x, dir_y)
 
-            if not self.table_rect.collidepoint(x, y):
-                break
+        # Find precise first-ball hit using ray-circle intersection
+        hit_ball, hit_x, hit_y, hit_t = self._get_first_ball_intersection(
+            self.cue_ball.x, self.cue_ball.y, dir_x, dir_y
+        )
 
-            # Check if this point hits a ball
-            if not hit_ball:
-                for ball in self.balls:
-                    if ball.potted or ball.ball_type == 'white':
-                        continue
-                    dist = math.hypot(x - ball.x, y - ball.y)
-                    if dist < ball.radius + self.cue_ball.radius:
-                        hit_ball = ball
-                        hit_point = (x, y)
-                        break
-            
-            if i <= 25:  # Only draw first part of line
+        # Draw dotted aiming line up to the hit point or table boundary
+        boundary_t, boundary_side = self._ray_table_intersection(self.cue_ball.x, self.cue_ball.y, dir_x, dir_y)
+        line_t = hit_t if hit_t is not None else boundary_t
+        if line_t and line_t > 0:
+            start_offset = self.cue_ball.radius + 8 * self.scale
+            dot_spacing = 12 * self.scale
+            dist = start_offset
+            while dist <= line_t:
+                t = dist / max(line_t, 1.0)
+                x = self.cue_ball.x + dir_x * dist
+                y = self.cue_ball.y + dir_y * dist
+                if not self.table_rect.collidepoint(x, y):
+                    break
                 alpha = int(180 * (1 - t * 0.7))
                 pygame.draw.circle(self.screen, (alpha, alpha, alpha), (int(x), int(y)), int(2 * self.scale))
+                dist += dot_spacing
+
+        # Cushion reflection line (light orange) when cue path reaches the cushion first
+        if boundary_t and boundary_side and (hit_t is None or boundary_t < hit_t):
+            hit_x = self.cue_ball.x + dir_x * boundary_t
+            hit_y = self.cue_ball.y + dir_y * boundary_t
+            refl_x, refl_y = dir_x, dir_y
+            if boundary_side in ("left", "right"):
+                refl_x = -refl_x
+            else:
+                refl_y = -refl_y
+
+            bounce_length = 240 * self.scale
+            bounce_spacing = 12 * self.scale
+            bounce_color = (255, 190, 120)
+            d = 0
+            while d <= bounce_length:
+                x = hit_x + refl_x * d
+                y = hit_y + refl_y * d
+                if not self.table_rect.collidepoint(x, y):
+                    break
+                if int(d / bounce_spacing) % 2 == 0:
+                    pygame.draw.circle(self.screen, bounce_color, (int(x), int(y)), int(2 * self.scale))
+                d += bounce_spacing
         
-        # Enhanced geometry visualization: cue → first ball → second ball
-        if hit_ball and hit_point:
+        # Enhanced geometry visualization: cue → first ball
+        if hit_ball and hit_x is not None and hit_y is not None:
             # Draw solid line from cue ball to first ball hit (cyan)
             pygame.draw.line(self.screen, COLORS['gold_bright'], 
                            (int(self.cue_ball.x), int(self.cue_ball.y)),
-                           (int(hit_ball.x), int(hit_ball.y)), 3)
+                           (int(hit_x), int(hit_y)), 3)
             
             # Calculate the direction the first ball will travel (using ghost ball method)
-            # Direction from cue to hit ball
-            cue_to_ball_dx = hit_ball.x - self.cue_ball.x
-            cue_to_ball_dy = hit_ball.y - self.cue_ball.y
-            cue_to_ball_dist = math.hypot(cue_to_ball_dx, cue_to_ball_dy)
-            
-            if cue_to_ball_dist > 0:
-                # Normalize
-                cue_to_ball_nx = cue_to_ball_dx / cue_to_ball_dist
-                cue_to_ball_ny = cue_to_ball_dy / cue_to_ball_dist
-                
-                # The first ball will move approximately in the direction of impact
-                # Calculate where the hit ball will go (in direction of collision)
-                first_ball_angle = math.atan2(cue_to_ball_ny, cue_to_ball_nx)
-                
-                # Draw trajectory from first ball showing where it will go (yellow/cyan)
+            # Direction from hit point to target center defines object ball path
+            obj_dx = hit_ball.x - hit_x
+            obj_dy = hit_ball.y - hit_y
+            obj_dist = math.hypot(obj_dx, obj_dy)
+            if obj_dist > 0:
+                obj_nx = obj_dx / obj_dist
+                obj_ny = obj_dy / obj_dist
+                first_ball_angle = math.atan2(obj_ny, obj_nx)
+
+                # Draw first ball trajectory (match hit ball color)
                 trajectory_length = 300 * self.scale
-                end_x = hit_ball.x + math.cos(first_ball_angle) * trajectory_length
-                end_y = hit_ball.y + math.sin(first_ball_angle) * trajectory_length
-                
-                # Draw first ball trajectory (cyan dashed line)
+                traj_color = hit_ball.color
                 for j in range(0, 30):
                     t = j / 30
                     tx = hit_ball.x + math.cos(first_ball_angle) * (trajectory_length * t)
                     ty = hit_ball.y + math.sin(first_ball_angle) * (trajectory_length * t)
                     if self.table_rect.collidepoint(tx, ty):
-                        alpha = int(150 * (1 - t * 0.3))
                         if j % 3 == 0:  # Dashed effect
-                            pygame.draw.circle(self.screen, (alpha, 255, 255), (int(tx), int(ty)), int(3 * self.scale))
-                
-                # Check for potential second ball hits along first ball's trajectory
-                second_ball_hits = []
-                for second_ball in self.balls:
-                    if second_ball.potted or second_ball == hit_ball or second_ball.ball_type == 'white':
-                        continue
-                    
-                    # Check if second ball is in the path of first ball's trajectory
-                    # Vector from hit_ball to second_ball
-                    to_second_dx = second_ball.x - hit_ball.x
-                    to_second_dy = second_ball.y - hit_ball.y
-                    to_second_dist = math.hypot(to_second_dx, to_second_dy)
-                    
-                    if to_second_dist < trajectory_length:
-                        # Check if second ball is approximately in the trajectory direction
-                        to_second_angle = math.atan2(to_second_dy, to_second_dx)
-                        angle_diff = abs(to_second_angle - first_ball_angle)
-                        # Normalize angle difference to 0-PI range
-                        if angle_diff > math.pi:
-                            angle_diff = 2 * math.pi - angle_diff
-                        
-                        # If angle is close (within 45 degrees) and distance is reasonable
-                        if angle_diff < math.pi / 4 and to_second_dist < 200 * self.scale:
-                            # Check if second ball is actually in path (not behind)
-                            dot_product = (to_second_dx * math.cos(first_ball_angle) + 
-                                         to_second_dy * math.sin(first_ball_angle))
-                            if dot_product > 0:  # In forward direction
-                                # Calculate where second ball might be hit
-                                # Project second ball position onto trajectory line
-                                proj_length = dot_product
-                                proj_x = hit_ball.x + math.cos(first_ball_angle) * proj_length
-                                proj_y = hit_ball.y + math.sin(first_ball_angle) * proj_length
-                                dist_to_trajectory = math.hypot(second_ball.x - proj_x, second_ball.y - proj_y)
-                                
-                                # If second ball is close enough to trajectory
-                                if dist_to_trajectory < (hit_ball.radius + second_ball.radius) * 1.5:
-                                    second_ball_hits.append((second_ball, proj_x, proj_y))
-                
-                # Draw potential second ball hits
-                for second_ball, proj_x, proj_y in second_ball_hits:
-                    # Draw line from first ball to second ball (magenta/cyan)
-                    pygame.draw.line(self.screen, COLORS['gold'], 
-                                   (int(hit_ball.x), int(hit_ball.y)),
-                                   (int(second_ball.x), int(second_ball.y)), 2)
-                    
-                    # Draw potential trajectory from second ball (shows where it might go)
-                    second_ball_angle = math.atan2(second_ball.y - hit_ball.y, 
-                                                  second_ball.x - hit_ball.x)
-                    second_trajectory_length = 200 * self.scale
-                    
-                    # Draw second ball trajectory (magenta dashed)
-                    for k in range(0, 20):
-                        t = k / 20
-                        tx = second_ball.x + math.cos(second_ball_angle) * (second_trajectory_length * t)
-                        ty = second_ball.y + math.sin(second_ball_angle) * (second_trajectory_length * t)
+                            pygame.draw.circle(self.screen, traj_color, (int(tx), int(ty)), int(3 * self.scale))
+
+                # Show trajectories for any balls affected along this line
+                affected = self._balls_on_line(hit_ball.x, hit_ball.y, obj_nx, obj_ny, exclude=hit_ball)
+                for affected_ball, proj in affected:
+                    impact_x = hit_ball.x + obj_nx * proj
+                    impact_y = hit_ball.y + obj_ny * proj
+                    # Draw a short line from hit ball to affected ball
+                    pygame.draw.line(self.screen, hit_ball.color,
+                                     (int(hit_ball.x), int(hit_ball.y)),
+                                     (int(affected_ball.x), int(affected_ball.y)), 2)
+
+                    # Draw affected ball trajectory in its own color
+                    traj_color = affected_ball.color
+                    for j in range(0, 24):
+                        t = j / 24
+                        tx = impact_x + obj_nx * (trajectory_length * 0.7 * t)
+                        ty = impact_y + obj_ny * (trajectory_length * 0.7 * t)
                         if self.table_rect.collidepoint(tx, ty):
-                            alpha = int(120 * (1 - t * 0.4))
-                            if k % 3 == 0:  # Dashed effect
-                                pygame.draw.circle(self.screen, (255, alpha, 255), (int(tx), int(ty)), int(2 * self.scale))
-                    
-                    # Highlight second ball with a ring
-                    pygame.draw.circle(self.screen, COLORS['gold_bright'], 
-                                     (int(second_ball.x), int(second_ball.y)), 
-                                     int(second_ball.radius + 2 * self.scale), 2)
+                            if j % 3 == 0:
+                                pygame.draw.circle(self.screen, traj_color, (int(tx), int(ty)), int(3 * self.scale))
 
     def draw_ai_aiming_line(self):
-        """Draw the AI's aiming guide line with enhanced geometry: cue → first ball → second ball."""
+        """Draw the AI's aiming guide line with precise cue → first ball geometry."""
         if not self.cue_ball or self.cue_ball.potted or not self.ai_shot_calculated:
             return
 
         angle = self.ai_angle
+        dir_x = math.cos(angle)
+        dir_y = math.sin(angle)
 
-        # Draw dotted line and check for ball intersections
-        hit_ball = None
-        hit_point = None
-        for i in range(1, 80):
-            t = i / 80
-            x = self.cue_ball.x + math.cos(angle) * ((30 + i * 12) * self.scale)
-            y = self.cue_ball.y + math.sin(angle) * ((30 + i * 12) * self.scale)
+        # Subtle potential trajectories for every ball
+        self._draw_potential_ball_trajectories(self.cue_ball.x, self.cue_ball.y, dir_x, dir_y)
 
-            if not self.table_rect.collidepoint(x, y):
-                break
+        # Find precise first-ball hit using ray-circle intersection
+        hit_ball, hit_x, hit_y, hit_t = self._get_first_ball_intersection(
+            self.cue_ball.x, self.cue_ball.y, dir_x, dir_y
+        )
 
-            # Check if this point hits a ball
-            if not hit_ball:
-                for ball in self.balls:
-                    if ball.potted or ball.ball_type == 'white':
-                        continue
-                    dist = math.hypot(x - ball.x, y - ball.y)
-                    if dist < ball.radius + self.cue_ball.radius:
-                        hit_ball = ball
-                        hit_point = (x, y)
-                        break
-            
-            if i <= 25:
+        # Draw dotted aiming line up to the hit point or table boundary
+        boundary_t, boundary_side = self._ray_table_intersection(self.cue_ball.x, self.cue_ball.y, dir_x, dir_y)
+        line_t = hit_t if hit_t is not None else boundary_t
+        if line_t and line_t > 0:
+            start_offset = self.cue_ball.radius + 8 * self.scale
+            dot_spacing = 12 * self.scale
+            dist = start_offset
+            while dist <= line_t:
+                t = dist / max(line_t, 1.0)
+                x = self.cue_ball.x + dir_x * dist
+                y = self.cue_ball.y + dir_y * dist
+                if not self.table_rect.collidepoint(x, y):
+                    break
                 alpha = int(180 * (1 - t * 0.7))
                 pygame.draw.circle(self.screen, (alpha, alpha, alpha), (int(x), int(y)), int(2 * self.scale))
+                dist += dot_spacing
+
+        # Cushion reflection line (light orange) when cue path reaches the cushion first
+        if boundary_t and boundary_side and (hit_t is None or boundary_t < hit_t):
+            hit_x = self.cue_ball.x + dir_x * boundary_t
+            hit_y = self.cue_ball.y + dir_y * boundary_t
+            refl_x, refl_y = dir_x, dir_y
+            if boundary_side in ("left", "right"):
+                refl_x = -refl_x
+            else:
+                refl_y = -refl_y
+
+            bounce_length = 240 * self.scale
+            bounce_spacing = 12 * self.scale
+            bounce_color = (255, 190, 120)
+            d = 0
+            while d <= bounce_length:
+                x = hit_x + refl_x * d
+                y = hit_y + refl_y * d
+                if not self.table_rect.collidepoint(x, y):
+                    break
+                if int(d / bounce_spacing) % 2 == 0:
+                    pygame.draw.circle(self.screen, bounce_color, (int(x), int(y)), int(2 * self.scale))
+                d += bounce_spacing
         
-        # Enhanced geometry visualization: cue → first ball → second ball
-        if hit_ball and hit_point:
+        # Enhanced geometry visualization: cue → first ball
+        if hit_ball and hit_x is not None and hit_y is not None:
             # Draw solid line from cue ball to first ball hit (cyan)
             pygame.draw.line(self.screen, COLORS['gold_bright'], 
                            (int(self.cue_ball.x), int(self.cue_ball.y)),
-                           (int(hit_ball.x), int(hit_ball.y)), 3)
+                           (int(hit_x), int(hit_y)), 3)
             
-            # Calculate the direction the first ball will travel
-            cue_to_ball_dx = hit_ball.x - self.cue_ball.x
-            cue_to_ball_dy = hit_ball.y - self.cue_ball.y
-            cue_to_ball_dist = math.hypot(cue_to_ball_dx, cue_to_ball_dy)
-            
-            if cue_to_ball_dist > 0:
-                cue_to_ball_nx = cue_to_ball_dx / cue_to_ball_dist
-                cue_to_ball_ny = cue_to_ball_dy / cue_to_ball_dist
-                first_ball_angle = math.atan2(cue_to_ball_ny, cue_to_ball_nx)
+            # Direction from hit point to target center defines object ball path
+            obj_dx = hit_ball.x - hit_x
+            obj_dy = hit_ball.y - hit_y
+            obj_dist = math.hypot(obj_dx, obj_dy)
+            if obj_dist > 0:
+                obj_nx = obj_dx / obj_dist
+                obj_ny = obj_dy / obj_dist
+                first_ball_angle = math.atan2(obj_ny, obj_nx)
                 
-                # Draw trajectory from first ball (cyan dashed)
+                # Draw trajectory from first ball (match hit ball color)
                 trajectory_length = 300 * self.scale
+                traj_color = hit_ball.color
                 for j in range(0, 30):
                     t = j / 30
                     tx = hit_ball.x + math.cos(first_ball_angle) * (trajectory_length * t)
                     ty = hit_ball.y + math.sin(first_ball_angle) * (trajectory_length * t)
                     if self.table_rect.collidepoint(tx, ty):
-                        alpha = int(150 * (1 - t * 0.3))
                         if j % 3 == 0:
-                            pygame.draw.circle(self.screen, (alpha, 255, 255), (int(tx), int(ty)), int(3 * self.scale))
-                
-                # Check for potential second ball hits
-                for second_ball in self.balls:
-                    if second_ball.potted or second_ball == hit_ball or second_ball.ball_type == 'white':
-                        continue
-                    
-                    to_second_dx = second_ball.x - hit_ball.x
-                    to_second_dy = second_ball.y - hit_ball.y
-                    to_second_dist = math.hypot(to_second_dx, to_second_dy)
-                    
-                    if to_second_dist < trajectory_length:
-                        to_second_angle = math.atan2(to_second_dy, to_second_dx)
-                        angle_diff = abs(to_second_angle - first_ball_angle)
-                        if angle_diff > math.pi:
-                            angle_diff = 2 * math.pi - angle_diff
-                        
-                        if angle_diff < math.pi / 4 and to_second_dist < 200 * self.scale:
-                            dot_product = (to_second_dx * math.cos(first_ball_angle) + 
-                                         to_second_dy * math.sin(first_ball_angle))
-                            if dot_product > 0:
-                                proj_length = dot_product
-                                proj_x = hit_ball.x + math.cos(first_ball_angle) * proj_length
-                                proj_y = hit_ball.y + math.sin(first_ball_angle) * proj_length
-                                dist_to_trajectory = math.hypot(second_ball.x - proj_x, second_ball.y - proj_y)
-                                
-                                if dist_to_trajectory < (hit_ball.radius + second_ball.radius) * 1.5:
-                                    # Draw line from first ball to second ball
-                                    pygame.draw.line(self.screen, COLORS['gold'], 
-                                                   (int(hit_ball.x), int(hit_ball.y)),
-                                                   (int(second_ball.x), int(second_ball.y)), 2)
-                                    
-                                    # Draw trajectory from second ball (magenta dashed)
-                                    second_ball_angle = math.atan2(second_ball.y - hit_ball.y, 
-                                                                  second_ball.x - hit_ball.x)
-                                    second_trajectory_length = 200 * self.scale
-                                    for k in range(0, 20):
-                                        t = k / 20
-                                        tx = second_ball.x + math.cos(second_ball_angle) * (second_trajectory_length * t)
-                                        ty = second_ball.y + math.sin(second_ball_angle) * (second_trajectory_length * t)
-                                        if self.table_rect.collidepoint(tx, ty):
-                                            alpha = int(120 * (1 - t * 0.4))
-                                            if k % 3 == 0:
-                                                pygame.draw.circle(self.screen, (255, alpha, 255), (int(tx), int(ty)), int(2 * self.scale))
-                                    
-                                    # Highlight second ball
-                                    pygame.draw.circle(self.screen, COLORS['gold_bright'], 
-                                                     (int(second_ball.x), int(second_ball.y)), 
-                                                     int(second_ball.radius + 2 * self.scale), 2)
+                            pygame.draw.circle(self.screen, traj_color, (int(tx), int(ty)), int(3 * self.scale))
+
+                # Show trajectories for any balls affected along this line
+                affected = self._balls_on_line(hit_ball.x, hit_ball.y, obj_nx, obj_ny, exclude=hit_ball)
+                for affected_ball, proj in affected:
+                    impact_x = hit_ball.x + obj_nx * proj
+                    impact_y = hit_ball.y + obj_ny * proj
+                    pygame.draw.line(self.screen, hit_ball.color,
+                                     (int(hit_ball.x), int(hit_ball.y)),
+                                     (int(affected_ball.x), int(affected_ball.y)), 2)
+
+                    traj_color = affected_ball.color
+                    for j in range(0, 24):
+                        t = j / 24
+                        tx = impact_x + obj_nx * (trajectory_length * 0.7 * t)
+                        ty = impact_y + obj_ny * (trajectory_length * 0.7 * t)
+                        if self.table_rect.collidepoint(tx, ty):
+                            if j % 3 == 0:
+                                pygame.draw.circle(self.screen, traj_color, (int(tx), int(ty)), int(3 * self.scale))
 
     def draw_cue_stick(self):
         """Draw the cue stick during aiming/charging."""
@@ -2368,6 +3090,10 @@ class SnookerGame:
                     self.first_ball_hit = None
                     self.potted_this_turn.clear()
                     self.shot_started = True
+                    self.collision_count_this_frame = 0
+                    
+                    # Play cue hit sound
+                    self._play_sound('cue_hit')
 
                 self.is_charging = False
                 self.cue_power = 0
@@ -2455,8 +3181,20 @@ class SnookerGame:
                     else:
                         ai_player = self.ai  # Regular AI match
                     
+                    table_bounds = None
+                    if self.table_rect:
+                        table_bounds = (
+                            self.table_rect.left,
+                            self.table_rect.top,
+                            self.table_rect.right,
+                            self.table_rect.bottom,
+                        )
                     self.ai_angle, self.ai_power = ai_player.calculate_shot(
-                        self.cue_ball, self.balls, self.ball_on, self.pockets
+                        self.cue_ball, self.balls, self.ball_on, self.pockets,
+                        reds_remaining=self.reds_remaining,
+                        ai_score=self.scores[1],  # AI is player 1
+                        opponent_score=self.scores[0],  # Human is player 0
+                        table_bounds=table_bounds,
                     )
                     self.ai_shot_calculated = True
                     self.ai_preparing = True
@@ -2482,6 +3220,10 @@ class SnookerGame:
                             self.potted_this_turn.clear()
                             self.shot_started = True
                             self.ai_preparing = False
+                            self.collision_count_this_frame = 0
+                            
+                            # Play cue hit sound
+                            self._play_sound('cue_hit')
 
         # Power charging (slowed down)
         # Max power is now 30 (which represents 100% power)
@@ -2492,7 +3234,7 @@ class SnookerGame:
         if balls_moving or self.turn_phase == TurnPhase.BALLS_MOVING:
             # Use sub-stepping to prevent fast balls from passing through
             # Update physics in smaller steps for better accuracy
-            sub_steps = 2
+            sub_steps = 3
             sub_dt = dt / sub_steps
             
             for _ in range(sub_steps):
@@ -2505,17 +3247,20 @@ class SnookerGame:
                             # Apply speed-dependent friction (30% less than before)
                             if speed < 15:
                                 speed_factor = speed / 15.0
-                                aggressive_friction = 0.909 + (speed_factor * 0.0819)  # 30% less friction (9.1% to 0.91% energy loss)
+                                base_friction = 0.909 + (speed_factor * 0.0819)  # 30% less friction (9.1% to 0.91% energy loss)
+                                aggressive_friction = adjust_friction(base_friction)
                                 ball.vx *= aggressive_friction
                                 ball.vy *= aggressive_friction
                             elif speed < 30:
                                 speed_factor = (speed - 15) / 15.0
-                                moderate_friction = 0.9909 + (speed_factor * 0.00805)  # 30% less friction (0.91% to 0.105% energy loss)
+                                base_friction = 0.9909 + (speed_factor * 0.00805)  # 30% less friction (0.91% to 0.105% energy loss)
+                                moderate_friction = adjust_friction(base_friction)
                                 ball.vx *= moderate_friction
                                 ball.vy *= moderate_friction
                             else:
-                                ball.vx *= 0.99895  # 30% less friction
-                                ball.vy *= 0.99895
+                                adjusted_friction = adjust_friction(0.99895)
+                                ball.vx *= adjusted_friction
+                                ball.vy *= adjusted_friction
                             
                             # Update position
                             ball.x += ball.vx * sub_dt * 60

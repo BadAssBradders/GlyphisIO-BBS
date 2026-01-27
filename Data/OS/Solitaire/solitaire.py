@@ -162,6 +162,8 @@ class SolitaireGame:
         self.card_back_surface: Optional[pygame.Surface] = None
         # key: "AS", "10H" etc -> pygame.Surface
         self.card_face_surfaces: Dict[str, pygame.Surface] = {}
+        # key: "C", "D", "H", "S" -> pygame.Surface
+        self.suit_surfaces: Dict[str, pygame.Surface] = {}
 
         # Pre-calc layout based on current desktop + monitor
         self._update_layout()
@@ -324,7 +326,31 @@ class SolitaireGame:
         # Card faces
         cards_dir = os.path.join(solitaire_dir, "cards")
         self.card_face_surfaces.clear()
+        self.suit_surfaces.clear()
         if os.path.isdir(cards_dir):
+            # Suit icons for empty foundations
+            suit_files = {
+                "C": "suit_C.png",
+                "D": "suit_D.png",
+                "H": "suit_H.png",
+                "S": "suit_S.png",
+            }
+            for suit, filename in suit_files.items():
+                path = os.path.join(cards_dir, filename)
+                if os.path.exists(path):
+                    try:
+                        img = pygame.image.load(path).convert_alpha()
+                        # Scale to fit comfortably inside a card slot
+                        max_w = int(self.card_width * 0.6)
+                        max_h = int(self.card_height * 0.6)
+                        img_w, img_h = img.get_size()
+                        if img_w > 0 and img_h > 0:
+                            scale = min(max_w / img_w, max_h / img_h)
+                            target_size = (max(1, int(img_w * scale)), max(1, int(img_h * scale)))
+                            self.suit_surfaces[suit] = pygame.transform.smoothscale(img, target_size)
+                    except Exception as e:
+                        print(f"Warning: failed to load {filename}: {e}")
+
             for rank in RANKS:
                 for suit in SUITS:
                     name = f"card_{rank}{suit}.png"
@@ -763,7 +789,7 @@ class SolitaireGame:
             self._draw_empty_slot(self.waste_rect)
 
         # Draw foundations with labels below and hover effects
-        foundation_suits = ["♠", "♥", "♦", "♣"]  # Spades, Hearts, Diamonds, Clubs
+        foundation_suits = ["S", "H", "D", "C"]  # Spades, Hearts, Diamonds, Clubs
         for i, rect in enumerate(self.foundation_rects):
             # Hover effect and valid drop highlight
             if self.dragging and self.dragged_cards and len(self.dragged_cards) == 1:
@@ -888,19 +914,26 @@ class SolitaireGame:
                            (rect.right - 1, rect.y + i), 
                            (rect.right - 1, rect.y + min(i + dash_length, rect.height)), 1)
     
-    def _draw_empty_foundation(self, rect: pygame.Rect, suit_char: str) -> None:
+    def _draw_empty_foundation(self, rect: pygame.Rect, suit_code: str) -> None:
         """Draw an empty foundation slot with suit indicator."""
         pygame.draw.rect(self.screen, COLOR_BG_TITLE, rect)
         pygame.draw.rect(self.screen, COLOR_DARK_CYAN, rect, 2)
-        # Draw suit symbol in center
-        try:
-            font = pygame.font.SysFont("verdana", max(int(32 * self.scale), 20))
-            suit_surface = font.render(suit_char, True, COLOR_GREY)
+        # Draw suit icon (PNG if available, otherwise text symbol)
+        suit_surface = self.suit_surfaces.get(suit_code)
+        if suit_surface:
             suit_x = rect.x + (rect.width - suit_surface.get_width()) // 2
             suit_y = rect.y + (rect.height - suit_surface.get_height()) // 2
             self.screen.blit(suit_surface, (suit_x, suit_y))
-        except:
-            pass
+        else:
+            suit_char = {"S": "♠", "H": "♥", "D": "♦", "C": "♣"}.get(suit_code, "?")
+            try:
+                font = pygame.font.SysFont("verdana", max(int(32 * self.scale), 20))
+                text_surface = font.render(suit_char, True, COLOR_GREY)
+                suit_x = rect.x + (rect.width - text_surface.get_width()) // 2
+                suit_y = rect.y + (rect.height - text_surface.get_height()) // 2
+                self.screen.blit(text_surface, (suit_x, suit_y))
+            except Exception:
+                pass
 
     def _draw_card_back(self, rect: Optional[pygame.Rect]) -> None:
         """Draw a card back with shadow effect."""

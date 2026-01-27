@@ -160,6 +160,55 @@ except Exception as e:
     SnookerGame = None
     print(f"Warning: Could not import SnookerGame: {e}")
 
+# Mahjong game is now in a separate module
+try:
+    import sys
+    import os
+    import importlib.util
+    # Add the mahjong directory to the path for import
+    # Get the directory containing this file (OS_Mode.py)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    mahjong_dir = os.path.join(current_dir, "Mahjong")
+    if mahjong_dir not in sys.path:
+        sys.path.insert(0, mahjong_dir)
+    # Import the mahjong module
+    mahjong_module_path = os.path.join(mahjong_dir, "mahjong.py")
+    if os.path.exists(mahjong_module_path):
+        spec = importlib.util.spec_from_file_location("mahjong_module", mahjong_module_path)
+        mahjong_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mahjong_module)
+        MahjongGame = mahjong_module.MahjongGame
+        _mahjong_available = True
+    else:
+        raise ImportError(f"Mahjong module not found at {mahjong_module_path}")
+except Exception as e:
+    _mahjong_available = False
+    MahjongGame = None
+    print(f"Warning: Could not import MahjongGame: {e}")
+
+# Civitas Nihilium game is now in a separate module
+try:
+    import sys
+    import os
+    import importlib.util
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    civitas_dir = os.path.join(current_dir, "civitas_nihilium")
+    if civitas_dir not in sys.path:
+        sys.path.insert(0, civitas_dir)
+    civitas_module_path = os.path.join(civitas_dir, "civitas_nihilium.py")
+    if os.path.exists(civitas_module_path):
+        spec = importlib.util.spec_from_file_location("civitas_nihilium_module", civitas_module_path)
+        civitas_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(civitas_module)
+        CivitasNihiliumGame = civitas_module.CivitasNihiliumGame
+        _civitas_nihilium_available = True
+    else:
+        raise ImportError(f"Civitas Nihilium module not found at {civitas_module_path}")
+except Exception as e:
+    _civitas_nihilium_available = False
+    CivitasNihiliumGame = None
+    print(f"Warning: Could not import CivitasNihiliumGame: {e}")
+
 # Pirate Radio App is now in a separate module
 try:
     import sys
@@ -532,11 +581,18 @@ class OSMode:
                 "default_pos": (260, 40)
             },
             {
-                "name": "civitas",
+                "name": "mahjong",
+                "file": "mahjong.png",
+                "selected_file": "S-mahjong.png",
+                "label": "Mahjong",
+                "default_pos": (380, 40)
+            },
+            {
+                "name": "civitas_nihilium",
                 "file": "civitas_nihilium.png",
                 "selected_file": "S-civitas_nihilium.png",
                 "label": "Civitas Nihilium",
-                "default_pos": (380, 40)
+                "default_pos": (20, 160)
             }
         ]
         self.games_modal_icons: List[Dict[str, object]] = []
@@ -624,6 +680,56 @@ class OSMode:
             self.snooker_game = None
             if not _snooker_available:
                 print(f"Warning: Snooker module not available. _snooker_available={_snooker_available}, SnookerGame={SnookerGame}")
+
+        # Mahjong game instance
+        if _mahjong_available and MahjongGame:
+            try:
+                health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
+                self.mahjong_game = MahjongGame(
+                    self.screen,
+                    self.scale,
+                    self.desktop_x,
+                    self.desktop_y,
+                    self.desktop_size,
+                    health_monitor_y,
+                    self.bbs_x or 0,
+                    self.bbs_width or 0,
+                    self.get_radio_music
+                )
+            except Exception as e:
+                print(f"Warning: Failed to initialize MahjongGame: {e}")
+                import traceback
+                traceback.print_exc()
+                self.mahjong_game = None
+        else:
+            self.mahjong_game = None
+            if not _mahjong_available:
+                print(f"Warning: Mahjong module not available. _mahjong_available={_mahjong_available}, MahjongGame={MahjongGame}")
+
+        # Civitas Nihilium game instance
+        if _civitas_nihilium_available and CivitasNihiliumGame:
+            try:
+                health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
+                self.civitas_game = CivitasNihiliumGame(
+                    self.screen,
+                    self.scale,
+                    self.desktop_x,
+                    self.desktop_y,
+                    self.desktop_size,
+                    health_monitor_y,
+                    self.bbs_x or 0,
+                    self.bbs_width or 0,
+                    self.get_radio_music
+                )
+            except Exception as e:
+                print(f"Warning: Failed to initialize CivitasNihiliumGame: {e}")
+                import traceback
+                traceback.print_exc()
+                self.civitas_game = None
+        else:
+            self.civitas_game = None
+            if not _civitas_nihilium_available:
+                print(f"Warning: Civitas Nihilium module not available. _civitas_nihilium_available={_civitas_nihilium_available}, CivitasNihiliumGame={CivitasNihiliumGame}")
         
         # Pirate Radio App instance
         self.pirate_radio_app = None
@@ -656,6 +762,10 @@ class OSMode:
         if self.solitaire_game and self.solitaire_game.active and self.solitaire_game.handle_event(event):
             return True
         if self.snooker_game and self.snooker_game.active and self.snooker_game.handle_event(event):
+            return True
+        if self.mahjong_game and self.mahjong_game.active and self.mahjong_game.handle_event(event):
+            return True
+        if self.civitas_game and self.civitas_game.active and self.civitas_game.handle_event(event):
             return True
         if event.type == pygame.MOUSEMOTION:
             self.mouse_pos = event.pos
@@ -1603,6 +1713,58 @@ class OSMode:
                         print(f"Failed to initialize SnookerGame on demand: {e}")
                         import traceback
                         traceback.print_exc()
+        elif icon_name == "mahjong":
+            if self.mahjong_game:
+                health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
+                self.mahjong_game.update_desktop(self.desktop_x, self.desktop_y, self.desktop_size, health_monitor_y)
+                self.mahjong_game.start()
+            else:
+                print(f"Mahjong game module not available. _mahjong_available={_mahjong_available}, MahjongGame={MahjongGame}, self.mahjong_game={getattr(self, 'mahjong_game', 'NOT SET')}")
+                if _mahjong_available and MahjongGame:
+                    try:
+                        health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
+                        self.mahjong_game = MahjongGame(
+                            self.screen,
+                            self.scale,
+                            self.desktop_x,
+                            self.desktop_y,
+                            self.desktop_size,
+                            health_monitor_y,
+                            self.bbs_x or 0,
+                            self.bbs_width or 0,
+                            self.get_radio_music
+                        )
+                        self.mahjong_game.start()
+                    except Exception as e:
+                        print(f"Failed to initialize MahjongGame on demand: {e}")
+                        import traceback
+                        traceback.print_exc()
+        elif icon_name in ("civitas_nihilium", "civitas"):
+            if self.civitas_game:
+                health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
+                self.civitas_game.update_desktop(self.desktop_x, self.desktop_y, self.desktop_size, health_monitor_y)
+                self.civitas_game.start()
+            else:
+                print(f"Civitas Nihilium module not available. _civitas_nihilium_available={_civitas_nihilium_available}, self.civitas_game={getattr(self, 'civitas_game', 'NOT SET')}")
+                if _civitas_nihilium_available and CivitasNihiliumGame:
+                    try:
+                        health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
+                        self.civitas_game = CivitasNihiliumGame(
+                            self.screen,
+                            self.scale,
+                            self.desktop_x,
+                            self.desktop_y,
+                            self.desktop_size,
+                            health_monitor_y,
+                            self.bbs_x or 0,
+                            self.bbs_width or 0,
+                            self.get_radio_music
+                        )
+                        self.civitas_game.start()
+                    except Exception as e:
+                        print(f"Failed to initialize CivitasNihiliumGame on demand: {e}")
+                        import traceback
+                        traceback.print_exc()
         else:
             print(f"{icon_name.title()} is not available yet.")
 
@@ -2285,6 +2447,11 @@ class OSMode:
         if self.snooker_game and self.snooker_game.active:
             self.snooker_game.update(0.016)  # Update with ~60fps delta
             self.snooker_game.draw()
+        if self.mahjong_game and self.mahjong_game.active:
+            self.mahjong_game.update(0.016)
+            self.mahjong_game.draw()
+        if self.civitas_game and self.civitas_game.active:
+            self.civitas_game.draw()
         if self.pirate_radio_app and self.pirate_radio_app.active:
             self.pirate_radio_app.draw()
     
@@ -5339,6 +5506,12 @@ class OSMode:
         # Close snooker game if active
         if self.snooker_game and self.snooker_game.active:
             self.snooker_game.close()
+        # Close mahjong game if active
+        if self.mahjong_game and self.mahjong_game.active:
+            self.mahjong_game.close()
+        # Close civitas game if active
+        if self.civitas_game and self.civitas_game.active:
+            self.civitas_game.close()
     
     def toggle_overlay(self):
         """Toggle the overlay rectangle state."""
@@ -5534,6 +5707,28 @@ class OSMode:
             self.snooker_game.scale = self.scale
             # Update fonts after scale is set
             self.snooker_game._update_fonts()
+
+        # Update mahjong game desktop coordinates and scale
+        if self.mahjong_game:
+            health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
+            self.mahjong_game.update_desktop(self.desktop_x, self.desktop_y, self.desktop_size, health_monitor_y)
+            self.mahjong_game.scale = self.scale
+            if self.mahjong_game.active:
+                try:
+                    self.mahjong_game._load_assets()
+                except Exception as e:
+                    print(f"Warning: Failed to reload mahjong assets: {e}")
+
+        # Update civitas game desktop coordinates and scale
+        if self.civitas_game:
+            health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
+            self.civitas_game.update_desktop(self.desktop_x, self.desktop_y, self.desktop_size, health_monitor_y)
+            self.civitas_game.scale = self.scale
+            if self.civitas_game.active:
+                try:
+                    self.civitas_game._load_assets()
+                except Exception as e:
+                    print(f"Warning: Failed to reload civitas assets: {e}")
     
     def _update_hover_states(self, mouse_x: int, mouse_y: int):
         """Update hover states for icons and buttons based on mouse position."""

@@ -1649,7 +1649,8 @@ class GLYPHIS_IOBBS:
         # Apply to datasette audio (pygame.mixer.music) if playing
         try:
             if pygame.mixer.music.get_busy():
-                pygame.mixer.music.set_volume(self.ambient_volume)
+                if not (self.pirate_radio_app and getattr(self.pirate_radio_app, "streaming_active", False)):
+                    pygame.mixer.music.set_volume(self.ambient_volume)
         except Exception:
             pass  # Silently fail if music mixer is not available
         
@@ -1689,6 +1690,13 @@ class GLYPHIS_IOBBS:
                     self.pirate_radio_app.noise_channel.set_volume(final_noise_vol)
             except Exception:
                 pass  # Silently fail if noise sound/channel is invalid
+
+        # Apply to streamed radio station audio (pygame.mixer.music) if used
+        if self.pirate_radio_app and hasattr(self.pirate_radio_app, "apply_streaming_volume"):
+            try:
+                self.pirate_radio_app.apply_streaming_volume(self.music_volume)
+            except Exception:
+                pass
         
         # Apply to currently selected radio station
         if self.pirate_radio_app and self.pirate_radio_app.radio_manager:
@@ -7048,6 +7056,9 @@ class GLYPHIS_IOBBS:
             return
         log_event("Logout confirmed by user.")
         self.logout_modal_active = False
+        # If OS Mode Network is DISCONNECTED, cut Pirate Radio audio only
+        if self.os_mode and not getattr(self.os_mode, "network_connected", True):
+            self._stop_pirate_radio_audio(close_app=False)
         if self.inventory.has_token(Tokens.MODEM1ST):
             log_event("MODEM1ST token detected on logout - returning to OS Mode")
             self._toggle_os_mode(force_on=True)
