@@ -1,0 +1,377 @@
+BRADSONIC 69000 SYSTEM CONFIGURATION FILE
+==========================================
+FILE: LocaleProtocols.brad
+VERSION: 1.2.4
+DATE: 1989-03-15
+SYSTEM: Bradsonic 69000 Desktop Computer
+PROCESSOR: Single Accumulator Processor (Audio-Optimized)
+MEMORY: 500 Megabytes RAM
+OPERATING SYSTEM: BRADSONIC OS / BradCom Terminal Interface v2.1
+MANUFACTURER: Bradsonic Incorporated, American Pacifica Isles
+
+SYSTEM ARCHITECTURE
+-------------------
+The Bradsonic 69000 utilizes a proprietary multi-tasking kernel
+running on top of MS-DOS 3.30. The system employs an advanced
+memory architecture made possible by silicon reserves discovered
+after the annexation of Mongolia and the Korean Peninsula. The
+single accumulator processor is optimized for audio processing,
+making the 69000 ideal for multimedia applications and real-time
+audio streaming.
+
+The terminal interface (BradCom Terminal) communicates via
+interrupt 21h and uses custom BIOS extensions for hardware
+abstraction. The system's CGA+ technology provides enhanced
+visual clarity with distinctive cyan phosphor glow, perfect
+for extended BBS browsing sessions.
+
+MANUFACTURER INFORMATION
+-------------------------
+Bradsonic Incorporated was founded in 1947 by General Bradley
+Sonic, who acquired the former Matsushita Electric factory in
+Osaka under Directive 7-Alpha. The company represents the
+successful integration of American business leadership with
+Japanese manufacturing precision and engineering excellence.
+
+By 1952, when the American Pacifica Isles were formally
+incorporated, Bradsonic had become the largest electronics
+manufacturer in the Pacific region. The company's products
+are extensively tested in the Pacifica Isles market before
+mainland release, making the Isles a proving ground for
+American technology.
+
+Chief Operating Officer: Elena Vance
+Current Chief Technology Officer: Louis Sonic
+VP of Product Design: Julian Thorne
+Head of Engineering: Marcus "Red" Chen
+Company Headquarters: American Pacifica Isles
+Primary Manufacturing: Ulaanbaatar
+
+HARDWARE CONFIGURATION
+----------------------
+VIDEO: CGA+ Technology (Cyan Phosphor CRT, Enhanced Clarity)
+DISK: Standard Hard Disk Configuration
+FLOPPY: 5.25" Drive A:
+MODEM: Hayes-Compatible 2400 Baud (Built-in Motherboard)
+AUDIO: RADLAND LAPC-1 Soundcard Compatible
+AUDIO STREAMING: Built-in Packet Tuner
+DISPLAY: Analog VU Meter (Real-time Audio Level Indicator)
+NETWORK: Government-Licensed BBS Services Only
+
+REGION CONFIGURATION
+--------------------
+The system supports three primary regional configurations:
+
+REGION 01: AMERICAN MAINLAND
+  Time Zone: EST/PST/CST/MST
+  Date Format: MM/DD/YYYY
+  Currency: USD
+  Locale ID: 0409
+  Dial Tone: 60Hz, 350Hz+440Hz
+  Network Protocol: TCP/IP v4 (RFC 791)
+  Default Gateway: 10.0.0.1 (configure per-site)
+  DNS Primary: Per-site configuration (see network administrator)
+  Regional Restrictions: NONE
+  Access Level: FULL
+  BBS Access: Government-Licensed Services Only
+  Restrictions: None
+
+REGION 02: EUROPE
+  Time Zone: GMT/CET
+  Date Format: DD/MM/YYYY
+  Currency: GBP/DEM/FRF
+  Locale ID: 0809 (UK), 0407 (DE), 040C (FR)
+  Dial Tone: 50Hz, 425Hz
+  Network Protocol: X.25 Packet Switching
+  Default Gateway: 10.0.0.1 (configure per-site)
+  DNS Primary: Per-site configuration (X.25 PAD dependent)
+  Regional Restrictions: DATA CAP RESTRICTIONS
+  Access Level: STANDARD
+  BBS Access: Government-Licensed Services Only
+  Restrictions: Electronic email to and from the American Pacfica Isles
+
+REGION 03: AMERICAN PACIFIC ISLES (RESTRICTED CAP)
+  Time Zone: JST (Japan Standard Time)
+  Date Format: MM/DD/YYYY
+  Currency: USD
+  Locale ID: 0409
+  Dial Tone: 60Hz, 350Hz+440Hz
+  Network Protocol: TCP/IP v4 (RFC 791)
+  Default Gateway: 10.0.0.1 (configure per-site)
+  DNS Primary: Per-site configuration (see Isles Communication Authority)
+  Regional Restrictions: FULL RESTRICTED DATA CAP
+  Access Level: BLOCKED
+  Modem Speed: 2400 baud (Hayes-compatible; 9600 baud optional upgrade)
+  Daily Connect Time Limit: 120 minutes (licensed BBS access)
+  Monthly Transfer Cap: 10MB
+  BBS Access: Government-Licensed Services Only
+  Note: Primary testing market for Bradsonic products
+  Beta Testing Period: 18 months of limited useage before mainland release
+  Restrictions: Electronic email to and from the American Mainland, some software licenses on political grounds
+
+  Switch Region String: admin-subset.username.general.password.louis-sonic
+
+PROTOCOL STACK INFORMATION
+---------------------------
+The Bradsonic 69000 implements a seven-layer protocol stack
+based on the OSI model. Layer 1 (Physical) handles the built-in
+Hayes-compatible 2400 baud modem with hardware flow control.
+The modem is integrated directly into the motherboard, eliminating
+the need for external modem boxes or expansion cards.
+
+Layer 2 (Data Link) uses HDLC framing with CRC-16 error
+detection optimized for dial-up connections to government-
+licensed bulletin board services. Layer 3 (Network) supports
+both TCP/IP and X.25 protocols depending on regional configuration.
+
+Layer 4 (Transport) implements a custom protocol called
+Bradsonic Transfer Protocol (BTP) which provides reliable
+data transmission with automatic retry and sequencing.
+Layer 5 (Session) manages connection establishment and
+teardown using a three-way handshake mechanism.
+
+Layer 6 (Presentation) handles data encoding/decoding using
+a proprietary compression algorithm that achieves 2:1
+compression ratios on ASCII text. Layer 7 (Application)
+provides the terminal interface and file system abstraction.
+
+
+MEMORY MANAGEMENT
+----------------
+The Bradsonic 69000 utilizes an advanced memory architecture
+made possible by the vast silicon reserves discovered after
+the annexation of Mongolia and the Korean Peninsula. The
+system features 500 megabytes of RAM, providing unprecedented
+multitasking capabilities for a desktop computer of this era.
+
+Memory allocation uses a sophisticated first-fit algorithm
+with automatic garbage collection. The system can maintain
+multiple applications simultaneously including BradCom Terminal,
+word processors, spreadsheets, and file downloads without
+performance degradation.
+
+The memory architecture supports:
+- Background terminal operations
+- Concurrent file operations
+- Real-time audio streaming
+- Network packet buffering
+- Graphics rendering buffers
+
+Memory fragmentation is minimized through periodic compaction
+routines that run automatically every 30 seconds during idle
+periods.
+
+FILE SYSTEM
+-----------
+
+The Bradsonic 69000 uses a modified FAT12 file system with
+extended attributes (Bradsonic proprietary). Directory
+entries are 32 bytes with support for 8.3 filenames. The
+root directory can hold up to 224 entries. Cluster size
+is 512 bytes with a maximum file size of 32MB.
+
+The file system includes an optional write-ahead log
+(Bradsonic Transaction Buffer) that records pending writes.
+In case of unexpected power loss, the buffer can assist
+recovery. The log is stored in a hidden file called
+$TXTBUF.DAT in the root directory. (Standard FAT12
+operation available if logging is disabled.)
+
+NETWORK CONFIGURATION
+---------------------
+The Bradsonic 69000 features a built-in Hayes-compatible
+2400 baud modem integrated directly into the motherboard.
+No expansion cards or external modem boxes are required.
+The modem connects via standard phone line to government-
+licensed bulletin board services.
+
+The system comes pre-loaded with BradCom Terminal, Bradsonic's
+proprietary terminal emulation software. BradCom Terminal
+provides:
+- Full ANSI graphics support
+- VT100 emulation
+- Extended character set for enhanced visual displays
+- Seamless integration with licensed BBS services
+- Optimized for the 69000's CGA+ display technology
+
+All network connections are restricted to government-licensed
+bulletin board services as per American Pacifica Isles
+Communication Authority regulations.
+
+The network stack includes support for:
+- TCP/IP (RFC 791, 792, 793)
+- UDP (RFC 768)
+- ICMP (RFC 792)
+- ARP (RFC 826)
+- DNS (RFC 1035)
+- FTP (RFC 959)
+- Telnet (RFC 854)
+
+The built-in modem supports one active dial-up connection
+at a time. Each connection has a 4KB receive buffer and
+a 4KB transmit buffer. Flow control uses sliding window
+protocol with window size of 4096 bytes. (Multi-line BBS
+access requires additional modem hardware.)
+
+SECURITY PROTOCOLS
+------------------
+The system implements multi-level security with user
+authentication, access control lists, and encryption.
+All network traffic is encrypted using DES (Data Encryption
+Standard) with 56-bit keys. Key exchange uses Diffie-Hellman
+algorithm over a secure channel.
+
+User authentication requires username and password with
+case-sensitive matching. Passwords are stored using DES-
+based one-way encryption (Unix crypt-compatible). Failed
+login attempts are logged and after 3 failures, the
+account is locked for 15 minutes.
+
+Access control is enforced through file system permissions
+and network firewall rules. Each file has owner, group, and
+world permissions with read, write, and execute bits.
+Network firewall blocks all incoming connections except
+those explicitly allowed in the security policy.
+
+SECURITY AUDIT LOG
+------------------
+All security events are logged to SECURITY.LOG with
+timestamp, event type, user ID, and details. Log entries
+are append-only and cannot be modified by users. The log
+file is rotated daily and archived for 90 days.
+
+Security events include:
+- Login attempts (successful and failed)
+- File access (read, write, delete)
+- Network connections (inbound and outbound)
+- System configuration changes
+- Administrative actions
+- Security policy violations
+
+ENCRYPTION STANDARDS
+--------------------
+The system uses DES (Data Encryption Standard) for
+symmetric encryption with 56-bit keys. Key generation
+uses a cryptographically secure pseudo-random number
+generator seeded from system entropy sources including
+keyboard timing, mouse movement, and interrupt timing.
+
+For asymmetric encryption, the system supports RSA with
+512-bit keys. Key pairs are generated using the Miller-Rabin
+primality test. Public keys are stored in KEYRING.DAT
+while private keys are encrypted and stored in PRIVATE.DAT.
+
+Digital signatures use RSA with DES-based hash. The signature
+process computes a message digest of the data, encrypts it
+with the private key, and appends it to the data. Verification
+decrypts the signature with the public key and compares
+it to the computed digest.
+
+FIREWALL CONFIGURATION
+----------------------
+The firewall implements packet filtering based on access
+control lists. Rules are applied per-packet using source
+IP, destination IP, port numbers, and protocol type.
+Default policy is DENY ALL with explicit ALLOW rules for
+permitted traffic.
+
+Firewall rules are stored in FIREWALL.CFG and loaded at
+system startup. Rules can be modified by administrators
+only. Changes take effect after configuration reload.
+
+SECURITY MONITORING
+-------------------
+The system monitors failed login attempts and access
+violations. All security-related events are written to
+SECURITY.LOG with timestamp, user ID, and event details.
+Repeated failures from a single source may result in
+temporary IP blocking at administrator discretion.
+
+Administrators receive the Bradsonic Security Bulletin
+monthly with recommended configuration updates. Custom
+access rules can be added to FIREWALL.CFG for site-
+specific requirements.
+
+BACKUP AND RECOVERY
+-------------------
+System backups are performed daily at 2:00 AM using
+incremental backup strategy. Full backups are performed
+weekly on Sundays. Backup media is rotated with 4-week
+retention period.
+
+Backup includes:
+- All user files
+- System configuration files
+- Security logs
+- Network configuration
+- System configuration files (CONFIG.SYS, AUTOEXEC.BAT)
+
+Recovery procedures are documented in RECOVERY.DOC. In case
+of system failure, recovery can be performed from backup
+media. Full system restore takes approximately 2 hours
+depending on data volume.
+
+SYSTEM MAINTENANCE
+-----------------
+Routine maintenance tasks are scheduled automatically:
+- Disk defragmentation: Weekly (Sunday 3:00 AM)
+- Log rotation: Daily (Midnight)
+- Security scan: Daily (6:00 AM)
+- Backup verification: Weekly (Monday 9:00 AM)
+- System health check: Hourly
+
+Maintenance logs are stored in MAINTENANCE.LOG. Any
+errors or warnings are reported to the administrator.
+Critical errors trigger immediate alert notification.
+
+PERFORMANCE MONITORING
+----------------------
+The system includes performance monitoring tools that
+track CPU usage, memory usage, disk I/O, and network
+throughput. Metrics are collected every 5 seconds and
+stored in circular buffers with 1-hour retention.
+
+Performance thresholds:
+- CPU usage > 90%: Warning
+- Memory usage > 85%: Warning
+- Disk usage > 80%: Warning
+- Network errors > 1%: Warning
+
+When thresholds are exceeded, the system logs a warning
+and optionally sends alert to administrator. Performance
+data can be viewed using the PERFMON utility.
+
+TROUBLESHOOTING
+---------------
+Common issues and solutions:
+
+1. System won't boot
+   - Check power supply
+   - Verify hard disk connection
+   - Check BIOS settings
+   - Run diagnostics from boot disk
+
+2. BBS connection fails
+   - Verify phone line connection
+   - Check modem settings (COM port, Hayes initialization)
+   - Verify dial-up configuration
+   - Test with known BBS number
+
+3. File access denied
+   - Check file permissions
+   - Verify user account status
+   - Check disk space
+   - Review security logs
+
+4. Slow performance
+   - Check CPU and memory usage
+   - Run disk defragmentation
+   - Check for virus infection
+   - Review system logs
+
+For additional support, contact Bradsonic Technical Support
+at 1-800-BRADSONIC. Written inquiries: Bradsonic Support,
+P.O. Box 69000, American Pacifica Isles.
+
+END OF CONFIGURATION FILE
+==========================

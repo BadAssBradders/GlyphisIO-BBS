@@ -44,7 +44,7 @@ pygame.init()
 # =============================================================================
 WINDOW_WIDTH, WINDOW_HEIGHT = 1280, 800
 FPS = 60
-FRICTION_SLOWDOWN_FACTOR = 0.76  # 20% less friction for more glide (reduced from 0.95)
+FRICTION_SLOWDOWN_FACTOR = 0.88  # set this for friction of the balls glide on the table
 
 def adjust_friction(base_friction: float) -> float:
     """Reduce friction slightly to make balls glide a bit more."""
@@ -118,10 +118,27 @@ class TurnPhase(Enum):
 
 
 # =============================================================================
-# BALL CLASS
+# BALL CLASS - Enhanced with Realistic Spin Physics
 # =============================================================================
 
 class Ball:
+    """
+    Snooker ball with realistic physics including:
+    - Angular velocity (spin)
+    - Top/back spin (affects forward momentum after contact)
+    - Side spin (affects cushion bounce angles)
+    - Sliding vs rolling friction
+    - Spin decay over time
+    """
+    
+    # Physics constants for realistic snooker
+    BALL_MASS = 0.170  # kg (snooker ball mass)
+    BALL_RADIUS_REAL = 0.02625  # meters (52.5mm diameter)
+    SLIDING_FRICTION = 0.2  # μs - sliding friction coefficient
+    ROLLING_FRICTION = 0.01  # μr - rolling friction coefficient  
+    SPIN_DECAY = 0.985  # How fast spin decays per frame
+    THROW_COEFFICIENT = 0.03  # How much spin affects object ball direction
+    
     def __init__(self, x: float, y: float, ball_type: str, radius: float = None, scale: float = 1.0):
         self.x, self.y = x, y
         self.vx, self.vy = 0.0, 0.0
@@ -130,48 +147,108 @@ class Ball:
         self.potted = False
         self.color = COLORS.get(f'ball_{ball_type}', (255, 255, 255))
         self.value = BALL_VALUES.get(ball_type, 0)
+        
+        # Spin properties (angular velocities)
+        # top_spin: positive = top spin (ball runs), negative = back spin (draw)
+        # side_spin: positive = right spin, negative = left spin
+        self.top_spin = 0.0  # Forward/backward spin
+        self.side_spin = 0.0  # Left/right spin (English)
+        self.is_sliding = False  # True when ball is sliding, False when rolling
+        
+    def apply_spin(self, top_spin: float, side_spin: float):
+        """Apply spin to the ball (called when shot is taken)."""
+        self.top_spin = top_spin
+        self.side_spin = side_spin
+        self.is_sliding = True  # Ball starts sliding after being hit
+        
+    def get_spin_velocity_component(self) -> Tuple[float, float]:
+        """Calculate velocity component from spin for sliding-to-rolling transition."""
+        # When sliding, spin creates a force that affects the ball's motion
+        # Top spin adds forward velocity, back spin subtracts
+        speed = math.hypot(self.vx, self.vy)
+        if speed < 0.01:
+            return 0, 0
+            
+        # Direction of travel
+        dir_x = self.vx / speed
+        dir_y = self.vy / speed
+        
+        # Perpendicular direction (for side spin effect)
+        perp_x = -dir_y
+        perp_y = dir_x
+        
+        # Top/back spin affects forward motion
+        forward_component = self.top_spin * 0.15
+        # Side spin causes slight curve while sliding
+        side_component = self.side_spin * 0.05
+        
+        return (dir_x * forward_component + perp_x * side_component,
+                dir_y * forward_component + perp_y * side_component)
 
     def update(self, dt: float, friction: float = 0.99895):
         if self.potted:
             return
+            
         speed = math.hypot(self.vx, self.vy)
         
-        # Realistic snooker/pool ball physics - 30% less friction (longer movement)
-        # Rolling resistance coefficient (μ) for pool balls is 0.005-0.015
-        # At 60fps, this translates to ~0.997-0.998 velocity retention per frame
-        # Using 0.99895 for 30% less friction (0.105% energy loss per frame instead of 0.15%)
-        # Apply more aggressive friction at low speeds to stop balls faster
-        
+        # Realistic snooker physics with spin effects
         if speed > 0.05:
-            # Apply speed-dependent friction - moderately aggressive at lower speeds
-            # 30% less friction across all speed ranges
-            if speed < 15:
-                # Very slow speeds: apply moderate aggressive friction (30% less than before)
-                # Old: 0.87-0.987 (13% to 1.3% energy loss)
-                # New: 0.909-0.9909 (9.1% to 0.91% energy loss - 30% reduction)
-                # At speed 15: friction ~0.9909, at speed 5: friction ~0.936, at speed 1: friction ~0.909
-                speed_factor = speed / 15.0  # Normalize to 0-1 range
-                base_friction = 0.909 + (speed_factor * 0.0819)  # Ranges from 0.909 to 0.9909 (30% less friction)
-                aggressive_friction = adjust_friction(base_friction)
-                self.vx *= aggressive_friction
-                self.vy *= aggressive_friction
-            elif speed < 30:
-                # Moderate speeds: slightly more friction (30% less than before)
-                # Old: 0.987-0.9985 (1.3% to 0.15% energy loss)
-                # New: 0.9909-0.99895 (0.91% to 0.105% energy loss - 30% reduction)
-                speed_factor = (speed - 15) / 15.0  # Normalize 15-30 to 0-1
-                base_friction = 0.9909 + (speed_factor * 0.00805)  # Ranges from 0.9909 to 0.99895 (30% less friction)
-                moderate_friction = adjust_friction(base_friction)
-                self.vx *= moderate_friction
-                self.vy *= moderate_friction
+            # Calculate effective friction based on sliding vs rolling
+            if self.is_sliding:
+                # Sliding friction is higher - ball slides before it rolls
+                # Check if ball has transitioned to rolling (spin matches velocity)
+                expected_spin = speed * 0.5  # Spin that matches rolling velocity
+                spin_diff = abs(self.top_spin - expected_spin)
+                
+                if spin_diff < 2.0:  # Ball is now rolling naturally
+                    self.is_sliding = False
+                    self.top_spin = expected_spin  # Lock spin to rolling state
+                else:
+                    # Apply sliding physics - spin affects velocity
+                    spin_vx, spin_vy = self.get_spin_velocity_component()
+                    self.vx += spin_vx * dt * 2
+                    self.vy += spin_vy * dt * 2
+                    
+                    # Sliding friction (higher than rolling)
+                    slide_friction = 0.994 if speed > 30 else 0.988
+                    slide_friction = adjust_friction(slide_friction)
+                    self.vx *= slide_friction
+                    self.vy *= slide_friction
+                    
+                    # Spin decays faster while sliding (friction between ball and cloth)
+                    self.top_spin *= 0.97
             else:
-                # High speeds: standard rolling friction (30% less friction - less energy loss)
-                adjusted_friction = adjust_friction(friction)
-                self.vx *= adjusted_friction
-                self.vy *= adjusted_friction
+                # Rolling friction - lower, ball rolls smoothly
+                # Apply speed-dependent friction for realistic deceleration
+                if speed < 15:
+                    speed_factor = speed / 15.0
+                    base_friction = 0.920 + (speed_factor * 0.075)
+                    rolling_friction = adjust_friction(base_friction)
+                elif speed < 30:
+                    speed_factor = (speed - 15) / 15.0
+                    base_friction = 0.995 + (speed_factor * 0.003)
+                    rolling_friction = adjust_friction(base_friction)
+                else:
+                    rolling_friction = adjust_friction(friction)
+                
+                self.vx *= rolling_friction
+                self.vy *= rolling_friction
+            
+            # Decay spin over time
+            self.top_spin *= self.SPIN_DECAY
+            self.side_spin *= self.SPIN_DECAY
+            
+            # Stop spin when very low
+            if abs(self.top_spin) < 0.1:
+                self.top_spin = 0
+            if abs(self.side_spin) < 0.1:
+                self.side_spin = 0
         else:
             # Stop when speed is very low
             self.vx = self.vy = 0
+            self.top_spin = 0
+            self.side_spin = 0
+            self.is_sliding = False
         
         self.x += self.vx * dt * 60
         self.y += self.vy * dt * 60
@@ -183,12 +260,15 @@ class Ball:
         if self.potted:
             return
         pos = (int(self.x), int(self.y))
-        # Shadow
-        pygame.draw.circle(surface, (0, 0, 0), (pos[0] + 3, pos[1] + 3), int(self.radius))
+        # Shadow - offset based on speed for motion effect
+        shadow_offset = min(4, 2 + math.hypot(self.vx, self.vy) * 0.02)
+        pygame.draw.circle(surface, (0, 0, 0), (pos[0] + int(shadow_offset), pos[1] + int(shadow_offset)), int(self.radius))
         # Main ball
         pygame.draw.circle(surface, self.color, pos, int(self.radius))
-        # Highlight
-        highlight_pos = (pos[0] - int(self.radius * 0.3), pos[1] - int(self.radius * 0.3))
+        # Highlight - slightly offset based on spin for visual feedback
+        highlight_offset_x = int(self.radius * 0.3) + int(self.side_spin * 0.02)
+        highlight_offset_y = int(self.radius * 0.3) - int(self.top_spin * 0.02)
+        highlight_pos = (pos[0] - highlight_offset_x, pos[1] - highlight_offset_y)
         pygame.draw.circle(surface, (255, 255, 255), highlight_pos, max(2, int(self.radius * 0.25)))
 
 
@@ -524,7 +604,7 @@ class AIPlayer:
     def calculate_shot(self, cue: Ball, balls: List[Ball], ball_on: str, pockets: List[Tuple[int, int]],
                       reds_remaining: int = 15, ai_score: int = 0, opponent_score: int = 0,
                       table_bounds: Optional[Tuple[float, float, float, float]] = None) -> Tuple[float, float]:
-        """Calculate best shot angle and power with strategic context."""
+        """Calculate best shot - ALWAYS prioritize potting with clearest path."""
         # Get valid target balls
         if ball_on == "red":
             valid = [b for b in balls if not b.potted and b.ball_type == 'red']
@@ -543,115 +623,120 @@ class AIPlayer:
             # Scale fallback power to new max of 30
             return random.uniform(0, 2 * math.pi), 30 * (40.0 / 90.0)  # Scale 40 to ~13
 
-        # Strategic context
+        # Strategic context (used only for tiebreakers, not for pot vs safety decision)
         score_diff = ai_score - opponent_score
-        points_available = sum(b.value for b in balls if not b.potted and b.ball_type != 'white')
-        is_behind = score_diff < -20  # Significantly behind
-        is_ahead = score_diff > 20  # Significantly ahead
+        is_behind = score_diff < -20
+        is_ahead = score_diff > 20
         is_clearance = reds_remaining == 0
         
-        # Evaluate shots to find best option (including combination shots and safety)
-        best_shot = None
-        best_score = -float('inf')
-
-        # First, evaluate direct shots (cue → target → pocket)
+        # =====================================================================
+        # TOP PRIORITY: Find the BEST pottable shot with clearest path
+        # AI will ALWAYS try to pot if any clear shot exists
+        # =====================================================================
+        best_pot_shot = None
+        best_pot_score = -float('inf')
+        
+        # Evaluate all direct pot shots - prioritize by:
+        # 1. Clear path (not blocked)
+        # 2. Easiest angle (straighter = better)
+        # 3. Shortest distance
+        # 4. Ball value (for colors)
         for target in valid:
             for pocket in pockets:
                 shot = self._evaluate_shot(cue, target, pocket, balls, pockets, ball_on,
                                           reds_remaining, score_diff, is_behind, is_ahead,
                                           table_bounds)
-                if shot and shot['score'] > best_score:
-                    best_score = shot['score']
-                    best_shot = shot
+                if shot and shot['type'] == 'direct' and not shot.get('blocked', False):
+                    # Boost score significantly for clear, pottable shots
+                    pot_score = shot['score']
+                    # Extra bonus for clearer/easier shots
+                    if pot_score > 0:
+                        pot_score += 200  # Big bonus for any pottable shot
+                    if pot_score > best_pot_score:
+                        best_pot_score = pot_score
+                        best_pot_shot = shot
         
-        # Also evaluate combination shots (cue → first ball → second ball → pocket)
+        # Also check combination shots (but direct pots are preferred)
         for first_target in valid:
             for second_target in valid:
-                if first_target == second_target:
+                if first_target == second_target or second_target.potted:
                     continue
-                if second_target.potted:
-                    continue
-                # Check if first target could hit second target
                 combination_shot = self._evaluate_combination_shot(cue, first_target, second_target,
                                                                   balls, pockets, ball_on,
                                                                   reds_remaining, score_diff,
                                                                   table_bounds)
-                if combination_shot and combination_shot['score'] > best_score:
-                    best_score = combination_shot['score']
-                    best_shot = combination_shot
+                if combination_shot and not combination_shot.get('blocked', False):
+                    combo_score = combination_shot['score']
+                    if combo_score > 0:
+                        combo_score += 100  # Bonus for pottable combo (less than direct)
+                    if combo_score > best_pot_score:
+                        best_pot_score = combo_score
+                        best_pot_shot = combination_shot
 
-        # Evaluate safety shots if:
-        # 1. No good pot available (best_score is low)
-        # 2. Significantly ahead (play safe)
-        # 3. No pot is high enough quality
-        safety_threshold = 50 + (self.safety_bias * 40) - (self.aggression * 25)
-        ahead_threshold = 120 + (self.safety_bias * 30) - (self.aggression * 20)
-        clearance_threshold = 40 + (self.safety_bias * 20) - (self.aggression * 15)
-        should_consider_safety = (
-            best_score < safety_threshold
-            or (is_ahead and best_score < ahead_threshold)
-            or (is_clearance and best_score < clearance_threshold)
-        )
-        if is_clearance and not is_ahead:
-            should_consider_safety = False
-        
-        if should_consider_safety:
+        # =====================================================================
+        # If ANY pottable shot exists with clear path, ALWAYS take it
+        # Only consider safety if NO pot is possible
+        # =====================================================================
+        if best_pot_shot and best_pot_score > 0:
+            # We have a pottable shot - use it!
+            best_shot = best_pot_shot
+            best_score = best_pot_score
+        else:
+            # No clear pot available - fall back to safety or best available
+            best_shot = best_pot_shot  # May be None or a difficult shot
+            best_score = best_pot_score if best_pot_shot else -float('inf')
+            
+            # Only now consider safety shots (when no pot is available)
             safety_shot = self._evaluate_safety_shot(cue, balls, pockets, ball_on, reds_remaining)
             if safety_shot:
-                # Adjust safety score based on game state
-                if is_ahead:
-                    safety_shot['score'] += 100 * (1.0 + (self.safety_bias * 0.5))
-                elif is_behind:
-                    safety_shot['score'] -= 50 * (1.0 + (self.aggression * 0.5))
-                safety_shot['score'] += self.safety_bias * 60
-                safety_shot['score'] -= self.aggression * 40
-                
-                if safety_shot['score'] > best_score:
-                    best_score = safety_shot['score']
+                if best_shot is None or safety_shot['score'] > best_score:
                     best_shot = safety_shot
+                    best_score = safety_shot['score']
 
         if best_shot:
-            # Apply skill-based error (much more accurate for high-skill AI)
-            # For skill 0.95+, error is very small (0.001-0.003)
-            # For skill 0.85, error is moderate (0.003)
-            # For skill < 0.8, error increases
-            base_error = 0.003
-            error = base_error * (1.0 - self.skill) * 0.5  # Reduced error for high skill
-            if self.skill > 0.95:
-                error *= 0.3  # Even less error for excellent AI
-            angle = best_shot['angle'] + random.gauss(0, error)
+            # Perfect players (skill = 1.0) have ZERO error
+            # Other high-skill players have minimal error
+            if self.skill >= 1.0:
+                # PERFECT: 100% accuracy - no error at all
+                error = 0.0
+            elif self.skill > 0.95:
+                # Near-perfect: ~99% accurate
+                error = 0.0003
+            elif self.skill > 0.9:
+                # Excellent: ~98% accurate
+                error = 0.0006
+            else:
+                # Good: ~97% accurate
+                error = 0.001
+            angle = best_shot['angle'] + (random.gauss(0, error) if error > 0 else 0)
             
-            # Power calculation - more precise for high-skill AI
+            # Power calculation - AI uses optimal power with minimal variance
             power = best_shot['power'] * (30.0 / 90.0)  # Scale down to new max of 30
-            # Skill-based power adjustment (high-skill AI uses optimal power)
-            power_multiplier = 1.0 + (self.skill * 0.12)
-            if self.skill > 0.95:
-                power_multiplier = 1.0 + (self.skill * 0.08)  # Less variance for excellent AI
+            
+            # Slight power adjustment based on skill (high skill = optimal power)
+            power_multiplier = 1.0 + (self.skill * 0.05)  # Small boost for skill
             power *= power_multiplier
             
-            # Style influence on power
+            # Minimal style influence on power (1-2% max)
             if self.aggression > 0.6:
-                power *= 1.0 + ((self.aggression - 0.6) * 0.12)
+                power *= 1.0 + ((self.aggression - 0.6) * 0.03)
             if self.safety_bias > 0.6:
-                power *= 1.0 - ((self.safety_bias - 0.6) * 0.08)
+                power *= 1.0 - ((self.safety_bias - 0.6) * 0.02)
 
-            # Add small random variance only for lower-skill AI
-            if self.skill < 0.9:
-                power += random.uniform(-1, 1)
+            # No random power variance - AI is precise
             
             return angle, max(8, min(30, power))
 
-        # Fallback: aim at highest value valid ball (more accurate for excellent AI)
+        # Fallback: aim at highest value valid ball with perfect accuracy
         target = max(valid, key=lambda b: b.value)
         angle = math.atan2(target.y - cue.y, target.x - cue.x)
-        error = (1 - self.skill) * 0.003  # Reduced error
-        if self.skill > 0.95:
-            error *= 0.3
-        # Calculate absolute minimum power for fallback shot
+        # Perfect players have ZERO error
+        error = 0.0 if self.skill >= 1.0 else (0.0003 if self.skill > 0.95 else 0.0006)
+        # Calculate optimal power for fallback shot
         distance = math.hypot(target.x - cue.x, target.y - cue.y)
         min_power = (20 + distance / 12) * (30.0 / 90.0)  # Scale to new max of 30
-        min_power *= 1.0 + (self.skill * 0.10)
-        return angle + random.gauss(0, error), max(8, min(30, min_power))
+        min_power *= 1.0 + (self.skill * 0.05)  # Small skill boost
+        return angle + (random.gauss(0, error) if error > 0 else 0), max(8, min(30, min_power))
 
     def _evaluate_shot(self, cue: Ball, target: Ball, pocket: Tuple[int, int],
                        balls: List[Ball], pockets: List[Tuple[int, int]],
@@ -1058,28 +1143,28 @@ class SnookerGame:
         self.balls: List[Ball] = []
         self.cue_ball: Optional[Ball] = None
         self.ai = AIPlayer(
-            skill=0.985,
+            skill=1.0,  # PERFECT player
             aggression=0.55,
             safety_bias=0.55,
             combo_bias=0.45,
             pot_bias=0.6,
-        )  # Excellent AI player - balanced and strong
+        )  # Perfect AI player - never misses
         
-        # Tournament AI players
+        # Tournament AI players - ALL PERFECT
         self.ai_louis = AIPlayer(
-            skill=0.95,
+            skill=1.0,  # PERFECT player
             aggression=0.4,
             safety_bias=0.7,
             combo_bias=0.35,
             pot_bias=0.5,
-        )  # Mst. Louis Sonic - tactical, safety-first
+        )  # Mst. Louis Sonic - perfect tactical player
         self.ai_bradley = AIPlayer(
-            skill=0.995,
+            skill=1.0,  # PERFECT player
             aggression=0.75,
             safety_bias=0.35,
             combo_bias=0.7,
             pot_bias=0.8,
-        )  # Gen. Bradley Sonic - aggressive finisher
+        )  # Gen. Bradley Sonic - perfect aggressive finisher
         
         # Tournament state
         self.tournament_active = False
@@ -1101,6 +1186,14 @@ class SnookerGame:
         # Sound state tracking
         self.collision_count_this_frame = 0
         self.last_collision_time = 0
+        
+        # Spin control UI state
+        self.spin_control_radius = int(35 * self.scale)  # Size of the spin control circle
+        self.spin_dot_radius = int(8 * self.scale)  # Size of the draggable dot
+        self.spin_dot_x = 0.0  # Dot position relative to center (-1 to 1)
+        self.spin_dot_y = 0.0  # Dot position relative to center (-1 to 1)
+        self.spin_dragging = False  # Is the user dragging the spin dot?
+        self.spin_control_rect = pygame.Rect(0, 0, 0, 0)  # Will be set in draw
 
         # Update layout based on desktop
         self._update_layout()
@@ -1171,14 +1264,22 @@ class SnookerGame:
             (table_x + table_width, table_y + table_height),      # Bottom-right
         ]
         
-        # Ball spots (relative to window)
+        # Ball spots (relative to window) - proper snooker positions
+        # Using proportions of table width for correct positioning:
+        # - Blue: center of table (50%)
+        # - Pink: between blue and black (70% along)
+        # - Black: near far cushion (92% along)
+        blue_x = table_x + table_width // 2
+        pink_x = table_x + int(table_width * 0.70)
+        black_x = table_x + int(table_width * 0.92)
+        
         self.spots = {
             'yellow': (self.baulk_x, self.d_center_y - self.d_radius),
             'green': (self.baulk_x, self.d_center_y + self.d_radius),
             'brown': (self.baulk_x, self.d_center_y),
-            'blue': (table_x + table_width // 2, self.d_center_y),
-            'pink': (table_x + int(615 * self.scale), self.d_center_y),
-            'black': (table_x + int(910 * self.scale), self.d_center_y),
+            'blue': (blue_x, self.d_center_y),
+            'pink': (pink_x, self.d_center_y),
+            'black': (black_x, self.d_center_y),
         }
 
     def update_desktop(
@@ -1315,7 +1416,10 @@ class SnookerGame:
         self.balls.append(self.cue_ball)
 
         # Create 15 red balls in triangle
-        start_x = self.table_rect.x + int(640 * self.scale)
+        # Red triangle apex is just behind (towards black) the pink spot
+        # Pink is at 70% of table width, so reds start at ~72%
+        table_width = self.table_rect.width
+        start_x = self.table_rect.x + int(table_width * 0.72)
         start_y = self.d_center_y
         for row in range(5):
             for col in range(row + 1):
@@ -1354,6 +1458,11 @@ class SnookerGame:
         self.is_charging = False
         self.cue_power = 0
         self.cue_angle = 0
+        
+        # Reset spin control
+        self.spin_dot_x = 0.0
+        self.spin_dot_y = 0.0
+        self.spin_dragging = False
 
         # Shot tracking
         self.first_ball_hit: Optional[Ball] = None
@@ -1370,6 +1479,16 @@ class SnookerGame:
         # Clean up AI placement timer if it exists
         if hasattr(self, 'ai_placing_cue_timer'):
             del self.ai_placing_cue_timer
+        
+        # AI studying behavior - reset for new match
+        self.ai_studying = False
+        self.ai_study_timer = 0
+        self.ai_potential_shots = []
+        self.ai_current_study_index = 0
+        self.ai_study_angle = 0
+        self.ai_final_shot = None
+        self.ai_simulated_results = []  # Results from simulating all shots
+        self.ai_best_simulated_shot = None  # The shot that scored most points in simulation
 
         # Messages
         self.message = ""
@@ -1400,6 +1519,826 @@ class SnookerGame:
                 return color
         return None  # All colors potted
 
+    def calculate_ai_potential_shots(self) -> List[dict]:
+        """
+        Calculate all potential shots the AI could consider, for visual study effect.
+        
+        CRITICAL: AI should prioritize EASIEST LEGAL POT first!
+        Shot difficulty (ease of pot) should heavily outweigh ball value.
+        """
+        if not self.cue_ball:
+            return []
+        
+        potential_shots = []
+        
+        # Get valid target balls based on current ball_on
+        if self.ball_on == "red":
+            valid_targets = [b for b in self.balls if not b.potted and b.ball_type == 'red']
+        elif self.ball_on == "color":
+            valid_targets = [b for b in self.balls if not b.potted and b.ball_type in COLOR_SEQUENCE]
+        else:
+            # Specific color required (clearance)
+            valid_targets = [b for b in self.balls if not b.potted and b.ball_type == self.ball_on]
+        
+        if not valid_targets:
+            valid_targets = [b for b in self.balls if not b.potted and b.ball_type != 'white']
+        
+        # Evaluate each target ball to each pocket
+        for target in valid_targets:
+            for pocket in self.pockets:
+                # Calculate angle from cue to target via ghost ball position
+                to_pocket_x = pocket[0] - target.x
+                to_pocket_y = pocket[1] - target.y
+                to_pocket_dist = math.hypot(to_pocket_x, to_pocket_y)
+                
+                if to_pocket_dist < 1:
+                    continue
+                
+                # Normalize
+                to_pocket_x /= to_pocket_dist
+                to_pocket_y /= to_pocket_dist
+                
+                # Ghost ball position
+                ghost_x = target.x - to_pocket_x * (target.radius + self.cue_ball.radius) * 1.05
+                ghost_y = target.y - to_pocket_y * (target.radius + self.cue_ball.radius) * 1.05
+                
+                # Angle from cue to ghost
+                angle = math.atan2(ghost_y - self.cue_ball.y, ghost_x - self.cue_ball.x)
+                cue_to_ghost = math.hypot(ghost_x - self.cue_ball.x, ghost_y - self.cue_ball.y)
+                
+                # Check if path is clear (cue ball to target ball)
+                path_blocked = False
+                for ball in self.balls:
+                    if ball.potted or ball == self.cue_ball or ball == target:
+                        continue
+                    # Point to line distance
+                    ax, ay = self.cue_ball.x, self.cue_ball.y
+                    bx, by = target.x, target.y
+                    px, py = ball.x, ball.y
+                    ab_x, ab_y = bx - ax, by - ay
+                    ap_x, ap_y = px - ax, py - ay
+                    ab_len_sq = ab_x * ab_x + ab_y * ab_y
+                    if ab_len_sq > 0:
+                        t = max(0, min(1, (ap_x * ab_x + ap_y * ab_y) / ab_len_sq))
+                        closest_x = ax + t * ab_x
+                        closest_y = ay + t * ab_y
+                        dist_to_line = math.hypot(px - closest_x, py - closest_y)
+                        if dist_to_line < (ball.radius + self.cue_ball.radius) * 1.1:
+                            path_blocked = True
+                            break
+                
+                # Also check if path from target to pocket is clear
+                pocket_path_blocked = False
+                for ball in self.balls:
+                    if ball.potted or ball == self.cue_ball or ball == target:
+                        continue
+                    ax, ay = target.x, target.y
+                    bx, by = pocket[0], pocket[1]
+                    px, py = ball.x, ball.y
+                    ab_x, ab_y = bx - ax, by - ay
+                    ap_x, ap_y = px - ax, py - ay
+                    ab_len_sq = ab_x * ab_x + ab_y * ab_y
+                    if ab_len_sq > 0:
+                        t = max(0, min(1, (ap_x * ab_x + ap_y * ab_y) / ab_len_sq))
+                        closest_x = ax + t * ab_x
+                        closest_y = ay + t * ab_y
+                        dist_to_line = math.hypot(px - closest_x, py - closest_y)
+                        if dist_to_line < (ball.radius + target.radius) * 1.1:
+                            pocket_path_blocked = True
+                            break
+                
+                # Calculate shot difficulty/score
+                # CRITICAL: Use proper cut angle calculation
+                # Cut angle = angle between (cue->target) and (target->pocket)
+                cue_to_target_angle = math.atan2(target.y - self.cue_ball.y, target.x - self.cue_ball.x)
+                target_to_pocket_angle = math.atan2(to_pocket_y, to_pocket_x)
+                
+                # The cut angle is how much the cue ball needs to "cut" the object ball
+                cut_angle = abs(cue_to_target_angle - target_to_pocket_angle)
+                if cut_angle > math.pi:
+                    cut_angle = 2 * math.pi - cut_angle
+                # Adjust: A straight shot (cue-ball-pocket aligned) should have cut_angle near pi
+                # Convert so that 0 = straight in, higher = harder cut
+                if cut_angle > math.pi / 2:
+                    cut_angle = math.pi - cut_angle
+                
+                # =====================================================================
+                # SCORING: PRIORITIZE EASE OF POT - Ball value is secondary tiebreaker
+                # =====================================================================
+                
+                # Skip blocked shots entirely
+                if path_blocked or pocket_path_blocked:
+                    score = -1000  # Severely penalize blocked shots
+                elif cut_angle > 1.2:  # ~70 degrees - very difficult cut
+                    score = -500  # Still penalize heavily but consider if no alternatives
+                else:
+                    # BASE SCORE: Start high, subtract for difficulty
+                    score = 500
+                    
+                    # EASE OF POT is the PRIMARY factor (worth up to 400 points):
+                    
+                    # 1. Cut angle penalty - HEAVILY penalize difficult cuts (0-200 points penalty)
+                    # Straight shot (0 rad) = 0 penalty, 60 deg cut (1.05 rad) = 200 penalty
+                    cut_penalty = (cut_angle / 1.2) * 200
+                    score -= cut_penalty
+                    
+                    # 2. Distance penalty - closer is easier (0-100 points penalty)
+                    # Max penalty at 400+ pixels distance
+                    distance_penalty = min(cue_to_ghost / 400, 1.0) * 100
+                    score -= distance_penalty
+                    
+                    # 3. Ball-to-pocket distance penalty (0-50 points penalty)
+                    # Balls already near pocket are easier to pot
+                    pocket_distance_penalty = min(to_pocket_dist / 300, 1.0) * 50
+                    score -= pocket_distance_penalty
+                    
+                    # 4. BONUS for very easy shots (straight-in, close range)
+                    if cut_angle < 0.2 and cue_to_ghost < 150:  # Nearly straight, close shot
+                        score += 100  # Big bonus for "gimme" shots
+                    elif cut_angle < 0.4 and cue_to_ghost < 200:  # Easy shot
+                        score += 50
+                    elif cut_angle < 0.3:  # Straight shot any distance
+                        score += 30
+                    
+                    # SECONDARY: Ball value is only a small tiebreaker (0-7 points)
+                    # This prevents high-value balls from overriding ease of pot
+                    value_bonus = target.value  # Just 1-7 points, not 10-70
+                    score += value_bonus
+                
+                potential_shots.append({
+                    'target': target,
+                    'pocket': pocket,
+                    'angle': angle,
+                    'score': score,
+                    'distance': cue_to_ghost,
+                    'cut_angle': cut_angle,
+                    'blocked': path_blocked or pocket_path_blocked
+                })
+        
+        # Sort by score (easiest pots first!)
+        potential_shots.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Add safety shot options for when no good pots exist
+        # Safety: just roll toward the target ball (legal hit, minimal movement)
+        if valid_targets:
+            for target in valid_targets[:3]:  # Top 3 legal targets for safety
+                # Angle directly at target (just to make legal contact)
+                safety_angle = math.atan2(target.y - self.cue_ball.y, target.x - self.cue_ball.x)
+                dist_to_target = math.hypot(target.x - self.cue_ball.x, target.y - self.cue_ball.y)
+                
+                # Check if path is clear
+                path_blocked = False
+                for ball in self.balls:
+                    if ball.potted or ball == self.cue_ball or ball == target:
+                        continue
+                    ax, ay = self.cue_ball.x, self.cue_ball.y
+                    bx, by = target.x, target.y
+                    px, py = ball.x, ball.y
+                    ab_x, ab_y = bx - ax, by - ay
+                    ap_x, ap_y = px - ax, py - ay
+                    ab_len_sq = ab_x * ab_x + ab_y * ab_y
+                    if ab_len_sq > 0:
+                        t = max(0, min(1, (ap_x * ab_x + ap_y * ab_y) / ab_len_sq))
+                        closest_x = ax + t * ab_x
+                        closest_y = ay + t * ab_y
+                        dist_to_line = math.hypot(px - closest_x, py - closest_y)
+                        if dist_to_line < (ball.radius + self.cue_ball.radius) * 1.1:
+                            path_blocked = True
+                            break
+                
+                if not path_blocked:
+                    potential_shots.append({
+                        'target': target,
+                        'pocket': None,  # No specific pocket - safety shot
+                        'angle': safety_angle,
+                        'score': 10,  # Low score but legal
+                        'distance': dist_to_target,
+                        'cut_angle': 0,
+                        'blocked': False,
+                        'is_safety': True
+                    })
+        
+        # Return more shots to ensure we test easy pots even if they score lower
+        # Filter out severely blocked shots first
+        viable_shots = [s for s in potential_shots if s['score'] > -500]
+        if len(viable_shots) < 5:
+            # If not enough viable shots, include some difficult ones
+            viable_shots = potential_shots[:12]
+        
+        return viable_shots[:12]  # Study up to 12 potential shots (increased from 8)
+
+    def simulate_shot_with_angle_power(self, angle: float, power: float, target_ball: Ball = None) -> dict:
+        """
+        Simulate a shot at a specific angle and power.
+        This is the core simulation that runs physics in the background.
+        
+        The AI uses this to "mentally play" every possible shot and find the best one.
+        
+        CRITICAL: This must accurately track:
+        1. The cue ball trajectory
+        2. The OBJECT BALL trajectory after being hit (this is what scores!)
+        3. Whether the object ball enters a pocket
+        4. Whether it's a legal shot (correct ball hit first)
+        
+        Returns complete shot outcome for AI decision making.
+        """
+        if not self.cue_ball:
+            return {'points': 0, 'potted': [], 'foul': True, 'foul_points': 4, 'opponent_points': 4}
+        
+        # Save original ball states - we'll restore these after simulation
+        original_states = []
+        for ball in self.balls:
+            original_states.append({
+                'ball': ball,
+                'x': ball.x,
+                'y': ball.y,
+                'vx': ball.vx,
+                'vy': ball.vy,
+                'potted': ball.potted,
+                'top_spin': ball.top_spin,
+                'side_spin': ball.side_spin,
+                'is_sliding': ball.is_sliding
+            })
+        
+        # Apply the shot to cue ball
+        speed = power * 2.0
+        self.cue_ball.vx = math.cos(angle) * speed
+        self.cue_ball.vy = math.sin(angle) * speed
+        self.cue_ball.top_spin = 0
+        self.cue_ball.side_spin = 0
+        self.cue_ball.is_sliding = True
+        
+        # Track first ball hit by cue ball (for foul detection)
+        first_ball_hit = None
+        
+        # Track object ball trajectories for debugging/verification
+        object_ball_potted_in_pocket = None
+        
+        # Run physics simulation - MUST match real game physics exactly!
+        max_steps = 1000  # Enough for any shot to complete
+        dt = 1/60.0
+        
+        for step in range(max_steps):
+            # Check if all balls stopped
+            any_moving = False
+            for ball in self.balls:
+                if not ball.potted and (abs(ball.vx) > 0.1 or abs(ball.vy) > 0.1):
+                    any_moving = True
+                    break
+            
+            if not any_moving and step > 10:
+                break
+            
+            # Update ball positions with EXACT friction matching real game
+            for ball in self.balls:
+                if ball.potted:
+                    continue
+                
+                spd = math.hypot(ball.vx, ball.vy)
+                if spd > 0.05:
+                    # Use IDENTICAL friction model to real game
+                    if spd < 15:
+                        speed_factor = spd / 15.0
+                        base_friction = 0.909 + (speed_factor * 0.0819)
+                    elif spd < 30:
+                        speed_factor = (spd - 15) / 15.0
+                        base_friction = 0.9909 + (speed_factor * 0.00805)
+                    else:
+                        base_friction = 0.99895
+                    friction = adjust_friction(base_friction)
+                    ball.vx *= friction
+                    ball.vy *= friction
+                else:
+                    ball.vx = ball.vy = 0
+                
+                ball.x += ball.vx * dt * 60
+                ball.y += ball.vy * dt * 60
+            
+            # Resolve collisions
+            for i, b1 in enumerate(self.balls):
+                if b1.potted:
+                    continue
+                
+                # Cushion collisions - match real game restitution
+                cushion_restitution = 0.82
+                if b1.x - b1.radius < self.table_rect.left:
+                    b1.x = self.table_rect.left + b1.radius
+                    b1.vx = abs(b1.vx) * cushion_restitution
+                elif b1.x + b1.radius > self.table_rect.right:
+                    b1.x = self.table_rect.right - b1.radius
+                    b1.vx = -abs(b1.vx) * cushion_restitution
+                if b1.y - b1.radius < self.table_rect.top:
+                    b1.y = self.table_rect.top + b1.radius
+                    b1.vy = abs(b1.vy) * cushion_restitution
+                elif b1.y + b1.radius > self.table_rect.bottom:
+                    b1.y = self.table_rect.bottom - b1.radius
+                    b1.vy = -abs(b1.vy) * cushion_restitution
+                
+                # Ball-to-ball collisions
+                for b2 in self.balls[i + 1:]:
+                    if b2.potted:
+                        continue
+                    dx = b2.x - b1.x
+                    dy = b2.y - b1.y
+                    dist = math.hypot(dx, dy)
+                    min_dist = b1.radius + b2.radius
+                    
+                    if dist < min_dist and dist > 0:
+                        nx, ny = dx / dist, dy / dist
+                        overlap = min_dist - dist
+                        b1.x -= nx * overlap / 2
+                        b1.y -= ny * overlap / 2
+                        b2.x += nx * overlap / 2
+                        b2.y += ny * overlap / 2
+                        
+                        rel_vx = b1.vx - b2.vx
+                        rel_vy = b1.vy - b2.vy
+                        v_dot_n = rel_vx * nx + rel_vy * ny
+                        if v_dot_n > 0:
+                            # Energy transfer
+                            energy_preservation = 0.96
+                            b1.vx -= v_dot_n * nx * energy_preservation
+                            b1.vy -= v_dot_n * ny * energy_preservation
+                            b2.vx += v_dot_n * nx * energy_preservation
+                            b2.vy += v_dot_n * ny * energy_preservation
+                            
+                            # Track first ball hit by cue ball
+                            if first_ball_hit is None:
+                                if b1.ball_type == 'white':
+                                    first_ball_hit = b2
+                                elif b2.ball_type == 'white':
+                                    first_ball_hit = b1
+                
+                # Pocket detection - CRITICAL for scoring
+                pocket_size = int(24 * self.scale)
+                for pocket_idx, (px, py) in enumerate(self.pockets):
+                    dist_to_pocket = math.hypot(b1.x - px, b1.y - py)
+                    if dist_to_pocket < pocket_size + b1.radius:
+                        b1.potted = True
+                        b1.vx = b1.vy = 0
+                        # Track which pocket the object ball went into
+                        if b1.ball_type != 'white' and object_ball_potted_in_pocket is None:
+                            object_ball_potted_in_pocket = pocket_idx
+                        break
+        
+        # =====================================================================
+        # CALCULATE RESULTS - Determine score and fouls
+        # =====================================================================
+        potted_balls = []
+        ai_points = 0
+        foul = False
+        foul_points = 0
+        
+        # Check what was potted
+        for state in original_states:
+            ball = state['ball']
+            if ball.potted and not state['potted']:
+                potted_balls.append(ball)
+        
+        # FOUL CHECK 1: Cue ball potted (scratch)
+        cue_potted = any(b.ball_type == 'white' for b in potted_balls)
+        if cue_potted:
+            foul = True
+            foul_points = max(foul_points, 4)
+        
+        # FOUL CHECK 2: No ball hit
+        if first_ball_hit is None:
+            foul = True
+            if self.ball_on in BALL_VALUES:
+                foul_points = max(foul_points, max(4, BALL_VALUES[self.ball_on]))
+            else:
+                foul_points = max(foul_points, 4)
+        
+        # FOUL CHECK 3: Wrong ball hit first
+        if first_ball_hit and not foul:
+            hit_type = first_ball_hit.ball_type
+            if self.ball_on == "red" and hit_type != "red":
+                foul = True
+                foul_points = max(foul_points, max(4, first_ball_hit.value))
+            elif self.ball_on == "color" and hit_type == "red":
+                foul = True
+                foul_points = max(foul_points, 4)
+            elif self.ball_on not in ["red", "color"] and hit_type != self.ball_on:
+                # Clearance - must hit specific color
+                foul = True
+                foul_points = max(foul_points, max(4, BALL_VALUES.get(hit_type, 4), BALL_VALUES.get(self.ball_on, 4)))
+        
+        # FOUL CHECK 4: Potted wrong ball
+        object_balls_potted = [b for b in potted_balls if b.ball_type != 'white']
+        if not foul and object_balls_potted:
+            if self.ball_on == "red":
+                wrong_potted = [b for b in object_balls_potted if b.ball_type != 'red']
+                if wrong_potted:
+                    foul = True
+                    foul_points = max(foul_points, max(4, max(b.value for b in wrong_potted)))
+            elif self.ball_on == "color":
+                reds_potted = [b for b in object_balls_potted if b.ball_type == 'red']
+                if reds_potted:
+                    foul = True
+                    foul_points = max(foul_points, 4)
+                elif len([b for b in object_balls_potted if b.ball_type in COLOR_SEQUENCE]) > 1:
+                    foul = True
+                    foul_points = max(foul_points, max(b.value for b in object_balls_potted))
+            else:
+                # Clearance - must pot specific color
+                wrong_potted = [b for b in object_balls_potted if b.ball_type != self.ball_on]
+                if wrong_potted:
+                    foul = True
+                    foul_points = max(foul_points, max(4, BALL_VALUES.get(self.ball_on, 4), max(b.value for b in wrong_potted)))
+        
+        # Calculate AI points (only if no foul)
+        if not foul:
+            for ball in object_balls_potted:
+                if self.ball_on == 'red' and ball.ball_type == 'red':
+                    ai_points += 1
+                elif self.ball_on == 'color' and ball.ball_type in COLOR_SEQUENCE:
+                    ai_points += ball.value
+                elif ball.ball_type == self.ball_on:  # Clearance
+                    ai_points += ball.value
+        
+        # Restore all original ball states
+        for state in original_states:
+            ball = state['ball']
+            ball.x = state['x']
+            ball.y = state['y']
+            ball.vx = state['vx']
+            ball.vy = state['vy']
+            ball.potted = state['potted']
+            ball.top_spin = state['top_spin']
+            ball.side_spin = state['side_spin']
+            ball.is_sliding = state['is_sliding']
+        
+        return {
+            'points': ai_points,
+            'potted': [b.ball_type for b in potted_balls],  # List of ball types potted
+            'potted_count': len(object_balls_potted),
+            'foul': foul,
+            'foul_points': foul_points,
+            'opponent_points': foul_points if foul else 0,
+            'angle': angle,
+            'power': power,
+            'target_ball': target_ball,
+            'first_hit': first_ball_hit.ball_type if first_ball_hit else None,
+            'pocket_used': object_ball_potted_in_pocket
+        }
+
+    def simulate_shot(self, shot: dict, power: float = 20.0) -> dict:
+        """
+        Wrapper to simulate a shot from a shot dict (for compatibility).
+        Calls the core simulation with the shot's angle.
+        """
+        angle = shot.get('angle', 0)
+        target = shot.get('target')
+        result = self.simulate_shot_with_angle_power(angle, power, target)
+        result['shot'] = shot  # Include original shot data
+        return result
+
+    def find_best_scoring_shot(self) -> dict:
+        """
+        AI "MENTALLY PLAYS" EVERY POSSIBLE SHOT before making a decision.
+        
+        This method:
+        1. Generates ALL possible legal shot combinations (ball + pocket + power)
+        2. Simulates each one in the background (hidden from player)
+        3. Records the outcome of every shot
+        4. Returns the BEST legal scoring shot
+        
+        The AI focuses on:
+        - LEGAL shots only (hitting correct ball first)
+        - HIGH SCORING (most points per shot)
+        - EASIEST pots (when scores are equal, prefer easier shots)
+        
+        Returns the complete shot data needed to "replay" it for the player.
+        """
+        if not self.cue_ball:
+            return None
+        
+        # Get valid target balls based on ball_on
+        if self.ball_on == "red":
+            valid_targets = [b for b in self.balls if not b.potted and b.ball_type == 'red']
+        elif self.ball_on == "color":
+            valid_targets = [b for b in self.balls if not b.potted and b.ball_type in COLOR_SEQUENCE]
+        else:
+            # Clearance - specific color required
+            valid_targets = [b for b in self.balls if not b.potted and b.ball_type == self.ball_on]
+        
+        if not valid_targets:
+            # Fallback to any non-white ball
+            valid_targets = [b for b in self.balls if not b.potted and b.ball_type != 'white']
+        
+        if not valid_targets:
+            return None
+        
+        # =====================================================================
+        # PHASE 1: Generate ALL possible shot combinations
+        # =====================================================================
+        all_shots_to_test = []
+        
+        for target in valid_targets:
+            for pocket in self.pockets:
+                # Calculate the ghost ball position (where cue ball needs to hit target)
+                to_pocket_x = pocket[0] - target.x
+                to_pocket_y = pocket[1] - target.y
+                to_pocket_dist = math.hypot(to_pocket_x, to_pocket_y)
+                
+                if to_pocket_dist < 1:
+                    continue
+                
+                # Normalize direction to pocket
+                to_pocket_x /= to_pocket_dist
+                to_pocket_y /= to_pocket_dist
+                
+                # Ghost ball position - where cue ball should contact target
+                ghost_x = target.x - to_pocket_x * (target.radius + self.cue_ball.radius) * 1.05
+                ghost_y = target.y - to_pocket_y * (target.radius + self.cue_ball.radius) * 1.05
+                
+                # Angle from cue ball to ghost ball
+                angle = math.atan2(ghost_y - self.cue_ball.y, ghost_x - self.cue_ball.x)
+                
+                # Distance from cue ball to target (for power calculation)
+                cue_to_target = math.hypot(target.x - self.cue_ball.x, target.y - self.cue_ball.y)
+                
+                # Calculate cut angle (difficulty measure)
+                cue_to_target_angle = math.atan2(target.y - self.cue_ball.y, target.x - self.cue_ball.x)
+                target_to_pocket_angle = math.atan2(to_pocket_y, to_pocket_x)
+                cut_angle = abs(cue_to_target_angle - target_to_pocket_angle)
+                if cut_angle > math.pi:
+                    cut_angle = 2 * math.pi - cut_angle
+                if cut_angle > math.pi / 2:
+                    cut_angle = math.pi - cut_angle
+                
+                # Skip impossibly difficult shots (> 80 degree cut)
+                if cut_angle > 1.4:
+                    continue
+                
+                # Check if path is blocked
+                path_blocked = False
+                for ball in self.balls:
+                    if ball.potted or ball == self.cue_ball or ball == target:
+                        continue
+                    # Check cue-to-target path
+                    ax, ay = self.cue_ball.x, self.cue_ball.y
+                    bx, by = target.x, target.y
+                    px, py = ball.x, ball.y
+                    ab_x, ab_y = bx - ax, by - ay
+                    ap_x, ap_y = px - ax, py - ay
+                    ab_len_sq = ab_x * ab_x + ab_y * ab_y
+                    if ab_len_sq > 0:
+                        t = max(0, min(1, (ap_x * ab_x + ap_y * ab_y) / ab_len_sq))
+                        closest_x = ax + t * ab_x
+                        closest_y = ay + t * ab_y
+                        dist_to_line = math.hypot(px - closest_x, py - closest_y)
+                        if dist_to_line < (ball.radius + self.cue_ball.radius) * 1.2:
+                            path_blocked = True
+                            break
+                
+                if path_blocked:
+                    continue
+                
+                # Also check target-to-pocket path
+                for ball in self.balls:
+                    if ball.potted or ball == self.cue_ball or ball == target:
+                        continue
+                    ax, ay = target.x, target.y
+                    bx, by = pocket[0], pocket[1]
+                    px, py = ball.x, ball.y
+                    ab_x, ab_y = bx - ax, by - ay
+                    ap_x, ap_y = px - ax, py - ay
+                    ab_len_sq = ab_x * ab_x + ab_y * ab_y
+                    if ab_len_sq > 0:
+                        t = max(0, min(1, (ap_x * ab_x + ap_y * ab_y) / ab_len_sq))
+                        closest_x = ax + t * ab_x
+                        closest_y = ay + t * ab_y
+                        dist_to_line = math.hypot(px - closest_x, py - closest_y)
+                        if dist_to_line < (ball.radius + target.radius) * 1.2:
+                            path_blocked = True
+                            break
+                
+                if path_blocked:
+                    continue
+                
+                # Calculate power levels to test based on distance
+                total_distance = cue_to_target + to_pocket_dist
+                if total_distance < 150:
+                    power_levels = [10, 12, 14, 16]
+                elif total_distance < 300:
+                    power_levels = [14, 16, 18, 20, 22]
+                elif total_distance < 450:
+                    power_levels = [18, 20, 22, 25, 28]
+                else:
+                    power_levels = [22, 25, 28, 30]
+                
+                all_shots_to_test.append({
+                    'target': target,
+                    'pocket': pocket,
+                    'angle': angle,
+                    'distance': cue_to_target,
+                    'cut_angle': cut_angle,
+                    'to_pocket_dist': to_pocket_dist,
+                    'power_levels': power_levels,
+                    'ball_value': target.value
+                })
+        
+        # Also add safety shots (just hitting the ball legally)
+        for target in valid_targets[:5]:  # Top 5 closest legal targets
+            safety_angle = math.atan2(target.y - self.cue_ball.y, target.x - self.cue_ball.x)
+            dist_to_target = math.hypot(target.x - self.cue_ball.x, target.y - self.cue_ball.y)
+            
+            # Check if direct path is clear
+            path_blocked = False
+            for ball in self.balls:
+                if ball.potted or ball == self.cue_ball or ball == target:
+                    continue
+                ax, ay = self.cue_ball.x, self.cue_ball.y
+                bx, by = target.x, target.y
+                px, py = ball.x, ball.y
+                ab_x, ab_y = bx - ax, by - ay
+                ap_x, ap_y = px - ax, py - ay
+                ab_len_sq = ab_x * ab_x + ab_y * ab_y
+                if ab_len_sq > 0:
+                    t = max(0, min(1, (ap_x * ab_x + ap_y * ab_y) / ab_len_sq))
+                    closest_x = ax + t * ab_x
+                    closest_y = ay + t * ab_y
+                    dist_to_line = math.hypot(px - closest_x, py - closest_y)
+                    if dist_to_line < (ball.radius + self.cue_ball.radius) * 1.2:
+                        path_blocked = True
+                        break
+            
+            if not path_blocked:
+                all_shots_to_test.append({
+                    'target': target,
+                    'pocket': None,
+                    'angle': safety_angle,
+                    'distance': dist_to_target,
+                    'cut_angle': 0,
+                    'to_pocket_dist': 0,
+                    'power_levels': [8, 10, 12],  # Low power for safety
+                    'ball_value': target.value,
+                    'is_safety': True
+                })
+        
+        # =====================================================================
+        # PHASE 2: Simulate EVERY shot and record results
+        # =====================================================================
+        all_results = []
+        
+        for shot in all_shots_to_test:
+            angle = shot['angle']
+            target = shot['target']
+            is_safety = shot.get('is_safety', False)
+            
+            best_result_for_shot = None
+            
+            for power in shot['power_levels']:
+                # Run the full simulation
+                result = self.simulate_shot_with_angle_power(angle, power, target)
+                result['is_safety'] = is_safety
+                result['shot_data'] = shot
+                
+                # Skip fouls if we have better options
+                if result['foul']:
+                    if best_result_for_shot is None:
+                        best_result_for_shot = result
+                    continue
+                
+                # Non-foul result - check if it's better
+                if best_result_for_shot is None or best_result_for_shot['foul']:
+                    best_result_for_shot = result
+                elif result['points'] > best_result_for_shot['points']:
+                    best_result_for_shot = result
+                elif result['points'] == best_result_for_shot['points'] and result['points'] > 0:
+                    # Same points - prefer lower power for control
+                    if result['power'] < best_result_for_shot['power']:
+                        best_result_for_shot = result
+            
+            if best_result_for_shot:
+                all_results.append(best_result_for_shot)
+        
+        # =====================================================================
+        # PHASE 3: Select the BEST legal scoring shot
+        # =====================================================================
+        def score_result(r):
+            # Primary: NO FOULS (massive penalty for fouls)
+            foul_penalty = -100000 if r['foul'] else 0
+            
+            # Secondary: POINTS SCORED (higher is better)
+            points_score = r['points'] * 10000
+            
+            # Tertiary: Ball value (for equal-point shots, prefer higher value balls)
+            ball_value = r.get('shot_data', {}).get('ball_value', 0) * 100
+            
+            # Quaternary: Ease of shot (prefer straight, close shots)
+            cut_angle = r.get('shot_data', {}).get('cut_angle', 1.0)
+            distance = r.get('shot_data', {}).get('distance', 500)
+            ease_score = 50 - (cut_angle * 30) - (distance / 20)
+            
+            # Safety shots get a small bonus when no pots available
+            safety_bonus = 10 if r.get('is_safety') and not r['foul'] else 0
+            
+            return foul_penalty + points_score + ball_value + ease_score + safety_bonus
+        
+        all_results.sort(key=score_result, reverse=True)
+        
+        if all_results:
+            return all_results[0]
+        return None
+
+    def simulate_all_potential_shots(self) -> List[dict]:
+        """
+        Simulate ALL potential shots and return results sorted by:
+        1. NO FOUL shots first (we NEVER want to give opponent points)
+        2. Then by AI points scored (highest first)
+        3. Safety shots as fallback (legal hit, 0 points but no foul)
+        
+        This runs during AI "thinking" phase - fast, no rendering.
+        """
+        potential_shots = self.calculate_ai_potential_shots()
+        results = []
+        
+        for shot in potential_shots:
+            if shot.get('blocked', False):
+                continue
+            
+            is_safety = shot.get('is_safety', False)
+            shot_distance = shot.get('distance', 200)  # Distance from cue to target
+            
+            # Calculate optimal power range based on shot distance
+            # Closer shots need less power, longer shots need more
+            if is_safety:
+                power_levels = [8, 10, 12, 14]  # Gentle rolls for safety
+            else:
+                # Dynamic power levels based on distance
+                # Short shots (< 100px): lower power range
+                # Medium shots (100-250px): medium power range
+                # Long shots (> 250px): higher power range
+                if shot_distance < 100:
+                    power_levels = [10, 12, 14, 16, 18]  # Close shots
+                elif shot_distance < 200:
+                    power_levels = [14, 16, 18, 20, 22]  # Medium shots
+                elif shot_distance < 300:
+                    power_levels = [16, 18, 20, 22, 25, 28]  # Long shots
+                else:
+                    power_levels = [18, 20, 23, 25, 28, 30]  # Very long shots
+            
+            best_result = None
+            best_potting_power = None  # Track the power that pots the ball
+            
+            for power in power_levels:
+                result = self.simulate_shot(shot, power)
+                result['is_safety'] = is_safety
+                
+                # Skip fouls unless we have no other choice
+                if result['foul']:
+                    # Only keep foul results if we haven't found anything better
+                    if best_result is None:
+                        best_result = result
+                        best_result['power'] = power
+                    # Never prefer a foul over a non-foul
+                    continue
+                
+                # Non-foul result - check if it's better
+                if best_result is None or best_result['foul']:
+                    # First non-foul result, take it
+                    best_result = result
+                    best_result['power'] = power
+                    if result['points'] > 0:
+                        best_potting_power = power
+                elif result['points'] > best_result['points']:
+                    # More points without fouling
+                    best_result = result
+                    best_result['power'] = power
+                    best_potting_power = power
+                elif result['points'] == best_result['points'] and result['points'] > 0:
+                    # Same points - prefer lower power for control
+                    if best_potting_power is None or power < best_potting_power:
+                        best_result = result
+                        best_result['power'] = power
+                        best_potting_power = power
+            
+            if best_result:
+                results.append(best_result)
+        
+        # Sort by: NO FOUL first, then by AI points (highest first), 
+        # then by ease-of-pot (as tiebreaker), then safety as fallback
+        def score_shot(r):
+            # Primary: Foul status (non-foul = 10000 bonus)
+            foul_penalty = 0 if not r['foul'] else -10000
+            # Secondary: AI points gained (potting shots preferred)
+            ai_score = r['points'] * 100
+            # Tertiary: Ease of pot as tiebreaker (use pre-calculated shot score)
+            # This ensures among equal-point shots, the easiest pot wins
+            shot_data = r.get('shot', {})
+            ease_score = shot_data.get('score', 0) / 100  # Scale down to 0-5 range as tiebreaker
+            ease_score = max(0, min(5, ease_score))  # Clamp to avoid overwhelming other factors
+            # Quaternary: Safety shots are acceptable fallback (0 points but legal)
+            safety_bonus = 50 if r.get('is_safety') and not r['foul'] and r['points'] == 0 else 0
+            # Quinary: Opponent points avoided (negative = bad)
+            opponent_penalty = -r['opponent_points'] * 50
+            return foul_penalty + ai_score + ease_score + safety_bonus + opponent_penalty
+        
+        results.sort(key=score_shot, reverse=True)
+        return results
+
     def resolve_physics(self, dt: float):
         """Handle all physics: movement, collisions, pocketing."""
         # Reset collision counter for this physics step
@@ -1416,20 +2355,44 @@ class SnookerGame:
                 if b1.potted:
                     continue
 
-                # Cushion collisions
+                # Cushion collisions with realistic spin effects
+                # Side spin affects the angle of reflection off cushions
+                # Cushion coefficient of restitution is typically 0.75-0.85 for snooker
+                cushion_restitution = 0.82
+                cushion_spin_effect = 0.15  # How much side spin affects reflection angle
+                
                 if b1.x - b1.radius < self.table_rect.left:
                     b1.x = self.table_rect.left + b1.radius
-                    b1.vx = abs(b1.vx) * 0.8
+                    # Side spin affects vertical velocity when hitting side cushion
+                    spin_adjustment = b1.side_spin * cushion_spin_effect
+                    b1.vy += spin_adjustment
+                    b1.vx = abs(b1.vx) * cushion_restitution
+                    # Cushion contact reduces spin
+                    b1.side_spin *= 0.6
+                    b1.top_spin *= 0.85
                 elif b1.x + b1.radius > self.table_rect.right:
                     b1.x = self.table_rect.right - b1.radius
-                    b1.vx = -abs(b1.vx) * 0.8
+                    spin_adjustment = -b1.side_spin * cushion_spin_effect
+                    b1.vy += spin_adjustment
+                    b1.vx = -abs(b1.vx) * cushion_restitution
+                    b1.side_spin *= 0.6
+                    b1.top_spin *= 0.85
 
                 if b1.y - b1.radius < self.table_rect.top:
                     b1.y = self.table_rect.top + b1.radius
-                    b1.vy = abs(b1.vy) * 0.8
+                    # Side spin affects horizontal velocity when hitting top/bottom cushion
+                    spin_adjustment = -b1.side_spin * cushion_spin_effect
+                    b1.vx += spin_adjustment
+                    b1.vy = abs(b1.vy) * cushion_restitution
+                    b1.side_spin *= 0.6
+                    b1.top_spin *= 0.85
                 elif b1.y + b1.radius > self.table_rect.bottom:
                     b1.y = self.table_rect.bottom - b1.radius
-                    b1.vy = -abs(b1.vy) * 0.8
+                    spin_adjustment = b1.side_spin * cushion_spin_effect
+                    b1.vx += spin_adjustment
+                    b1.vy = -abs(b1.vy) * cushion_restitution
+                    b1.side_spin *= 0.6
+                    b1.top_spin *= 0.85
 
                 # Ball-to-ball collisions - use sweep test for fast-moving balls
                 for b2 in self.balls[i + 1:]:
@@ -1497,19 +2460,54 @@ class SnookerGame:
                             b2.x += correction_nx * correction
                             b2.y += correction_ny * correction
 
-                        # Velocity exchange - improved energy transfer for more realistic ball movement
+                        # Velocity exchange - improved energy transfer with spin effects
                         rel_vx = b1.vx - b2.vx
                         rel_vy = b1.vy - b2.vy
                         v_dot_n = rel_vx * nx + rel_vy * ny
 
                         if v_dot_n > 0:
-                            # Standard elastic collision with full energy preservation
-                            # This ensures red balls get proper momentum transfer from white ball
-                            energy_preservation = 1.0  # Full elastic collision
+                            # Standard elastic collision with realistic energy preservation
+                            # Snooker balls have coefficient of restitution ~0.95
+                            energy_preservation = 0.96
+                            
+                            # Calculate base velocity changes
                             b1.vx -= v_dot_n * nx * energy_preservation
                             b1.vy -= v_dot_n * ny * energy_preservation
                             b2.vx += v_dot_n * nx * energy_preservation
                             b2.vy += v_dot_n * ny * energy_preservation
+                            
+                            # THROW EFFECT: Side spin on cue ball transfers to object ball direction
+                            # This causes the object ball to slightly deviate from the expected path
+                            if b1.ball_type == 'white' and abs(b1.side_spin) > 0.5:
+                                throw_amount = b1.side_spin * Ball.THROW_COEFFICIENT
+                                # Perpendicular direction to collision normal
+                                perp_x = -ny
+                                perp_y = nx
+                                b2.vx += perp_x * throw_amount
+                                b2.vy += perp_y * throw_amount
+                            elif b2.ball_type == 'white' and abs(b2.side_spin) > 0.5:
+                                throw_amount = b2.side_spin * Ball.THROW_COEFFICIENT
+                                perp_x = -ny
+                                perp_y = nx
+                                b1.vx -= perp_x * throw_amount
+                                b1.vy -= perp_y * throw_amount
+                            
+                            # TOP/BACK SPIN EFFECT: Affects cue ball motion after collision
+                            if b1.ball_type == 'white':
+                                # Top spin makes cue ball follow through
+                                # Back spin makes cue ball draw back
+                                spin_effect = b1.top_spin * 0.08
+                                b1.vx += nx * spin_effect
+                                b1.vy += ny * spin_effect
+                                # Reduce spin after collision
+                                b1.top_spin *= 0.5
+                                b1.side_spin *= 0.7
+                            elif b2.ball_type == 'white':
+                                spin_effect = b2.top_spin * 0.08
+                                b2.vx -= nx * spin_effect
+                                b2.vy -= ny * spin_effect
+                                b2.top_spin *= 0.5
+                                b2.side_spin *= 0.7
                             
                             # Play collision sound (based on collision intensity)
                             collision_speed = abs(v_dot_n)
@@ -1768,6 +2766,11 @@ class SnookerGame:
 
         # Setup AI if needed
         if (self.mode == GameMode.VS_AI or self.mode == GameMode.TOURNAMENT) and self.current_player == 1:
+            # Reset AI studying state for new turn
+            self.ai_studying = False
+            self.ai_study_timer = 0
+            self.ai_potential_shots = []
+            self.ai_current_study_index = 0
             # Much slower AI - gives time to show preparation (180-300 frames = 3-5 seconds at 60fps)
             self.ai_timer = random.randint(180, 300)
             self.ai_shot_calculated = False
@@ -2073,7 +3076,7 @@ class SnookerGame:
                          (center_x + int(180 * self.scale), line_y), 2)
 
         # Footer text under the line - moved up 10%
-        footer = self.fonts['tiny'].render("Mouse to aim • Hold click for power • ESC for menu", True, COLORS['text_secondary'])
+        footer = self.fonts['tiny'].render("Mouse to aim • Hold click for power • Drag spin control for english • ESC for menu", True, COLORS['text_secondary'])
         self.screen.blit(footer, footer.get_rect(center=(center_x, line_y + int(30 * self.scale))))
 
         # Buttons (absolute screen coordinates) - widened by 10%
@@ -2140,7 +3143,9 @@ class SnookerGame:
             ("• Potting the cue ball  • Hitting wrong ball first  • Potting wrong ball  • Missing all balls", COLORS['text_secondary']),
             ("", None),
             ("CONTROLS", COLORS['gold']),
-            ("Mouse = Aim  |  Hold Left Click = Power  |  Release = Shoot  |  ESC = Menu", COLORS['text_primary']),
+            ("Mouse = Aim  |  Hold Left Click = Power  |  Release = Shoot", COLORS['text_primary']),
+            ("Spin Control (bottom-left) = Drag dot for top/back/side spin  |  Right-click = Reset spin", COLORS['text_primary']),
+            ("ESC = Menu", COLORS['text_primary']),
         ]
 
         y = content_rect.y + int(120 * self.scale)
@@ -2444,6 +3449,139 @@ class SnookerGame:
                             if j % 3 == 0:
                                 pygame.draw.circle(self.screen, traj_color, (int(tx), int(ty)), int(3 * self.scale))
 
+    def draw_ai_studying(self):
+        """Draw visualization of AI studying different potential shots - cue stick moves around table."""
+        if not self.cue_ball or self.cue_ball.potted or not self.ai_studying:
+            return
+        
+        if not self.ai_potential_shots or self.ai_current_study_index >= len(self.ai_potential_shots):
+            return
+        
+        # Get current shot being studied
+        current_shot = self.ai_potential_shots[self.ai_current_study_index]
+        target = current_shot['target']
+        pocket = current_shot['pocket']
+        angle = current_shot['angle']
+        
+        pulse = (math.sin(self.animation_tick * 0.15) + 1) * 0.3 + 0.4  # Pulsing effect
+        
+        # Draw faded consideration markers on all potential targets
+        for i, shot in enumerate(self.ai_potential_shots):
+            if shot['blocked']:
+                continue
+            target_ball = shot['target']
+            if i != self.ai_current_study_index:
+                # Draw small faded circle around other potential targets
+                pygame.draw.circle(self.screen, (100, 100, 100), 
+                                  (int(target_ball.x), int(target_ball.y)), 
+                                  int(target_ball.radius * 1.3), 1)
+        
+        # MAIN FEATURE: Draw AI cue stick pointing at current shot being studied
+        # This shows the AI "walking around" and lining up different shots
+        dir_x = math.cos(angle)
+        dir_y = math.sin(angle)
+        
+        # Calculate ghost ball position for this shot
+        to_pocket_x = pocket[0] - target.x
+        to_pocket_y = pocket[1] - target.y
+        to_pocket_dist = math.hypot(to_pocket_x, to_pocket_y)
+        if to_pocket_dist > 0:
+            to_pocket_x /= to_pocket_dist
+            to_pocket_y /= to_pocket_dist
+        
+        ghost_x = target.x - to_pocket_x * (target.radius + self.cue_ball.radius) * 1.05
+        ghost_y = target.y - to_pocket_y * (target.radius + self.cue_ball.radius) * 1.05
+        
+        # Draw the AI's cue stick pointing at this potential shot (semi-transparent)
+        # Pullback oscillates slightly as if AI is "feeling" the shot
+        pullback_base = 30 * self.scale
+        pullback_wobble = math.sin(self.animation_tick * 0.1) * 5 * self.scale
+        pullback = pullback_base + pullback_wobble
+        stick_length = 220 * self.scale
+        
+        start_x = self.cue_ball.x - dir_x * pullback
+        start_y = self.cue_ball.y - dir_y * pullback
+        end_x = start_x - dir_x * stick_length
+        end_y = start_y - dir_y * stick_length
+        
+        # Draw semi-transparent cue stick (studying position)
+        pygame.draw.line(self.screen, (140, 100, 60), (start_x, start_y), (end_x, end_y), int(8 * self.scale))
+        pygame.draw.line(self.screen, (100, 70, 40), (start_x, start_y), (end_x, end_y), int(5 * self.scale))
+        
+        # Cue tip
+        tip_x = self.cue_ball.x - dir_x * (pullback - 8 * self.scale)
+        tip_y = self.cue_ball.y - dir_y * (pullback - 8 * self.scale)
+        pygame.draw.circle(self.screen, (80, 120, 150), (int(tip_x), int(tip_y)), int(5 * self.scale))
+        
+        # Draw studying aim line (golden animated dots)
+        cue_to_ghost = math.hypot(ghost_x - self.cue_ball.x, ghost_y - self.cue_ball.y)
+        spacing = 14 * self.scale
+        for d in range(int(self.cue_ball.radius), int(cue_to_ghost), int(spacing)):
+            x = self.cue_ball.x + dir_x * d
+            y = self.cue_ball.y + dir_y * d
+            wave = (math.sin((d / spacing) * 0.5 + self.animation_tick * 0.2) + 1) * 0.5
+            brightness = int(150 + wave * 100 * pulse)
+            color = (brightness, int(brightness * 0.8), int(brightness * 0.2))
+            size = int((2 + wave) * self.scale)
+            pygame.draw.circle(self.screen, color, (int(x), int(y)), size)
+        
+        # Draw target ball highlight (pulsing circle around it)
+        highlight_radius = int(target.radius * (1.5 + pulse * 0.3))
+        pygame.draw.circle(self.screen, (255, 200, 50), (int(target.x), int(target.y)), highlight_radius, 2)
+        
+        # Draw arrow from target to pocket (trajectory prediction)
+        trajectory_length = to_pocket_dist * 0.8
+        for j in range(0, int(trajectory_length), int(spacing)):
+            t = j / max(trajectory_length, 1)
+            tx = target.x + to_pocket_x * j
+            ty = target.y + to_pocket_y * j
+            if self.table_rect.collidepoint(tx, ty):
+                wave = (math.sin(t * 3 + self.animation_tick * 0.15) + 1) * 0.5
+                brightness = int(100 + wave * 80 * pulse)
+                color = (brightness, int(brightness * 0.5), int(brightness * 0.3))
+                pygame.draw.circle(self.screen, color, (int(tx), int(ty)), int(2 * self.scale))
+        
+        # Draw pocket highlight
+        pocket_radius = int(24 * self.scale * (1.1 + pulse * 0.2))
+        pygame.draw.circle(self.screen, (200, 150, 50), (pocket[0], pocket[1]), pocket_radius, 3)
+        
+        # Show "considering" text near the target ball
+        shot_value = target.value if target.value > 0 else 1
+        consider_text = f"+{shot_value}?"
+        text_surf = self.fonts['small'].render(consider_text, True, COLORS['gold_bright'])
+        text_x = int(target.x + target.radius * 2)
+        text_y = int(target.y - target.radius)
+        
+        # Background for text
+        bg_rect = text_surf.get_rect(topleft=(text_x, text_y))
+        bg_rect.inflate_ip(8, 4)
+        pygame.draw.rect(self.screen, (0, 0, 0, 180), bg_rect, border_radius=3)
+        self.screen.blit(text_surf, (text_x, text_y))
+        
+        # Draw shot quality indicator
+        score = current_shot['score']
+        if score > 70:
+            quality = "EXCELLENT"
+            quality_color = COLORS['text_success']
+        elif score > 40:
+            quality = "GOOD"
+            quality_color = COLORS['gold']
+        elif score > 0:
+            quality = "POSSIBLE"
+            quality_color = COLORS['text_secondary']
+        else:
+            quality = "DIFFICULT"
+            quality_color = COLORS['text_foul']
+        
+        quality_surf = self.fonts['tiny'].render(quality, True, quality_color)
+        self.screen.blit(quality_surf, (text_x, text_y + text_surf.get_height() + 2))
+        
+        # Show which shot number is being studied
+        study_text = f"Studying shot {self.ai_current_study_index + 1}/{min(len(self.ai_potential_shots), 4)}"
+        study_surf = self.fonts['tiny'].render(study_text, True, COLORS['gold'])
+        self.screen.blit(study_surf, (self.window_rect.x + int(10 * self.scale), 
+                                      self.table_rect.bottom + int(10 * self.scale)))
+
     def draw_ai_aiming_line(self):
         """Draw the AI's aiming guide line with precise cue → first ball geometry."""
         if not self.cue_ball or self.cue_ball.potted or not self.ai_shot_calculated:
@@ -2556,7 +3694,7 @@ class SnookerGame:
 
         # Pull back based on power (scaled)
         pullback = (25 + self.cue_power * 0.8) * self.scale
-        stick_length = 220 * self.scale
+        stick_length = 440 * self.scale  # Doubled from 220
 
         start_x = self.cue_ball.x - math.cos(angle) * pullback
         start_y = self.cue_ball.y - math.sin(angle) * pullback
@@ -2567,10 +3705,20 @@ class SnookerGame:
         pygame.draw.line(self.screen, COLORS['wood_light'], (start_x, start_y), (end_x, end_y), int(8 * self.scale))
         pygame.draw.line(self.screen, COLORS['wood'], (start_x, start_y), (end_x, end_y), int(5 * self.scale))
 
-        # Tip (scaled)
-        tip_x = self.cue_ball.x - math.cos(angle) * (pullback - 8 * self.scale)
-        tip_y = self.cue_ball.y - math.sin(angle) * (pullback - 8 * self.scale)
-        pygame.draw.circle(self.screen, (100, 140, 170), (int(tip_x), int(tip_y)), int(5 * self.scale))
+        # Tip - semi-circle nib effect (closer to cue ball, scaled)
+        tip_radius = 5 * self.scale
+        tip_offset = 3 * self.scale  # Closer to cue ball (reduced from 8)
+        tip_x = self.cue_ball.x - math.cos(angle) * (pullback - tip_offset)
+        tip_y = self.cue_ball.y - math.sin(angle) * (pullback - tip_offset)
+        
+        # Draw semi-circle facing the cue ball (nib effect)
+        # The arc should be on the side facing away from the cue ball direction
+        tip_rect = pygame.Rect(int(tip_x - tip_radius), int(tip_y - tip_radius), 
+                               int(tip_radius * 2), int(tip_radius * 2))
+        # Arc from angle - π/2 to angle + π/2 (semi-circle facing cue ball)
+        start_angle = angle - math.pi / 2
+        stop_angle = angle + math.pi / 2
+        pygame.draw.arc(self.screen, (100, 140, 170), tip_rect, start_angle, stop_angle, int(3 * self.scale))
 
     def draw_ai_cue_stick(self):
         """Draw the AI's cue stick during preparation."""
@@ -2581,7 +3729,7 @@ class SnookerGame:
 
         # Pull back based on AI's charging power (scaled)
         pullback = (25 + self.ai_power_charging * 0.8) * self.scale
-        stick_length = 220 * self.scale
+        stick_length = 440 * self.scale  # Doubled from 220
 
         start_x = self.cue_ball.x - math.cos(angle) * pullback
         start_y = self.cue_ball.y - math.sin(angle) * pullback
@@ -2592,10 +3740,20 @@ class SnookerGame:
         pygame.draw.line(self.screen, COLORS['wood_light'], (start_x, start_y), (end_x, end_y), int(8 * self.scale))
         pygame.draw.line(self.screen, (80, 60, 40), (start_x, start_y), (end_x, end_y), int(5 * self.scale))
 
-        # Tip (scaled)
-        tip_x = self.cue_ball.x - math.cos(angle) * (pullback - 8 * self.scale)
-        tip_y = self.cue_ball.y - math.sin(angle) * (pullback - 8 * self.scale)
-        pygame.draw.circle(self.screen, (100, 140, 170), (int(tip_x), int(tip_y)), int(5 * self.scale))
+        # Tip - semi-circle nib effect (closer to cue ball, scaled)
+        tip_radius = 5 * self.scale
+        tip_offset = 3 * self.scale  # Closer to cue ball (reduced from 8)
+        tip_x = self.cue_ball.x - math.cos(angle) * (pullback - tip_offset)
+        tip_y = self.cue_ball.y - math.sin(angle) * (pullback - tip_offset)
+        
+        # Draw semi-circle facing the cue ball (nib effect)
+        # The arc should be on the side facing away from the cue ball direction
+        tip_rect = pygame.Rect(int(tip_x - tip_radius), int(tip_y - tip_radius), 
+                               int(tip_radius * 2), int(tip_radius * 2))
+        # Arc from angle - π/2 to angle + π/2 (semi-circle facing cue ball)
+        start_angle = angle - math.pi / 2
+        stop_angle = angle + math.pi / 2
+        pygame.draw.arc(self.screen, (100, 140, 170), tip_rect, start_angle, stop_angle, int(3 * self.scale))
 
     def draw_ui(self):
         """Draw UI elements: scores, info, power bar."""
@@ -2719,15 +3877,126 @@ class SnookerGame:
             pygame.draw.rect(self.screen, self.message_color, bg_rect, 2, border_radius=int(8 * self.scale))
             self.screen.blit(msg_surf, msg_rect)
 
-        # Bottom hint
-        hint = self.fonts['tiny'].render("ESC: Menu", True, COLORS['text_secondary'])
-        self.screen.blit(hint, (self.window_rect.x + int(10 * self.scale), self.window_rect.bottom - int(25 * self.scale)))
+        # Bottom hint - right side
+        hint = self.fonts['tiny'].render("ESC: Menu | Right-click: Reset spin", True, COLORS['text_secondary'])
+        self.screen.blit(hint, (self.window_rect.right - hint.get_width() - int(10 * self.scale), self.window_rect.bottom - int(25 * self.scale)))
 
         # AI thinking indicator
         if (self.mode == GameMode.VS_AI or self.mode == GameMode.TOURNAMENT) and self.current_player == 1 and self.ai_timer > 0:
             dots = "." * ((self.animation_tick // 15) % 4)
             think = self.fonts['small'].render(f"Computer thinking{dots}", True, COLORS['gold'])
             self.screen.blit(think, think.get_rect(center=(ui_panel_rect.centerx, ui_panel_rect.bottom + int(80 * self.scale))))
+        
+        # Draw spin control when human player is aiming (not during ball movement)
+        is_human_turn = not ((self.mode == GameMode.VS_AI or self.mode == GameMode.TOURNAMENT) and self.current_player == 1)
+        balls_moving = any(b.is_moving() for b in self.balls if not b.potted)
+        if is_human_turn and self.turn_phase == TurnPhase.AIMING and not balls_moving:
+            self.draw_spin_control()
+
+    def draw_spin_control(self):
+        """Draw the interactive spin control - white ball with draggable black dot."""
+        if not self.window_rect or not self.table_rect:
+            return
+        
+        # Position the spin control BELOW the table, in the left area of the bottom UI space
+        # The table leaves 150*scale pixels at the bottom for UI
+        control_x = self.table_rect.x + int(60 * self.scale)
+        control_y = self.table_rect.bottom + int(50 * self.scale)  # 50 pixels below the table
+        
+        # Store the control rect for mouse interaction
+        self.spin_control_rect = pygame.Rect(
+            control_x - self.spin_control_radius,
+            control_y - self.spin_control_radius,
+            self.spin_control_radius * 2,
+            self.spin_control_radius * 2
+        )
+        
+        # Draw outer ring (table green)
+        pygame.draw.circle(self.screen, COLORS['table_cloth'], 
+                          (control_x, control_y), self.spin_control_radius + int(4 * self.scale))
+        
+        # Draw the main white ball
+        pygame.draw.circle(self.screen, COLORS['ball_white'], 
+                          (control_x, control_y), self.spin_control_radius)
+        
+        # Draw subtle inner gradient/shading for 3D effect
+        for i in range(3):
+            shade = 240 - i * 15
+            inner_radius = self.spin_control_radius - int((i + 1) * 3 * self.scale)
+            if inner_radius > 0:
+                pygame.draw.circle(self.screen, (shade, shade, shade), 
+                                  (control_x - int(2 * self.scale), control_y - int(2 * self.scale)), 
+                                  inner_radius)
+        
+        # Draw crosshairs for reference
+        crosshair_color = (200, 200, 200)
+        crosshair_length = self.spin_control_radius - int(5 * self.scale)
+        # Horizontal line
+        pygame.draw.line(self.screen, crosshair_color,
+                        (control_x - crosshair_length, control_y),
+                        (control_x + crosshair_length, control_y), 1)
+        # Vertical line
+        pygame.draw.line(self.screen, crosshair_color,
+                        (control_x, control_y - crosshair_length),
+                        (control_x, control_y + crosshair_length), 1)
+        
+        # Draw zone labels
+        label_font = self.fonts['tiny']
+        # Top spin label
+        top_label = label_font.render("TOP", True, (150, 150, 150))
+        self.screen.blit(top_label, (control_x - top_label.get_width() // 2, 
+                                     control_y - self.spin_control_radius - int(18 * self.scale)))
+        # Draw label (back spin)
+        draw_label = label_font.render("DRAW", True, (150, 150, 150))
+        self.screen.blit(draw_label, (control_x - draw_label.get_width() // 2,
+                                      control_y + self.spin_control_radius + int(5 * self.scale)))
+        # Left spin label
+        left_label = label_font.render("L", True, (150, 150, 150))
+        self.screen.blit(left_label, (control_x - self.spin_control_radius - int(15 * self.scale),
+                                      control_y - left_label.get_height() // 2))
+        # Right spin label
+        right_label = label_font.render("R", True, (150, 150, 150))
+        self.screen.blit(right_label, (control_x + self.spin_control_radius + int(8 * self.scale),
+                                       control_y - right_label.get_height() // 2))
+        
+        # Calculate dot position in screen coordinates
+        dot_screen_x = control_x + int(self.spin_dot_x * (self.spin_control_radius - self.spin_dot_radius))
+        dot_screen_y = control_y + int(self.spin_dot_y * (self.spin_control_radius - self.spin_dot_radius))
+        
+        # Draw the draggable black dot (strike point)
+        # Shadow
+        pygame.draw.circle(self.screen, (30, 30, 30),
+                          (dot_screen_x + 2, dot_screen_y + 2), self.spin_dot_radius)
+        # Main dot
+        dot_color = (60, 60, 60) if self.spin_dragging else (20, 20, 20)
+        pygame.draw.circle(self.screen, dot_color,
+                          (dot_screen_x, dot_screen_y), self.spin_dot_radius)
+        # Highlight on dot
+        pygame.draw.circle(self.screen, (80, 80, 80),
+                          (dot_screen_x - int(2 * self.scale), dot_screen_y - int(2 * self.scale)), 
+                          int(self.spin_dot_radius * 0.4))
+        
+        # Draw spin info text
+        if abs(self.spin_dot_x) > 0.1 or abs(self.spin_dot_y) > 0.1:
+            spin_text = []
+            if self.spin_dot_y < -0.1:
+                spin_text.append("TOP")
+            elif self.spin_dot_y > 0.1:
+                spin_text.append("DRAW")
+            if self.spin_dot_x < -0.1:
+                spin_text.append("LEFT")
+            elif self.spin_dot_x > 0.1:
+                spin_text.append("RIGHT")
+            
+            if spin_text:
+                info = label_font.render(" ".join(spin_text), True, COLORS['gold'])
+                self.screen.blit(info, (control_x - info.get_width() // 2,
+                                       control_y + self.spin_control_radius + int(22 * self.scale)))
+        
+        # Draw "SPIN" title above control
+        title = self.fonts['small'].render("SPIN", True, COLORS['text_primary'])
+        self.screen.blit(title, (control_x - title.get_width() // 2,
+                                control_y - self.spin_control_radius - int(35 * self.scale)))
 
     def draw_game(self):
         """Draw the main game screen."""
@@ -2744,9 +4013,14 @@ class SnookerGame:
         if not balls_moving and self.turn_phase == TurnPhase.AIMING:
             if is_human_turn:
                 self.draw_aiming_line()
-            elif (self.mode == GameMode.VS_AI or self.mode == GameMode.TOURNAMENT) and self.current_player == 1 and self.ai_shot_calculated:
-                # Draw AI's aiming line (use same method but with AI angle)
-                self.draw_ai_aiming_line()
+            elif (self.mode == GameMode.VS_AI or self.mode == GameMode.TOURNAMENT) and self.current_player == 1:
+                # Draw AI's studying visualization or aiming line
+                if self.ai_studying and not self.ai_shot_calculated:
+                    # AI is studying the table - show consideration of different shots
+                    self.draw_ai_studying()
+                elif self.ai_shot_calculated:
+                    # AI has decided - show final aiming line
+                    self.draw_ai_aiming_line()
 
         # Draw balls
         for ball in self.balls:
@@ -3063,6 +4337,11 @@ class SnookerGame:
                     self.show_message("", 0)
 
                     if (self.mode == GameMode.VS_AI or self.mode == GameMode.TOURNAMENT) and self.current_player == 1:
+                        # Reset AI studying state
+                        self.ai_studying = False
+                        self.ai_study_timer = 0
+                        self.ai_potential_shots = []
+                        self.ai_current_study_index = 0
                         # Much slower AI preparation
                         self.ai_timer = random.randint(180, 300)
                         self.ai_shot_calculated = False
@@ -3071,12 +4350,59 @@ class SnookerGame:
                     return True
 
         elif is_human_turn and self.turn_phase == TurnPhase.AIMING:
+            # Handle spin control interaction
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx, my = event.pos
+                
+                # Check if clicking on spin control
+                if self.spin_control_rect.collidepoint(mx, my):
+                    # Calculate distance from spin control center
+                    control_x = self.spin_control_rect.centerx
+                    control_y = self.spin_control_rect.centery
+                    dist = math.hypot(mx - control_x, my - control_y)
+                    
+                    if dist <= self.spin_control_radius:
+                        self.spin_dragging = True
+                        # Update dot position
+                        max_offset = self.spin_control_radius - self.spin_dot_radius
+                        self.spin_dot_x = (mx - control_x) / max_offset if max_offset > 0 else 0
+                        self.spin_dot_y = (my - control_y) / max_offset if max_offset > 0 else 0
+                        # Clamp to unit circle
+                        dist_normalized = math.hypot(self.spin_dot_x, self.spin_dot_y)
+                        if dist_normalized > 1.0:
+                            self.spin_dot_x /= dist_normalized
+                            self.spin_dot_y /= dist_normalized
+                        return True
+                
+                # Not on spin control, start charging
                 self.is_charging = True
                 self.cue_power = 0
                 return True
+            
+            elif event.type == pygame.MOUSEMOTION:
+                # Handle spin control dragging
+                if self.spin_dragging:
+                    mx, my = event.pos
+                    control_x = self.spin_control_rect.centerx
+                    control_y = self.spin_control_rect.centery
+                    max_offset = self.spin_control_radius - self.spin_dot_radius
+                    
+                    self.spin_dot_x = (mx - control_x) / max_offset if max_offset > 0 else 0
+                    self.spin_dot_y = (my - control_y) / max_offset if max_offset > 0 else 0
+                    
+                    # Clamp to unit circle
+                    dist_normalized = math.hypot(self.spin_dot_x, self.spin_dot_y)
+                    if dist_normalized > 1.0:
+                        self.spin_dot_x /= dist_normalized
+                        self.spin_dot_y /= dist_normalized
+                    return True
 
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                # Stop spin dragging
+                if self.spin_dragging:
+                    self.spin_dragging = False
+                    return True
+                
                 if self.is_charging and self.cue_power > 1.5:  # Adjusted threshold for new max of 30
                     # Shoot!
                     mx, my = event.pos
@@ -3085,6 +4411,15 @@ class SnookerGame:
 
                     self.cue_ball.vx = math.cos(angle) * speed
                     self.cue_ball.vy = math.sin(angle) * speed
+                    
+                    # Apply spin from the spin control UI
+                    # spin_dot_y: negative = top spin, positive = back spin
+                    # spin_dot_x: negative = left spin, positive = right spin
+                    # Scale spin based on power (more power = more spin effect)
+                    power_factor = self.cue_power / 15.0  # Normalize power
+                    top_spin = -self.spin_dot_y * 25 * power_factor  # Invert Y for intuitive control
+                    side_spin = self.spin_dot_x * 20 * power_factor
+                    self.cue_ball.apply_spin(top_spin, side_spin)
 
                     self.turn_phase = TurnPhase.BALLS_MOVING
                     self.first_ball_hit = None
@@ -3092,11 +4427,21 @@ class SnookerGame:
                     self.shot_started = True
                     self.collision_count_this_frame = 0
                     
+                    # Reset spin control for next shot
+                    self.spin_dot_x = 0.0
+                    self.spin_dot_y = 0.0
+                    
                     # Play cue hit sound
                     self._play_sound('cue_hit')
 
                 self.is_charging = False
                 self.cue_power = 0
+                return True
+            
+            # Right-click to reset spin
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+                self.spin_dot_x = 0.0
+                self.spin_dot_y = 0.0
                 return True
         
         return False
@@ -3140,7 +4485,11 @@ class SnookerGame:
                     self.turn_phase = TurnPhase.AIMING
                     self.show_message("", 0)
                     
-                    # Start AI preparation
+                    # Reset AI studying state and start preparation
+                    self.ai_studying = False
+                    self.ai_study_timer = 0
+                    self.ai_potential_shots = []
+                    self.ai_current_study_index = 0
                     self.ai_timer = random.randint(180, 300)
                     self.ai_shot_calculated = False
                     self.ai_preparing = True
@@ -3168,58 +4517,128 @@ class SnookerGame:
                     self.cue_ball.x = self.baulk_x + math.cos(angle) * self.d_radius
                     self.cue_ball.y = self.d_center_y + math.sin(angle) * self.d_radius
 
-        # AI turn
+        # AI turn - Uses comprehensive shot simulation system
+        # The AI "mentally plays" EVERY possible shot and replays the best one
         if (self.mode == GameMode.VS_AI or self.mode == GameMode.TOURNAMENT) and self.current_player == 1:
             if not balls_moving and self.turn_phase == TurnPhase.AIMING:
-                if not self.ai_shot_calculated:
-                    # Select appropriate AI based on mode
-                    if self.mode == GameMode.TOURNAMENT:
-                        if self.tournament_match == 0:
-                            ai_player = self.ai_louis  # First match
-                        else:
-                            ai_player = self.ai_bradley  # Final match
-                    else:
-                        ai_player = self.ai  # Regular AI match
-                    
-                    table_bounds = None
-                    if self.table_rect:
-                        table_bounds = (
-                            self.table_rect.left,
-                            self.table_rect.top,
-                            self.table_rect.right,
-                            self.table_rect.bottom,
-                        )
-                    self.ai_angle, self.ai_power = ai_player.calculate_shot(
-                        self.cue_ball, self.balls, self.ball_on, self.pockets,
-                        reds_remaining=self.reds_remaining,
-                        ai_score=self.scores[1],  # AI is player 1
-                        opponent_score=self.scores[0],  # Human is player 0
-                        table_bounds=table_bounds,
-                    )
-                    self.ai_shot_calculated = True
-                    self.ai_preparing = True
-                    self.ai_power_charging = 0
                 
-                # AI preparation phase - simulate "charging" power
+                # =====================================================================
+                # PHASE 1: AI "MENTALLY" SIMULATES ALL POSSIBLE SHOTS
+                # This happens instantly in the background - player sees "thinking"
+                # =====================================================================
+                if not self.ai_studying and not self.ai_shot_calculated:
+                    # AI plays EVERY possible shot in its mind and finds the best one
+                    # This is completely hidden from the player
+                    self.ai_best_simulated_shot = self.find_best_scoring_shot()
+                    
+                    # Get some shots for visual display (AI "studying" animation)
+                    self.ai_potential_shots = self.calculate_ai_potential_shots()
+                    
+                    self.ai_studying = True
+                    self.ai_current_study_index = 0
+                    self.ai_study_timer = 60  # Study animation duration
+                    
+                    # Show thinking message
+                    self.show_message(f"{self.player_names[1]} is analyzing every shot...", 300, COLORS['gold'])
+                
+                # =====================================================================
+                # PHASE 2: Visual "studying" animation (AI already knows the best shot)
+                # =====================================================================
+                if self.ai_studying and not self.ai_shot_calculated:
+                    self.ai_study_timer -= 1
+                    
+                    if self.ai_study_timer <= 0:
+                        # Move to next potential shot in the visual animation
+                        self.ai_current_study_index += 1
+                        
+                        # Finished studying animation - NOW use the pre-calculated best shot
+                        if self.ai_current_study_index >= min(len(self.ai_potential_shots), 3):
+                            self.ai_studying = False
+                            
+                            # =========================================================
+                            # USE THE BEST SHOT FROM COMPREHENSIVE SIMULATION
+                            # The AI already knows this shot WILL score (or is best safety)
+                            # =========================================================
+                            best_shot = self.ai_best_simulated_shot
+                            
+                            if best_shot:
+                                # Extract the winning shot parameters
+                                self.ai_angle = best_shot.get('angle', 0)
+                                self.ai_power = best_shot.get('power', 20)
+                                
+                                # Get shot details for message
+                                expected_points = best_shot.get('points', 0)
+                                is_foul = best_shot.get('foul', False)
+                                is_safety = best_shot.get('is_safety', False)
+                                
+                                target_ball = best_shot.get('target_ball')
+                                target_name = target_ball.ball_type if target_ball else 'ball'
+                                
+                                # Show what AI is going to do
+                                if expected_points > 0 and not is_foul:
+                                    self.show_message(f"{self.player_names[1]} has spotted +{expected_points} on the {target_name}!", 90, COLORS['gold_bright'])
+                                elif not is_foul and is_safety:
+                                    self.show_message(f"{self.player_names[1]} plays safe", 90, COLORS['gold'])
+                                elif not is_foul:
+                                    self.show_message(f"{self.player_names[1]} goes for the {target_name}", 90, COLORS['gold'])
+                                else:
+                                    self.show_message(f"{self.player_names[1]} is in trouble!", 90, COLORS['text_foul'])
+                            else:
+                                # Fallback: No simulation found any valid shot
+                                # Just hit the nearest legal ball
+                                if self.ball_on == "red":
+                                    targets = [b for b in self.balls if not b.potted and b.ball_type == 'red']
+                                elif self.ball_on == "color":
+                                    targets = [b for b in self.balls if not b.potted and b.ball_type in COLOR_SEQUENCE]
+                                else:
+                                    targets = [b for b in self.balls if not b.potted and b.ball_type == self.ball_on]
+                                
+                                if not targets:
+                                    targets = [b for b in self.balls if not b.potted and b.ball_type != 'white']
+                                
+                                if targets:
+                                    nearest = min(targets, key=lambda b: math.hypot(b.x - self.cue_ball.x, b.y - self.cue_ball.y))
+                                    self.ai_angle = math.atan2(nearest.y - self.cue_ball.y, nearest.x - self.cue_ball.x)
+                                    self.ai_power = 15
+                                    self.show_message(f"{self.player_names[1]} plays cautiously", 90, COLORS['gold'])
+                                else:
+                                    self.ai_angle = 0
+                                    self.ai_power = 10
+                            
+                            self.ai_shot_calculated = True
+                            self.ai_preparing = True
+                            self.ai_power_charging = 0
+                            self.ai_timer = random.randint(45, 90)  # Brief pause before executing
+                        else:
+                            # Continue studying animation
+                            self.ai_study_timer = 30 + random.randint(0, 15)
+                
+                # =====================================================================
+                # PHASE 3: REPLAY the winning shot for the player to see
+                # The AI executes the exact shot it simulated would score
+                # =====================================================================
                 if self.ai_preparing and self.ai_shot_calculated:
-                    # Charge power over time (faster than human but visible)
-                    # Max power is now 30 (was 90), so scale charging rate proportionally
+                    # Visual charging animation
                     if self.ai_power_charging < self.ai_power:
-                        self.ai_power_charging = min(self.ai_power_charging + 0.24, self.ai_power)  # Scaled from 0.8 to 0.24 (30/90 ratio)
+                        self.ai_power_charging = min(self.ai_power_charging + 0.3, self.ai_power)
                     else:
-                        # Once power is "charged", countdown to shot
+                        # Execute the shot - this is the REPLAY of the simulated winning shot
                         self.ai_timer -= 1
                         if self.ai_timer <= 0:
-                            # Execute AI shot
+                            # Execute shot with exact angle and power from simulation
                             speed = self.ai_power_charging * 2.0
                             self.cue_ball.vx = math.cos(self.ai_angle) * speed
                             self.cue_ball.vy = math.sin(self.ai_angle) * speed
+                            
+                            # Minimal spin (simulation didn't use spin)
+                            self.cue_ball.apply_spin(0, 0)
 
                             self.turn_phase = TurnPhase.BALLS_MOVING
                             self.first_ball_hit = None
                             self.potted_this_turn.clear()
                             self.shot_started = True
                             self.ai_preparing = False
+                            self.ai_studying = False
                             self.collision_count_this_frame = 0
                             
                             # Play cue hit sound

@@ -46,6 +46,12 @@ from OS.OS_Mode import OSMode
 # Outside BBS experiences
 from Outside_BBSs.PaperCraneBBS.Paper_Crane_BBS import PaperCraneBBS
 try:
+    from Outside_BBSs.NeverAgainBBS.NeverAgain_BBS import NeverAgainBBS
+    _never_again_available = True
+except ImportError:
+    _never_again_available = False
+    NeverAgainBBS = None
+try:
     from Outside_BBSs.EchoChamberBBS.EchoChamber import EchoChamberBBS
     _echo_chamber_available = True
 except ImportError:
@@ -53,7 +59,7 @@ except ImportError:
     EchoChamberBBS = None
 
 # Import Resolution Manager
-from systems.resolution import ResolutionManager
+from systems.resolution import ResolutionManager, get_effective_resolution
 
 # Try to import PirateRadioApp
 try:
@@ -106,6 +112,9 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Midnight Rootkit: two MP3s that loop when SCHOOL_HACK1 logout (volume = top slider)
+MIDNIGHT_ROOTKIT_FILES = ("Midnight_Rootkit.mp3", "Midnight_Rootkit2.mp3")
 
 _glyph_font_cache = {}
 
@@ -973,10 +982,15 @@ class DocumentationViewer:
 class GLYPHIS_IOBBS:
     def __init__(self):
         log_event("Initialising GLYPHIS_IO BBS client")
-        # Start in fullscreen mode
+        # Use a normalized resolution so layout/hotspots stay correct on odd resolutions (e.g. 2304x1536)
+        info = pygame.display.Info()
+        display_w, display_h = info.current_w, info.current_h
+        effective_w, effective_h = get_effective_resolution(display_w, display_h)
+        if (effective_w, effective_h) != (display_w, display_h):
+            log_event(f"Resolution normalized: display {display_w}x{display_h} -> {effective_w}x{effective_h}")
+        # Start in fullscreen at the effective resolution
         self.fullscreen = True
-        self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-        # Get actual screen dimensions
+        self.screen = pygame.display.set_mode((effective_w, effective_h), pygame.FULLSCREEN)
         self.screen_width = self.screen.get_width()
         self.screen_height = self.screen.get_height()
         pygame.display.set_caption("GLYPHIS_IO BBS")
@@ -992,6 +1006,12 @@ class GLYPHIS_IOBBS:
         self.music_volume = 0.5  # Top knob controls music volume
         self.ambient_volume = 0.5  # Bottom knob controls ambient volume
         self.dragging_knob = None  # "music" or "ambient" or None
+        
+        # Screen zoom state (browser-like zoom)
+        self.screen_zoom_active = False
+        self.screen_zoom_level = 2.0  # 2x zoom
+        self.screen_zoom_center_x_pct = 0.45  # 45% of screen width
+        self.screen_zoom_center_y_pct = 0.62  # 62% of screen height
         
         # Baseline resolution and dimensions (2560x1440)
         # This is the reference resolution where the position and size were originally set
@@ -1043,6 +1063,8 @@ class GLYPHIS_IOBBS:
         self.paper_crane_return_to_os = False
         self.echo_chamber_bbs = None
         self.echo_chamber_return_to_os = False
+        self.never_again_bbs = None
+        self.never_again_return_to_os = False
         
         # Load font (scaled based on resolution)
         try:
@@ -1161,6 +1183,7 @@ class GLYPHIS_IOBBS:
         self.inbox = []
         self.outbox = []
         self.sent = []
+        self.archive = []  # Archive for deleted emails
         self.delayed_emails = []  # Emails waiting for delivery delay
         self.player_email = "unknown"
         
@@ -1272,6 +1295,7 @@ class GLYPHIS_IOBBS:
         self.inbox_scroll = 0    # Scroll position for inbox list
         self.outbox_scroll = 0   # Scroll position for outbox list
         self.sent_scroll = 0     # Scroll position for sent list
+        self.archive_scroll = 0  # Scroll position for archive list
 
         # Game management
         self.game_definitions = GAME_DEFINITIONS
@@ -1434,6 +1458,17 @@ class GLYPHIS_IOBBS:
         self.ghost_user_input_blocked = False  # Block inputs during ghost user sequence
         self.inputs_disabled = False
         self.node7_completed = False  # Track if Node 7 was just completed
+
+        # School hack logout ghost sequence (Notes typing after reading Rain's plan)
+        self.school_hack_ghost_active = False
+        self.school_hack_ghost_step = 0
+        self.school_hack_ghost_timer = 0
+        self.school_hack_ghost_line_index = 0
+        self.school_hack_ghost_input_blocked = False
+
+        # Midnight Rootkit: two MP3s loop when SCHOOL_HACK1 logout (volume = top slider)
+        self.midnight_rootkit_playing = False
+        self.midnight_rootkit_track_index = 0
         
         # Load video and scanline if available (video mode is default)
         if _cv2_available:
@@ -1656,8 +1691,50 @@ class GLYPHIS_IOBBS:
         
         # Apply to ambient room sound (window-loop.wav) - handled in fade-in logic below
     
+    def _start_midnight_rootkit_music(self) -> None:
+        """Start Midnight Rootkit track (first of two); both loop and use top slider volume."""
+        self.midnight_rootkit_playing = True
+        self.midnight_rootkit_track_index = 0
+        path = get_data_path("Audio", MIDNIGHT_ROOTKIT_FILES[0])
+        try:
+            if os.path.isfile(path):
+                pygame.mixer.music.load(path)
+                pygame.mixer.music.play(loops=0)
+                pygame.mixer.music.set_volume(self.music_volume)
+                log_event("Midnight Rootkit music started")
+            else:
+                log_event(f"Midnight Rootkit file not found: {path}")
+                self.midnight_rootkit_playing = False
+        except Exception as e:
+            log_event(f"Midnight Rootkit load failed: {e}")
+            self.midnight_rootkit_playing = False
+
+    def _advance_midnight_rootkit_track(self) -> None:
+        """When current Midnight Rootkit track ends, play the next (loop 1 then 2 then 1...)."""
+        if not self.midnight_rootkit_playing or pygame.mixer.music.get_busy():
+            return
+        self.midnight_rootkit_track_index = 1 - self.midnight_rootkit_track_index
+        fname = MIDNIGHT_ROOTKIT_FILES[self.midnight_rootkit_track_index]
+        path = get_data_path("Audio", fname)
+        try:
+            if os.path.isfile(path):
+                pygame.mixer.music.load(path)
+                pygame.mixer.music.play(loops=0)
+                pygame.mixer.music.set_volume(self.music_volume)
+            else:
+                self.midnight_rootkit_playing = False
+        except Exception:
+            self.midnight_rootkit_playing = False
+
     def _apply_music_volume(self) -> None:
         """Apply music volume to all music sources: radio stations, Pirate Radio intro, radio noise, game music, etc."""
+        # Apply to Midnight Rootkit (SCHOOL_HACK1 logout music) - uses top slider
+        if self.midnight_rootkit_playing:
+            try:
+                if pygame.mixer.music.get_busy():
+                    pygame.mixer.music.set_volume(self.music_volume)
+            except Exception:
+                pass
         # Apply to Pirate Radio intro sound (TSW.wav)
         # Note: Setting volume on a Sound object affects all channels playing that sound
         if self.pirate_radio_intro_sound:
@@ -1781,11 +1858,70 @@ class GLYPHIS_IOBBS:
         except Exception:
             return None
     
-    def _is_mouse_in_bbs_window(self) -> bool:
-        """Check if mouse is inside the BBS window"""
+    def _get_mouse_pos_unzoomed(self) -> tuple[int, int]:
+        """Get mouse position, transforming from zoomed coordinates if zoom is active"""
         mouse_x, mouse_y = pygame.mouse.get_pos()
-        return (self.bbs_x <= mouse_x < self.bbs_x + self.bbs_width and
-                self.bbs_y <= mouse_y < self.bbs_y + self.bbs_height)
+        
+        if self.screen_zoom_active:
+            # Calculate the zoom transformation parameters (same as in the zoom rendering code)
+            zoom_ref_x = int(self.screen_width * self.screen_zoom_center_x_pct)
+            zoom_ref_y = int(self.screen_height * self.screen_zoom_center_y_pct)
+            zoom_ref_x_scaled = int(zoom_ref_x * self.screen_zoom_level)
+            zoom_ref_y_scaled = int(zoom_ref_y * self.screen_zoom_level)
+            zoomed_width = int(self.screen_width * self.screen_zoom_level)
+            zoomed_height = int(self.screen_height * self.screen_zoom_level)
+            
+            # Calculate source rectangle (where the cropped view starts in the zoomed surface)
+            source_x = max(0, min(zoomed_width - self.screen_width, zoom_ref_x_scaled - self.screen_width))
+            source_y = max(0, min(zoomed_height - self.screen_height, zoom_ref_y_scaled - self.screen_height))
+            
+            # Transform mouse coordinates: screen position -> zoomed surface position -> original screen position
+            # The mouse position on screen corresponds to (source_x + mouse_x, source_y + mouse_y) in the zoomed surface
+            # To get the original screen coordinates, divide by zoom_level
+            unzoomed_x = (source_x + mouse_x) / self.screen_zoom_level
+            unzoomed_y = (source_y + mouse_y) / self.screen_zoom_level
+            return (int(unzoomed_x), int(unzoomed_y))
+        else:
+            return (mouse_x, mouse_y)
+    
+    def _get_desktop_size(self) -> Tuple[int, int]:
+        """Get desktop size (same as OS mode) for mouse boundary matching."""
+        # Get desktop size (use os_mode if available, otherwise load desktop image to get size)
+        if self.os_mode and hasattr(self.os_mode, 'desktop_size'):
+            return self.os_mode.desktop_size
+        else:
+            # Load desktop image to get its size
+            try:
+                desktop_path = get_data_path("OS", "Desktop-Enviroment.png")
+                desktop_image = pygame.image.load(desktop_path)
+                original_size = desktop_image.get_size()
+                return (
+                    int(original_size[0] * self.scale),
+                    int(original_size[1] * self.scale)
+                )
+            except Exception:
+                # Fallback to BBS size if desktop image can't be loaded
+                return (self.bbs_width, self.bbs_height)
+    
+    def _get_mouse_boundary_pos(self) -> Tuple[int, int]:
+        """Get the mouse boundary position (matches OS mode desktop position)."""
+        # Use OS mode desktop position if available, otherwise calculate it the same way OS mode does
+        if self.os_mode and hasattr(self.os_mode, 'desktop_x') and hasattr(self.os_mode, 'desktop_y'):
+            return (self.os_mode.desktop_x, self.os_mode.desktop_y)
+        else:
+            # Calculate desktop position the same way OS mode does (baseline 176, 209)
+            baseline_desktop_x = 176
+            baseline_desktop_y = 209
+            return self.res_manager.coords(baseline_desktop_x, baseline_desktop_y)
+    
+    def _is_mouse_in_bbs_window(self) -> bool:
+        """Check if mouse is inside the BBS window (accounts for zoom)
+        Uses desktop size and position to match OS mode boundary exactly."""
+        mouse_x, mouse_y = self._get_mouse_pos_unzoomed()
+        desktop_size = self._get_desktop_size()
+        boundary_x, boundary_y = self._get_mouse_boundary_pos()
+        return (boundary_x <= mouse_x < boundary_x + desktop_size[0] and
+                boundary_y <= mouse_y < boundary_y + desktop_size[1])
     
     def _update_cursor(self) -> None:
         """Update cursor based on mouse position and game state"""
@@ -1852,6 +1988,7 @@ class GLYPHIS_IOBBS:
         self.inbox_scroll = 0
         self.outbox_scroll = 0
         self.sent_scroll = 0
+        self.archive_scroll = 0
         
         # Reset module selection
         self.current_module = 0
@@ -1872,6 +2009,8 @@ class GLYPHIS_IOBBS:
         self.paper_crane_return_to_os = False
         self.echo_chamber_bbs = None
         self.echo_chamber_return_to_os = False
+        self.never_again_bbs = None
+        self.never_again_return_to_os = False
         
         log_event("BBS reset to beginning")
 
@@ -1883,12 +2022,20 @@ class GLYPHIS_IOBBS:
             self.bbs_height,
             self.scale,
             on_exit=self._exit_paper_crane_bbs,
+            on_grant_token=self.grant_token,
         )
         self.state = "paper_crane"
         log_event("Routing to PAPER CRANE BBS")
+        self.grant_token(Tokens.PAPERCRANEBBS_IN, reason="dialed into Paper Crane BBS")
 
     def _exit_paper_crane_bbs(self) -> None:
         """Hang up Paper Crane and return to desktop/BBS."""
+        # Stop Paper Crane audio immediately (Network: Disconnected = audio must cut)
+        try:
+            if pygame.mixer.get_init() and pygame.mixer.music.get_busy():
+                pygame.mixer.music.stop()
+        except Exception:
+            pass
         should_return_to_os = self.paper_crane_return_to_os
         self.paper_crane_bbs = None
         self.paper_crane_return_to_os = False
@@ -1920,6 +2067,48 @@ class GLYPHIS_IOBBS:
         should_return_to_os = self.echo_chamber_return_to_os
         self.echo_chamber_bbs = None
         self.echo_chamber_return_to_os = False
+        self._reset_to_beginning()
+        if should_return_to_os and self.os_mode:
+            # Disconnect network when BBS closes and returning to OS mode
+            self.os_mode._set_network_disconnected()
+            self.os_mode_active = True
+            self.os_mode.update_scale(self.scale)
+            self._update_audio_power_state()
+
+    def _launch_never_again_bbs(self, return_to_os: bool = False) -> None:
+        """Enter the Never Again outside BBS experience."""
+        if not _never_again_available or NeverAgainBBS is None:
+            log_event("Never Again BBS not available")
+            return
+        self.never_again_return_to_os = return_to_os
+        self.never_again_bbs = NeverAgainBBS(
+            self.bbs_width,
+            self.bbs_height,
+            self.scale,
+            on_exit=self._exit_never_again_bbs,
+            on_grant_token=self.grant_token,
+            on_download_track=self._on_fugamatchi_download,
+        )
+        self.state = "never_again"
+        log_event("Routing to NEVER AGAIN BBS")
+        self.grant_token(Tokens.NEVERAGAINBBS_IN, reason="dialed into Never Again BBS")
+
+    def _on_fugamatchi_download(self, track_title: str) -> None:
+        """Add a Fugamatchi track to the user's downloads (appears in file system as .sonic)."""
+        user = self.get_active_user()
+        if user:
+            tracks = user.get("downloaded_fugamatchi_tracks", [])
+            if track_title not in tracks:
+                tracks.append(track_title)
+                user["downloaded_fugamatchi_tracks"] = tracks
+                self.save_user_state()
+                log_event(f"Downloaded .sonic track: {track_title}")
+
+    def _exit_never_again_bbs(self) -> None:
+        """Hang up Never Again and return to desktop/BBS."""
+        should_return_to_os = self.never_again_return_to_os
+        self.never_again_bbs = None
+        self.never_again_return_to_os = False
         self._reset_to_beginning()
         if should_return_to_os and self.os_mode:
             # Disconnect network when BBS closes and returning to OS mode
@@ -2051,18 +2240,18 @@ class GLYPHIS_IOBBS:
             desired_state = "embedded-game"
             base_video = "Audio-Desktop-os.mp4"
         # Treat RadioMusic same as cracker_audio_playing for video selection
-        # Also check for pirate radio playing
-        elif cracker_audio_playing or radio_music_active or self.radio_playing:
+        # Also check for pirate radio and Midnight Rootkit (SCHOOL_HACK1 logout music) playing
+        elif cracker_audio_playing or radio_music_active or self.radio_playing or self.midnight_rootkit_playing:
             desired_state = "audio-playing"
             # Check if current video is a No-Sound variant (strip -os suffix too for detection)
             base_for_no_sound_check = base_filename_for_detection.replace("-os.mp4", ".mp4")
             is_no_sound = ("No-Sound" in base_for_no_sound_check and "Audio-Desktop" in base_for_no_sound_check) or \
                          ("Audio-Desktop-No-Sound" in base_for_no_sound_check)
             
-            # For pirate radio, always use Audio-Desktop (not -os version, not No-Sound)
-            if self.radio_playing and not (cracker_audio_playing or radio_music_active):
-                # Pirate radio is playing - use Audio-Desktop.mp4 (time-aware will add night- prefix if needed)
-                base_video = "Audio-Desktop.mp4"
+            # When music is playing (pirate radio or Midnight Rootkit), use Audio-Desktop (not No-Sound)
+            if (self.radio_playing or self.midnight_rootkit_playing) and not (cracker_audio_playing or radio_music_active):
+                # Use Audio-Desktop; -os variant when in OS Mode (e.g. school hack ghost sequence)
+                base_video = "Audio-Desktop-os.mp4" if self.os_mode_active else "Audio-Desktop.mp4"
             # In OS Mode, swap Audio-Desktop videos to -os versions
             elif self.os_mode_active:
                 if is_no_sound:
@@ -2152,6 +2341,10 @@ class GLYPHIS_IOBBS:
         self.active_game_session = definition.session_factory(self)
         self.state = "game_session"
         self.active_game_session.enter()
+        # Check if the game session immediately requested exit (e.g., initialization failed)
+        if self.active_game_session.should_exit():
+            self.end_game_session()
+            return
         self._update_audio_power_state()
 
     def end_game_session(self) -> None:
@@ -2690,6 +2883,19 @@ class GLYPHIS_IOBBS:
     def draw_main_menu(self):
         """Draw the main BBS menu"""
         self.content_scroll_y = 0
+        
+        # Uncle-am's school email only when on MAIN MENU (after replying "in" to Rain)
+        if self.inventory.has_token(Tokens.SCHOOL_HACK):
+            if not self._has_uncle_am_school_grades_email():
+                self.deliver_email_to_player("uncle_am_school_grades_001")
+        # Jaxkando's school email when on main menu with JAXGRADES
+        if self.inventory.has_token(Tokens.JAXGRADES):
+            if not self._has_jaxkando_school_grades_email():
+                self.deliver_email_to_player("jaxkando_school_grades_001")
+            # Rain's plan email only after Jax's email has been READ and user returns to main menu
+            elif self._has_read_jaxkando_school_grades_email() and not self._has_rain_school_plan_email():
+                self.deliver_email_to_player("rain_school_plan_001")
+        
         _, modules_rect, info_rect = self._prepare_bbs_screen(
             "GLYPHIS_IO BBS // ACCESS NODE",
             ["TAB: cycle modules   ENTER: engage   ESC: dismiss to desktop"],
@@ -2732,9 +2938,27 @@ class GLYPHIS_IOBBS:
                 color = RED if locked else DARK_CYAN
                 tag = "[ ]"
 
-            # Pulse EMAIL SYSTEM when in guided email mode (has JAX but not JAX1)
-            if module == "EMAIL SYSTEM" and self.is_guided_email_mode_active() and not locked:
+            # Pulse EMAIL SYSTEM when in guided email mode (has JAX but not JAX1) - no pulsing if SCHOOL_HACK2
+            if module == "EMAIL SYSTEM" and self.is_guided_email_mode_active() and not locked and not self.inventory.has_token(Tokens.SCHOOL_HACK2):
                 # Light cyan color for pulsing: (150, 255, 255)
+                light_cyan = (150, 255, 255)
+                base_color = WHITE if i == self.current_module else DARK_CYAN
+                color = self.get_pulse_color(base_color, light_cyan, speed=1.5)
+            
+            # Pulse THE WALL if school grades post is unread - no pulsing if SCHOOL_HACK2
+            if module == "TERMINAL FEED: THE WALL" and self._is_school_grades_post_unread() and not locked and not self.inventory.has_token(Tokens.SCHOOL_HACK2):
+                light_cyan = (150, 255, 255)
+                base_color = WHITE if i == self.current_module else DARK_CYAN
+                color = self.get_pulse_color(base_color, light_cyan, speed=1.5)
+            
+            # Pulse EMAIL SYSTEM if Rain's school email exists and hasn't been replied to - no pulsing if SCHOOL_HACK2
+            if module == "EMAIL SYSTEM" and self._should_pulse_rain_school_email() and not locked and not self.inventory.has_token(Tokens.SCHOOL_HACK2):
+                light_cyan = (150, 255, 255)
+                base_color = WHITE if i == self.current_module else DARK_CYAN
+                color = self.get_pulse_color(base_color, light_cyan, speed=1.5)
+            
+            # Pulse LOGOUT when SCHOOL_HACK1 (VITAL MISSION - player has Rain's plan and should log out) - no pulsing if SCHOOL_HACK2
+            if module == "LOGOUT" and self.inventory.has_token(Tokens.SCHOOL_HACK1) and not self.inventory.has_token(Tokens.SCHOOL_HACK2):
                 light_cyan = (150, 255, 255)
                 base_color = WHITE if i == self.current_module else DARK_CYAN
                 color = self.get_pulse_color(base_color, light_cyan, speed=1.5)
@@ -2864,8 +3088,107 @@ class GLYPHIS_IOBBS:
         r = int(base_color[0] + (light_color[0] - base_color[0]) * pulse)
         g = int(base_color[1] + (light_color[1] - base_color[1]) * pulse)
         b = int(base_color[2] + (light_color[2] - base_color[2]) * pulse)
-        
         return (r, g, b)
+    
+    def _is_school_grades_post_unread(self) -> bool:
+        """Check if the Glyphis school grades post is unread"""
+        if not self.posts:
+            return False
+        for post in self.posts:
+            if post.get("id") == "mtf_sysop_school_grades":
+                return not post.get("read", False)
+        return False
+    
+    def _check_and_send_rain_school_email(self) -> None:
+        """Check if player has JEWEL_VOICE1 token and send Rain's school email if not already sent"""
+        # Only check once per session - use a flag to prevent multiple checks
+        if not hasattr(self, '_rain_school_email_checked'):
+            self._rain_school_email_checked = False
+        
+        if not self._rain_school_email_checked and self.inventory.has_token(Tokens.JEWEL_VOICE1):
+            if not self._has_rain_school_email() and "rain_school_help_001" not in self.email_db.sent_email_ids:
+                result = self.deliver_email_to_player("rain_school_help_001")
+                if result:
+                    self._rain_school_email_checked = True
+                    log_event("Delivered Rain school help email (JEWEL_VOICE1 token detected)")
+                else:
+                    # Email was already sent or failed, mark as checked to prevent retries
+                    self._rain_school_email_checked = True
+            else:
+                # Email already exists or was sent, mark as checked
+                self._rain_school_email_checked = True
+    
+    def _has_rain_school_email(self) -> bool:
+        """Check if Rain's school help email exists in inbox"""
+        for email in self.inbox:
+            if hasattr(email, 'email_id') and email.email_id == "rain_school_help_001":
+                return True
+            elif hasattr(email, 'sender') and email.sender == "rain@ciphernet.net":
+                if hasattr(email, 'subject') and email.subject == "A cry for help":
+                    return True
+        return False
+    
+    def _has_replied_to_rain_school_email(self) -> bool:
+        """Check if player has sent a reply to Rain's school help email"""
+        # Check outbox for pending replies
+        for email in self.outbox:
+            if hasattr(email, 'recipient') and email.recipient == "rain@ciphernet.net":
+                if hasattr(email, 'subject'):
+                    subject = email.subject.lower()
+                    if "a cry for help" in subject or "re: a cry for help" in subject:
+                        return True
+        
+        # Check sent folder for sent replies
+        for email in self.sent:
+            if hasattr(email, 'recipient') and email.recipient == "rain@ciphernet.net":
+                if hasattr(email, 'subject'):
+                    subject = email.subject.lower()
+                    if "a cry for help" in subject or "re: a cry for help" in subject:
+                        return True
+        
+        return False
+    
+    def _has_uncle_am_school_grades_email(self) -> bool:
+        """Check if uncle-am's school grades email exists in inbox"""
+        for email in self.inbox:
+            if hasattr(email, 'email_id') and email.email_id == "uncle_am_school_grades_001":
+                return True
+            if getattr(email, "sender", None) == "uncle-am@ciphernet.net" and "about school" in (getattr(email, "subject", "") or "").lower():
+                return True
+        return False
+
+    def _has_jaxkando_school_grades_email(self) -> bool:
+        """Check if Jaxkando's school grades email exists in inbox"""
+        for email in self.inbox:
+            if hasattr(email, 'email_id') and email.email_id == "jaxkando_school_grades_001":
+                return True
+            elif hasattr(email, 'sender') and email.sender == "jaxkando@ciphernet.net":
+                if hasattr(email, 'subject') and "SCHOOL HACK" in email.subject.upper():
+                    return True
+        return False
+
+    def _has_read_jaxkando_school_grades_email(self) -> bool:
+        """Check if Jaxkando's school grades email is in inbox and has been read (so Rain's plan can follow)"""
+        for email in self.inbox:
+            if hasattr(email, 'email_id') and email.email_id == "jaxkando_school_grades_001":
+                return getattr(email, "read", False)
+            if getattr(email, "sender", None) == "jaxkando@ciphernet.net" and "SCHOOL HACK" in (getattr(email, "subject", "") or "").upper():
+                return getattr(email, "read", False)
+        return False
+
+    def _has_rain_school_plan_email(self) -> bool:
+        """Check if Rain's school op plan email exists in inbox (so we don't deliver again)"""
+        for email in self.inbox:
+            if hasattr(email, 'email_id') and email.email_id == "rain_school_plan_001":
+                return True
+            if getattr(email, "sender", None) == "rain@ciphernet.net" and "plan" in (getattr(email, "subject", "") or "").lower():
+                return True
+        return False
+    
+    def _should_pulse_rain_school_email(self) -> bool:
+        """Check if Rain's school email should pulse (email exists and no reply sent yet)"""
+        return self._has_rain_school_email() and not self._has_replied_to_rain_school_email()
+    
 
     def load_main_terminal_feed(self):
         default_posts = [
@@ -3244,6 +3567,10 @@ class GLYPHIS_IOBBS:
                         int(105 * self.scale)  # Increased to accommodate 3 lines with medium fonts
                     )
                     
+                    # Check if this is the Glyphis school grades post and it's unread (no pulsing if SCHOOL_HACK2)
+                    is_school_post = post.get("id") == "mtf_sysop_school_grades"
+                    should_pulse = is_school_post and not post.get("read", False) and not self.inventory.has_token(Tokens.SCHOOL_HACK2)
+                    
                     if idx == self.current_module:  # Selected
                         pygame.draw.rect(self.bbs_surface, HIGHLIGHT_BLUE, post_rect)
                         pygame.draw.rect(self.bbs_surface, ACCENT_CYAN, post_rect, 2)
@@ -3257,6 +3584,14 @@ class GLYPHIS_IOBBS:
                         title_color = DARK_CYAN
                         preview_color = DARK_CYAN
                         prefix = "[ ]"
+                    
+                    # Pulse the post if it's the unread school grades post
+                    if should_pulse:
+                        light_cyan = (150, 255, 255)
+                        base_date = date_color
+                        base_title = title_color
+                        date_color = self.get_pulse_color(base_date, light_cyan, speed=1.5)
+                        title_color = self.get_pulse_color(base_title, light_cyan, speed=1.5)
                     
                     # Text positioning within post box
                     text_x = post_rect.x + int(12 * self.scale)
@@ -3439,11 +3774,13 @@ class GLYPHIS_IOBBS:
         if self.state == "compose":
             self.draw_compose_screen()
         elif self.state == "inbox":
-            self.draw_email_list(self.inbox, "INBOX")
+            self.draw_email_list(self._get_inbox_sorted(), "INBOX")
         elif self.state == "outbox":
             self.draw_email_list(self.outbox, "OUTBOX")
         elif self.state == "sent":
             self.draw_email_list(self.sent, "SENT MESSAGES")
+        elif self.state == "archive":
+            self.draw_email_list(self.archive, "ARCHIVE")
         elif self.state == "reading":
             self.draw_reading_screen()
         else:
@@ -3462,6 +3799,7 @@ class GLYPHIS_IOBBS:
             f"INBOX ({unread_count})",
             f"OUTBOX ({len(self.outbox)})",
             f"SENT ({len(self.sent)})",
+            f"ARCHIVE ({len(self.archive)})",
         ]
 
         label_x = modules_rect.x + int(20 * self.scale)
@@ -3486,8 +3824,14 @@ class GLYPHIS_IOBBS:
                 color = DARK_CYAN
                 tag = "[ ]"
 
-            # Pulse NEW MESSAGE when in guided email mode (has JAX but not JAX1)
-            if option == "NEW MESSAGE" and self.is_guided_email_mode_active():
+            # Pulse NEW MESSAGE when in guided email mode (has JAX but not JAX1) - no pulsing if SCHOOL_HACK2
+            if option == "NEW MESSAGE" and self.is_guided_email_mode_active() and not self.inventory.has_token(Tokens.SCHOOL_HACK2):
+                light_cyan = (150, 255, 255)
+                base_color = WHITE if i == self.current_module else DARK_CYAN
+                color = self.get_pulse_color(base_color, light_cyan, speed=1.5)
+            
+            # Pulse INBOX if Rain's school email exists and hasn't been replied to - no pulsing if SCHOOL_HACK2
+            if option.startswith("INBOX") and self._should_pulse_rain_school_email() and not self.inventory.has_token(Tokens.SCHOOL_HACK2):
                 light_cyan = (150, 255, 255)
                 base_color = WHITE if i == self.current_module else DARK_CYAN
                 color = self.get_pulse_color(base_color, light_cyan, speed=1.5)
@@ -3506,9 +3850,11 @@ class GLYPHIS_IOBBS:
             self.draw_text(f"Outbox size: {len(self.outbox)}", self.font_tiny, DARK_CYAN, info_x, info_y)
             info_y += int(20 * self.scale)
             self.draw_text(f"Sent archive: {len(self.sent)}", self.font_tiny, DARK_CYAN, info_x, info_y)
+            info_y += int(20 * self.scale)
+            self.draw_text(f"Deleted archive: {len(self.archive)}", self.font_tiny, DARK_CYAN, info_x, info_y)
             info_y += int(30 * self.scale)
             if self.inbox:
-                latest = self.inbox[-1]
+                latest = max(self.inbox, key=lambda e: e.timestamp or "")
                 self.draw_text("Last received:", self.font_tiny, ACCENT_CYAN, info_x, info_y)
                 info_y += int(20 * self.scale)
                 self.draw_text(f"{latest.sender}", self.font_tiny, CYAN, info_x, info_y, max_width=info_rect.width - int(40 * self.scale))
@@ -3588,7 +3934,7 @@ class GLYPHIS_IOBBS:
         )
         
         # In guided email mode, show ghost text for subject
-        if self.guided_email_active:
+        if self.guided_email_active and hasattr(self, 'guided_email_subject') and self.guided_email_subject:
             # Draw the ghost subject text in dark grey (what user needs to type)
             ghost_subject = self.guided_email_subject  # "CRACKING ASSISTANCE"
             typed_length = len(self.compose_subject)
@@ -3654,14 +4000,32 @@ class GLYPHIS_IOBBS:
                     body_y + int(10 * self.scale),
                 )
         else:
-            self.draw_text(
-                body_text,
-                self.font_small,
-                body_color,
-                panel_x + int(10 * self.scale),
-                body_y + int(10 * self.scale),
-                panel_width - int(20 * self.scale),
-            )
+            # Check if body starts with bracketed pre-written text (for other emails)
+            if self.compose_body.startswith("[") and "]" in self.compose_body and not self.compose_body.startswith("[["):
+                # Extract the bracketed text and remaining text
+                bracket_end = self.compose_body.find("]")
+                bracketed_text = self.compose_body[:bracket_end + 1]
+                remaining_text = self.compose_body[bracket_end + 1:]
+                
+                # Draw bracketed text in grey
+                grey_color = (128, 128, 128)
+                bracket_surface = self.font_small.render(bracketed_text, True, grey_color)
+                self.bbs_surface.blit(bracket_surface, (panel_x + int(10 * self.scale), body_y + int(10 * self.scale)))
+                
+                # Draw remaining text (if any) and cursor in normal color
+                if remaining_text or self.active_field == "body":
+                    remaining_with_cursor = remaining_text + ("|" if self.active_field == "body" else "")
+                    remaining_surface = self.font_small.render(remaining_with_cursor, True, body_color)
+                    self.bbs_surface.blit(remaining_surface, (panel_x + int(10 * self.scale) + bracket_surface.get_width(), body_y + int(10 * self.scale)))
+            else:
+                self.draw_text(
+                    body_text,
+                    self.font_small,
+                    body_color,
+                    panel_x + int(10 * self.scale),
+                    body_y + int(10 * self.scale),
+                    panel_width - int(20 * self.scale),
+                )
 
         send_y = body_y + body_field_height + int(20 * self.scale)
         button_x = panel_x
@@ -3733,7 +4097,18 @@ class GLYPHIS_IOBBS:
         y = panel_rect.y + int(20 * self.scale)
 
         if not emails:
-            self.draw_text("No messages.", self.font_medium, DARK_CYAN, panel_x, y + int(40 * self.scale))
+            # Show appropriate empty message based on folder type
+            if title == "ARCHIVE":
+                empty_message = "ARCHIVE EMPTY"
+                empty_subtext = "No deleted emails stored."
+            else:
+                empty_message = "No messages."
+                empty_subtext = None
+            
+            center_y = panel_rect.y + panel_rect.height // 2
+            self.draw_text(empty_message, self.font_medium, DARK_CYAN, panel_x, center_y - int(30 * self.scale))
+            if empty_subtext:
+                self.draw_text(empty_subtext, self.font_small, DARK_CYAN, panel_x, center_y + int(10 * self.scale))
             self._draw_footer_status()
             return
 
@@ -3751,6 +4126,8 @@ class GLYPHIS_IOBBS:
             scroll_pos = self.outbox_scroll
         elif self.state == "sent":
             scroll_pos = self.sent_scroll
+        elif self.state == "archive":
+            scroll_pos = self.archive_scroll
         else:
             scroll_pos = 0
         
@@ -3765,6 +4142,8 @@ class GLYPHIS_IOBBS:
             self.outbox_scroll = scroll_pos
         elif self.state == "sent":
             self.sent_scroll = scroll_pos
+        elif self.state == "archive":
+            self.archive_scroll = scroll_pos
         
         # Auto-scroll to keep selected item visible
         if self.current_module < scroll_pos:
@@ -3779,6 +4158,8 @@ class GLYPHIS_IOBBS:
             self.outbox_scroll = scroll_pos
         elif self.state == "sent":
             self.sent_scroll = scroll_pos
+        elif self.state == "archive":
+            self.archive_scroll = scroll_pos
         
         # Draw visible emails
         start_idx = scroll_pos
@@ -3838,9 +4219,15 @@ class GLYPHIS_IOBBS:
             return
 
         email = self.selected_email
+        
+        # Check if this is Rain's school email
+        is_rain_school_email = (hasattr(email, 'sender') and email.sender == "rain@ciphernet.net" and
+                                hasattr(email, 'subject') and email.subject == "A cry for help")
+        
+        footer_text = ["ESC: return   R: reply   D: delete   UP/DOWN: scroll"]
         _, panel_rect, _ = self._prepare_bbs_screen(
             "EMAIL // READ MESSAGE",
-            ["ESC: return   R: reply   D: delete   UP/DOWN: scroll"],
+            footer_text,
             include_info=False,
             left_ratio=1.0,
         )
@@ -3895,10 +4282,53 @@ class GLYPHIS_IOBBS:
             hint_y = panel_rect.bottom - int(30 * self.scale)
             self.draw_text("Scroll for additional content", self.font_tiny, DARK_CYAN, panel_x, hint_y)
 
-        self._draw_footer_status()
+        # Draw pulsing (R)eply text in footer if this is Rain's school email and no reply has been sent (no pulsing if SCHOOL_HACK2)
+        if is_rain_school_email and not self._has_replied_to_rain_school_email() and not self.inventory.has_token(Tokens.SCHOOL_HACK2):
+            footer_y = self.bbs_height - int(50 * self.scale)
+            footer_text_full = "ESC: return   R: reply   D: delete   UP/DOWN: scroll"
+            # Find the position of "R: reply" in the text
+            reply_start = footer_text_full.find("R: reply")
+            if reply_start != -1:
+                # Draw text before "R: reply"
+                before_text = footer_text_full[:reply_start]
+                before_surface = self.font_tiny.render(before_text, True, DARK_CYAN)
+                reply_text = "R: reply"
+                # Pulse the reply text white
+                light_white = (255, 255, 255)
+                base_cyan = DARK_CYAN
+                reply_color = self.get_pulse_color(base_cyan, light_white, speed=1.5)
+                reply_surface = self.font_tiny.render(reply_text, True, reply_color)
+                after_text = footer_text_full[reply_start + len(reply_text):]
+                after_surface = self.font_tiny.render(after_text, True, DARK_CYAN)
+                
+                # Calculate positions
+                footer_x = int(50 * self.scale)
+                before_x = footer_x
+                reply_x = before_x + before_surface.get_width()
+                after_x = reply_x + reply_surface.get_width()
+                
+                # Draw our custom pulsing text in the footer instruction area
+                instruction_y = footer_y - int(25 * self.scale)
+                self.bbs_surface.blit(before_surface, (before_x, instruction_y))
+                self.bbs_surface.blit(reply_surface, (reply_x, instruction_y))
+                self.bbs_surface.blit(after_surface, (after_x, instruction_y))
+            else:
+                self._draw_footer_status()
+        else:
+            self._draw_footer_status()
 
     def _on_email_marked_read(self, email):
         # Grant JAX2 when reading Jaxkando's cracking offer email
+        # Grant JAXGRADES when reading uncle-am's school grades email
+        if hasattr(email, 'email_id') and email.email_id == "uncle_am_school_grades_001":
+            if not self.inventory.has_token(Tokens.JAXGRADES):
+                self.grant_token(Tokens.JAXGRADES, reason="read uncle-am's school grades email")
+                log_event("Granted JAXGRADES token - read uncle-am's school grades email")
+        # Grant SCHOOL_HACK1 when reading Rain's school op plan email
+        if hasattr(email, 'email_id') and email.email_id == "rain_school_plan_001":
+            if not self.inventory.has_token(Tokens.SCHOOL_HACK1):
+                self.grant_token(Tokens.SCHOOL_HACK1, reason="read Rain's school op plan")
+                log_event("Granted SCHOOL_HACK1 token - read Rain's school op plan")
         # This happens when player has JAX (read the post) but not JAX2 yet
         sender = getattr(email, "sender", None)
         if sender == "jaxkando@ciphernet.net":
@@ -4131,22 +4561,45 @@ class GLYPHIS_IOBBS:
 
                 # Keep desktop background video playing instead of using static desktop.png
                 if self.video_cap and _cv2_available:
-                    # Read next frame from desktop background video
-                    ret_bg, frame_bg = self.video_cap.read()
-                    if ret_bg:
-                        frame_bg_rgb = cv2.cvtColor(frame_bg, cv2.COLOR_BGR2RGB)
-                        frame_bg_resized = cv2.resize(frame_bg_rgb, (self.screen_width, self.screen_height))
-                        frame_bg_surface = pygame.surfarray.make_surface(np.swapaxes(frame_bg_resized, 0, 1))
-                        self.screen.blit(frame_bg_surface, (0, 0))
+                    # OPTIMIZATION: Pause MP4 video when zoomed (motion not visible anyway)
+                    # Only pause MP4 files, not other video formats
+                    is_mp4 = self.desktop_video_filename and self.desktop_video_filename.lower().endswith('.mp4')
+                    if self.screen_zoom_active and is_mp4:
+                        # When zoomed, just use the current frame (paused)
+                        if self.video_frame:
+                            self.screen.blit(self.video_frame, (0, 0))
+                        else:
+                            # If no frame exists yet, read one frame to initialize
+                            ret_bg, frame_bg = self.video_cap.read()
+                            if ret_bg:
+                                frame_bg_rgb = cv2.cvtColor(frame_bg, cv2.COLOR_BGR2RGB)
+                                frame_bg_resized = cv2.resize(frame_bg_rgb, (self.screen_width, self.screen_height))
+                                frame_bg_surface = pygame.surfarray.make_surface(np.swapaxes(frame_bg_resized, 0, 1))
+                                self.video_frame = frame_bg_surface
+                                self.screen.blit(frame_bg_surface, (0, 0))
+                            else:
+                                self.screen.fill(BLACK)
                     else:
-                        # Video ended, loop back to beginning
-                        self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        # Normal playback: Read next frame from desktop background video
                         ret_bg, frame_bg = self.video_cap.read()
                         if ret_bg:
                             frame_bg_rgb = cv2.cvtColor(frame_bg, cv2.COLOR_BGR2RGB)
                             frame_bg_resized = cv2.resize(frame_bg_rgb, (self.screen_width, self.screen_height))
                             frame_bg_surface = pygame.surfarray.make_surface(np.swapaxes(frame_bg_resized, 0, 1))
+                            self.video_frame = frame_bg_surface  # Store for potential zoom pause
                             self.screen.blit(frame_bg_surface, (0, 0))
+                        else:
+                            # Video ended, loop back to beginning
+                            self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            ret_bg, frame_bg = self.video_cap.read()
+                            if ret_bg:
+                                frame_bg_rgb = cv2.cvtColor(frame_bg, cv2.COLOR_BGR2RGB)
+                                frame_bg_resized = cv2.resize(frame_bg_rgb, (self.screen_width, self.screen_height))
+                                frame_bg_surface = pygame.surfarray.make_surface(np.swapaxes(frame_bg_resized, 0, 1))
+                                self.video_frame = frame_bg_surface  # Store for potential zoom pause
+                                self.screen.blit(frame_bg_surface, (0, 0))
+                            else:
+                                self.screen.fill(BLACK)
                 else:
                     self.screen.fill(BLACK)
 
@@ -4405,13 +4858,99 @@ class GLYPHIS_IOBBS:
                     """Grant a token to the player."""
                     return self.grant_token(token, reason=reason)
                 
+                def set_quit_state_callback():
+                    """Set the game state to quit_confirm to show quit screen."""
+                    self.state = "quit_confirm"
+                    self.quit_confirm_selection = False
+                
+                def exit_game_callback():
+                    """Exit the game immediately (for factory reset)."""
+                    import sys
+                    pygame.quit()
+                    sys.exit(0)
+                
+                def open_email_callback():
+                    """Open the email system from OS Mode desktop."""
+                    self.selected_menu_item = 0  # EMAIL SYSTEM is first in list
+                    self.state = "email_menu"
+                    self.os_mode_active = False  # Exit OS mode to show email
+                
+                def get_inbox_emails():
+                    """Get inbox emails for BRADSONIC-MAIL."""
+                    user = self.get_active_user()
+                    if user:
+                        return user.get("inbox_emails", [])
+                    return []
+                
+                def save_inbox_emails(emails):
+                    """Save inbox emails from BRADSONIC-MAIL."""
+                    user = self.get_active_user()
+                    if user:
+                        user["inbox_emails"] = emails
+                        self.save_user_state()
+                
+                def send_mail_callback(to, subject, body):
+                    """Handle sent mail from BRADSONIC-MAIL compose."""
+                    logger.info(f"BRADSONIC-MAIL: Email sent to {to}, subject: {subject}")
+                    # Game logic can process the sent email here
+                    # For now, just log it
+                
+                def get_mail_outbox():
+                    """Get outbox emails for BRADSONIC-MAIL."""
+                    user = self.get_active_user()
+                    if user:
+                        return user.get("mail_outbox", [])
+                    return []
+                
+                def save_mail_outbox(emails):
+                    """Save outbox emails for BRADSONIC-MAIL."""
+                    user = self.get_active_user()
+                    if user:
+                        user["mail_outbox"] = emails
+                        self.save_user_state()
+                
+                def get_mail_trash():
+                    """Get trash emails for BRADSONIC-MAIL."""
+                    user = self.get_active_user()
+                    if user:
+                        return user.get("mail_trash", [])
+                    return []
+                
+                def save_mail_trash(emails):
+                    """Save trash emails for BRADSONIC-MAIL."""
+                    user = self.get_active_user()
+                    if user:
+                        user["mail_trash"] = emails
+                        self.save_user_state()
+                
+                def get_downloaded_fugamatchi_tracks():
+                    """Get list of .sonic tracks downloaded from Never Again BBS."""
+                    user = self.get_active_user()
+                    if user:
+                        return user.get("downloaded_fugamatchi_tracks", [])
+                    return []
+                
+                def add_downloaded_fugamatchi_track(title):
+                    """Add a .sonic track to the user's downloads (for file system)."""
+                    user = self.get_active_user()
+                    if user:
+                        tracks = user.get("downloaded_fugamatchi_tracks", [])
+                        if title not in tracks:
+                            tracks.append(title)
+                            user["downloaded_fugamatchi_tracks"] = tracks
+                            self.save_user_state()
+                
                 self.os_mode = OSMode(self.screen, self.res_manager, reset_bbs_and_exit_os, 
                                       self.bbs_x, self.bbs_y, self.bbs_width, has_token,
                                       get_recording_state, set_recording_state,
                                       get_notes, save_notes, get_user_credentials,
                                       get_chess_stats, save_chess_stats, grant_token_callback,
                                       is_audio_streaming, self._get_radio_music_state,
-                                      self._stop_pirate_radio_audio)
+                                      self._stop_pirate_radio_audio, set_quit_state_callback, exit_game_callback,
+                                      open_email_callback, get_inbox_emails, save_inbox_emails,
+                                      send_mail_callback, get_mail_outbox, save_mail_outbox,
+                                      get_mail_trash, save_mail_trash, self._play_mail_sound,
+                                      get_downloaded_fugamatchi_tracks, add_downloaded_fugamatchi_track)
                 logger.debug("GHOST USER: OS Mode initialized successfully")
                 return True
             except Exception as e:
@@ -5003,6 +5542,32 @@ class GLYPHIS_IOBBS:
                                 if not self.inventory.has_token(Tokens.RADIO_ACCESS):
                                     self.grant_token(Tokens.RADIO_ACCESS, reason="agreed to be part of the underground radio network relay")
                         
+                        # Rain school email: any reply gets one line only, no other auto-replies
+                        if self.compose_to == "rain@ciphernet.net":
+                            email_text = (email.subject + " " + email.body).lower()
+                            is_school_email_reply = "a cry for help" in email.subject.lower() or "re: a cry for help" in email.subject.lower()
+                            if is_school_email_reply:
+                                # Grant SCHOOL_HACK if they said "in" or similar
+                                school_yes_keywords = ["count me in", "what are the next steps", "next steps", "i'm in", "im in", "yes", "in", "i am in", "sure", "ok", "okay", "yeah", "yep", "let's do it", "lets do it", "ready", "help", "i'll help", "ill help"]
+                                if any(keyword in email_text for keyword in school_yes_keywords) and self.inventory.has_token(Tokens.JEWEL_VOICE1) and not self.inventory.has_token(Tokens.SCHOOL_HACK):
+                                    self.grant_token(Tokens.SCHOOL_HACK, reason="agreed to help Rain with school grades task")
+                                    log_event("Granted SCHOOL_HACK token - player agreed to help Rain")
+                                # Rain replies with one line only; skip all other NPC auto-replies for this flow
+                                response_body = "Logout of the BBS and everything will begin"
+                                response = Email(
+                                    self.compose_to,
+                                    self.player_email,
+                                    f"RE: {email.subject}",
+                                    response_body
+                                )
+                                delay = random.randint(8, 20)
+                                self.delayed_emails.append({
+                                    "email": response,
+                                    "delivery_time": time.time() + delay
+                                })
+                                log_event(f"Rain school reply scheduled (delay: {delay}s): '{response.subject}'")
+                                skip_normal_response = True
+
                         # Generate response using enhanced trait-based system (only if we didn't already send a response above)
                         if not skip_normal_response:
                             player_tokens = self.inventory.get_all_tokens()
@@ -5061,8 +5626,8 @@ class GLYPHIS_IOBBS:
             # Add character (only if not on send button)
             if self.active_field != "send" and event.unicode.isprintable():
                 if self.active_field == "subject" and len(self.compose_subject) < 100:
-                    # In guided email mode, only allow characters that match the expected subject
-                    if self.guided_email_active:
+                    # In guided email mode, only validate subject if there's an expected subject (e.g., Jaxkando's "CRACKING ASSISTANCE")
+                    if self.guided_email_active and hasattr(self, 'guided_email_subject') and self.guided_email_subject:
                         expected_subject = self.guided_email_subject  # "CRACKING ASSISTANCE"
                         current_pos = len(self.compose_subject)
                         if current_pos < len(expected_subject):
@@ -5102,7 +5667,7 @@ class GLYPHIS_IOBBS:
             elif self.state == "main_menu":
                 self.current_module = (self.current_module + 1) % len(self.modules)
             elif self.state == "email_menu":
-                self.current_module = (self.current_module + 1) % 4
+                self.current_module = (self.current_module + 1) % 5
             elif self.state == "tasks":
                 tasks = self._get_visible_ops_tasks()
                 if tasks:
@@ -5126,7 +5691,7 @@ class GLYPHIS_IOBBS:
             elif self.state == "main_menu":
                 self.current_module = (self.current_module - 1) % len(self.modules)
             elif self.state == "email_menu":
-                self.current_module = (self.current_module - 1) % 4
+                self.current_module = (self.current_module - 1) % 5
             elif self.state == "tasks":
                 tasks = self._get_visible_ops_tasks()
                 if tasks:
@@ -5138,8 +5703,8 @@ class GLYPHIS_IOBBS:
             elif self.state == "radio":
                 if self.radio_tools:
                     self.current_radio_index = (self.current_radio_index - 1) % len(self.radio_tools)
-            elif self.state == "inbox" or self.state == "outbox" or self.state == "sent":
-                emails = self.inbox if self.state == "inbox" else (self.outbox if self.state == "outbox" else self.sent)
+            elif self.state == "inbox" or self.state == "outbox" or self.state == "sent" or self.state == "archive":
+                emails = self._get_inbox_sorted() if self.state == "inbox" else (self.outbox if self.state == "outbox" else (self.sent if self.state == "sent" else self.archive))
                 if emails:
                     self.current_module = max(0, self.current_module - 1)
                     # Auto-scroll to keep selected item visible
@@ -5152,6 +5717,9 @@ class GLYPHIS_IOBBS:
                     elif self.state == "sent":
                         if self.current_module < self.sent_scroll:
                             self.sent_scroll = self.current_module
+                    elif self.state == "archive":
+                        if self.current_module < self.archive_scroll:
+                            self.archive_scroll = self.current_module
             elif self.state == "front_post":
                 if self.current_post is None:
                     # Get list of unread posts
@@ -5172,7 +5740,7 @@ class GLYPHIS_IOBBS:
             elif self.state == "main_menu":
                 self.current_module = (self.current_module + 1) % len(self.modules)
             elif self.state == "email_menu":
-                self.current_module = (self.current_module + 1) % 4
+                self.current_module = (self.current_module + 1) % 5
             elif self.state == "tasks":
                 tasks = self._get_visible_ops_tasks()
                 if tasks:
@@ -5184,8 +5752,8 @@ class GLYPHIS_IOBBS:
             elif self.state == "radio":
                 if self.radio_tools:
                     self.current_radio_index = (self.current_radio_index + 1) % len(self.radio_tools)
-            elif self.state == "inbox" or self.state == "outbox" or self.state == "sent":
-                emails = self.inbox if self.state == "inbox" else (self.outbox if self.state == "outbox" else self.sent)
+            elif self.state == "inbox" or self.state == "outbox" or self.state == "sent" or self.state == "archive":
+                emails = self._get_inbox_sorted() if self.state == "inbox" else (self.outbox if self.state == "outbox" else (self.sent if self.state == "sent" else self.archive))
                 if emails:
                     self.current_module = min(len(emails) - 1, self.current_module + 1)
                     # Auto-scroll will be handled in draw_email_list to keep selected item visible
@@ -5264,9 +5832,13 @@ class GLYPHIS_IOBBS:
                     self.state = "sent"
                     self.current_module = 0
                     self.sent_scroll = 0  # Reset scroll when entering sent
+                elif self.current_module == 4:
+                    self.state = "archive"
+                    self.current_module = 0
+                    self.archive_scroll = 0  # Reset scroll when entering archive
             
-            elif self.state == "inbox" or self.state == "outbox" or self.state == "sent":
-                emails = self.inbox if self.state == "inbox" else (self.outbox if self.state == "outbox" else self.sent)
+            elif self.state == "inbox" or self.state == "outbox" or self.state == "sent" or self.state == "archive":
+                emails = self._get_inbox_sorted() if self.state == "inbox" else (self.outbox if self.state == "outbox" else (self.sent if self.state == "sent" else self.archive))
                 if emails and 0 <= self.current_module < len(emails):
                     email_obj = emails[self.current_module]
                     self.selected_email = email_obj
@@ -5326,6 +5898,10 @@ class GLYPHIS_IOBBS:
                         if post_id == "mtf_games_cracking_jaxkando":
                             if not self.inventory.has_token(Tokens.JAX):
                                 self.grant_token(Tokens.JAX, reason="read the 'Targets Acquired' post from The Wall")
+                        # Grant JEWEL_VOICE1 token when reading school grades post
+                        elif post_id == "mtf_sysop_school_grades":
+                            if not self.inventory.has_token(Tokens.JEWEL_VOICE1):
+                                self.grant_token(Tokens.JEWEL_VOICE1, reason="read Glyphis' school grades post on The Wall")
             
         elif event.key == pygame.K_LEFT:
             # Navigate to previous team member
@@ -5343,13 +5919,14 @@ class GLYPHIS_IOBBS:
             if self.state == "compose":
                 self.state = "email_menu"
                 self.current_module = 0
-            elif self.state == "inbox" or self.state == "outbox" or self.state == "sent":
+            elif self.state == "inbox" or self.state == "outbox" or self.state == "sent" or self.state == "archive":
                 self.state = "email_menu"
                 self.current_module = 0
                 # Reset scroll positions when leaving email lists
                 self.inbox_scroll = 0
                 self.outbox_scroll = 0
                 self.sent_scroll = 0
+                self.archive_scroll = 0
             elif self.state == "reading":
                 # Go back to the list we came from
                 if self.previous_email_state:
@@ -5362,6 +5939,8 @@ class GLYPHIS_IOBBS:
                         self.state = "outbox"
                     elif self.selected_email in self.sent:
                         self.state = "sent"
+                    elif self.selected_email in self.archive:
+                        self.state = "archive"
                     else:
                         self.state = "email_menu"
                 self.selected_email = None
@@ -5373,6 +5952,8 @@ class GLYPHIS_IOBBS:
             elif self.state == "email_menu":
                 self.state = "main_menu"
                 self.current_module = 0
+                # Check for Rain's school email when entering main menu
+                self._check_and_send_rain_school_email()
             elif self.state == "front_post":
                 if self.current_post is not None:
                     self.current_post = None
@@ -5395,20 +5976,19 @@ class GLYPHIS_IOBBS:
             # Toggle fullscreen/windowed mode
             self.fullscreen = not self.fullscreen
             if self.fullscreen:
-                self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+                info = pygame.display.Info()
+                effective_w, effective_h = get_effective_resolution(info.current_w, info.current_h)
+                self.screen = pygame.display.set_mode((effective_w, effective_h), pygame.FULLSCREEN)
             else:
                 self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-            # Update screen dimensions
+            # Update screen dimensions and resolution manager
             self.screen_width = self.screen.get_width()
             self.screen_height = self.screen.get_height()
-            # Recalculate BBS window dimensions and position using proportional scaling (maintaining aspect ratio)
-            scale_x = self.screen_width / self.baseline_width
-            scale_y = self.screen_height / self.baseline_height
-            self.scale = min(scale_x, scale_y)  # Use minimum to maintain aspect ratio and fit on screen
-            self.bbs_width = int(self.baseline_bbs_width * self.scale)
-            self.bbs_height = int(self.baseline_bbs_height * self.scale)
-            self.bbs_x = int(self.baseline_bbs_x * self.scale)
-            self.bbs_y = int(self.baseline_bbs_y * self.scale)
+            self.res_manager.update_screen_dimensions(self.screen_width, self.screen_height)
+            self.scale = self.res_manager.scale_factor
+            self.bbs_width = self.res_manager.scale(self.baseline_bbs_width)
+            self.bbs_height = self.res_manager.scale(self.baseline_bbs_height)
+            self.bbs_x, self.bbs_y = self.res_manager.coords(self.baseline_bbs_x, self.baseline_bbs_y)
             self.documentation_viewer.set_scale(self.scale)
             # Update OS mode scale if active
             if self.os_mode_active and self.os_mode:
@@ -5637,6 +6217,57 @@ class GLYPHIS_IOBBS:
                 # Don't clear active_ops_session here - let it clear when audio finishes
                 logger.debug("GHOST USER: Sequence complete, inputs re-enabled")
 
+    def _update_school_hack_ghost_sequence(self):
+        """Update the school hack logout ghost sequence (mirrors Node 7 ghost): activate OS, open Notes, new note, type bullet list, return control."""
+        current_time = pygame.time.get_ticks()
+        elapsed = current_time - self.school_hack_ghost_timer
+        beat = getattr(self, "ghost_user_beat_duration", 1000)
+
+        if self.school_hack_ghost_step == 0:
+            # Wait 2 beats before taking over (like Node 7 waits 3 beats)
+            if elapsed >= 2 * beat:
+                log_event("School hack ghost: step 0 done, moving to step 1 (init OS, open Notes)")
+                self.school_hack_ghost_step = 1
+                self.school_hack_ghost_timer = current_time
+        elif self.school_hack_ghost_step == 1:
+            # Mirror Node 7 step 1: ensure OS mode, activate it, open Notes immediately
+            if self.os_mode is None:
+                ok = self._initialize_os_mode_if_needed()
+                log_event(f"School hack ghost: _initialize_os_mode_if_needed() -> {ok}, os_mode={self.os_mode is not None}")
+            if not self.os_mode_active and self.os_mode:
+                self.os_mode_active = True
+                self.os_mode.update_scale(self.scale)
+                log_event("School hack ghost: os_mode_active=True, scale updated")
+            if self.os_mode:
+                opened = self.os_mode._ghost_open_notes_for_school_hack()
+                log_event(f"School hack ghost: _ghost_open_notes_for_school_hack() -> {opened}, active_modals={getattr(self.os_mode, 'active_modals', [])}")
+                self.school_hack_ghost_input_blocked = True
+            else:
+                log_event("School hack ghost: os_mode is None, cannot open Notes!")
+            self.school_hack_ghost_step = 2
+            self.school_hack_ghost_timer = current_time
+        elif self.school_hack_ghost_step == 2:
+            # Wait 1 beat before starting to type
+            if elapsed >= beat:
+                log_event("School hack ghost: step 2 done, moving to step 3 (typing lines)")
+                self.school_hack_ghost_step = 3
+                self.school_hack_ghost_timer = current_time
+        elif self.school_hack_ghost_step == 3:
+            line_count = self.os_mode.get_school_hack_note_line_count() if self.os_mode else 8
+            if self.school_hack_ghost_line_index >= line_count:
+                if self.os_mode:
+                    self.os_mode._ghost_finish_school_op_note()
+                self.school_hack_ghost_active = False
+                self.school_hack_ghost_input_blocked = False
+                self.school_hack_ghost_step = 0
+                self.school_hack_ghost_line_index = 0
+                log_event("School hack ghost sequence complete - Notes left open")
+                return
+            if elapsed >= beat:
+                if self.os_mode and self.os_mode._ghost_append_school_op_line(self.school_hack_ghost_line_index):
+                    self.school_hack_ghost_line_index += 1
+                self.school_hack_ghost_timer = current_time
+
     def run(self):
         """Main game loop"""
         running = True
@@ -5662,8 +6293,22 @@ class GLYPHIS_IOBBS:
             if self.ghost_user_active:
                 self._update_ghost_user_sequence()
             
-            # Apply music volume to selected station continuously (in case fine-tuning changed volumes)
-            if self.pirate_radio_app and self.pirate_radio_app.radio_manager:
+            # Update school hack logout ghost sequence (Notes typing) if active
+            if self.school_hack_ghost_active:
+                self._update_school_hack_ghost_sequence()
+
+            # When Midnight Rootkit track ends, play the next (loop 1 then 2 then 1...)
+            if self.midnight_rootkit_playing:
+                self._advance_midnight_rootkit_track()
+
+            # If player has SCHOOL_HACK1 but music isn't playing (e.g. returned after exit), start when they open School Op note or terminal
+            if (self.inventory.has_token(Tokens.SCHOOL_HACK1) and not self.midnight_rootkit_playing
+                    and self.os_mode_active and self.os_mode):
+                if self.os_mode.is_school_op_note_visible() or self.os_mode.is_terminal_open():
+                    self._start_midnight_rootkit_music()
+            
+            # Apply music volume to selected station / Midnight Rootkit continuously (top slider)
+            if (self.pirate_radio_app and self.pirate_radio_app.radio_manager) or self.midnight_rootkit_playing:
                 self._apply_music_volume()
             
             # Apply ambient volume to all ambient sounds (OSBoot, datasette, ambient room sound)
@@ -5710,6 +6355,12 @@ class GLYPHIS_IOBBS:
                 if event.type == pygame.QUIT:
                     running = False
                 
+                
+                # Block all inputs during school hack ghost sequence (except QUIT)
+                if self.school_hack_ghost_input_blocked:
+                    if event.type == pygame.QUIT:
+                        running = False
+                    continue
                 
                 # Block all inputs during ghost user sequence (except QUIT)
                 if self.ghost_user_input_blocked:
@@ -5937,17 +6588,27 @@ class GLYPHIS_IOBBS:
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_F10:
                     self._toggle_os_mode()
                     continue
+                
+                # Shift++: Zoom in when not zoomed, zoom out when zoomed (toggle)
+                # Shift+- not used for zoom so underscore (_) can be typed
+                if event.type == pygame.KEYDOWN:
+                    mods = pygame.key.get_mods()
+                    if mods & pygame.KMOD_SHIFT:
+                        if event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
+                            if self.screen_zoom_active:
+                                self.screen_zoom_active = False
+                                center_x = self.screen_width // 2
+                                center_y = self.screen_height // 2
+                                pygame.mouse.set_pos(center_x, center_y)
+                            else:
+                                self.screen_zoom_active = True
+                                zoom_ref_x = int(self.screen_width * 0.25)
+                                zoom_ref_y = int(self.screen_height * 0.36)
+                                pygame.mouse.set_pos(zoom_ref_x, zoom_ref_y)
+                            continue
 
-                # Handle OS Mode events
+                # Handle OS Mode events (ESC never exits to BBS; it only navigates within terminal/OS)
                 if self.os_mode_active and self.os_mode:
-                    # ESC to exit OS mode
-                    if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                        self.os_mode_active = False
-                        # Immediately update video state when exiting OS Mode
-                        # This ensures the OS video is stopped and the regular video starts right away
-                        self._update_audio_power_state()
-                        pygame.mouse.set_visible(True)
-                        continue
                     if self.os_mode.handle_event(event):
                         continue
 
@@ -5975,6 +6636,13 @@ class GLYPHIS_IOBBS:
                     if self.echo_chamber_bbs.handle_event(event):
                         continue
                     # Swallow other inputs while Echo Chamber BBS is active
+                    continue
+
+                # Handle Outside BBS (Never Again) input handling takes precedence
+                if self.never_again_bbs:
+                    if self.never_again_bbs.handle_event(event):
+                        continue
+                    # Swallow other inputs while Never Again BBS is active
                     continue
                 
                 # Handle intro screen - advance on any keypress to authentication
@@ -6085,8 +6753,17 @@ class GLYPHIS_IOBBS:
                         self.os_mode.modem_modal_should_exit_os = False
                         self.os_mode.modem_modal_external_bbs = None
                         self._launch_echo_chamber_bbs(return_to_os=was_os_mode)
+                    elif external_bbs == "never_again":
+                        was_os_mode = self.os_mode_active
+                        self.os_mode_active = False
+                        self._update_audio_power_state()
+                        self.os_mode.modem_modal_should_reset_bbs = False
+                        self.os_mode.modem_modal_should_exit_os = False
+                        self.os_mode.modem_modal_external_bbs = None
+                        self._launch_never_again_bbs(return_to_os=was_os_mode)
                     elif hasattr(self.os_mode, 'modem_modal_should_reset_bbs') and self.os_mode.modem_modal_should_reset_bbs:
                         self._reset_to_beginning()
+                        self.refresh_main_terminal_feed(initial=True)
                         # Disconnect network when BBS closes
                         if self.os_mode:
                             self.os_mode._set_network_disconnected()
@@ -6102,6 +6779,9 @@ class GLYPHIS_IOBBS:
             
             if self.echo_chamber_bbs and not self.game_freeze_active:
                 self.echo_chamber_bbs.update(dt)
+            
+            if self.never_again_bbs and not self.game_freeze_active:
+                self.never_again_bbs.update(dt)
             
             # Update Pirate Radio app (even when minimized, to keep radio minutes ticking)
             # This ensures radio time tracking continues while in BBS even if UI is closed
@@ -6125,6 +6805,8 @@ class GLYPHIS_IOBBS:
                     self.paper_crane_bbs.draw(self.bbs_surface)
                 elif self.echo_chamber_bbs:
                     self.echo_chamber_bbs.draw(self.bbs_surface)
+                elif self.never_again_bbs:
+                    self.never_again_bbs.draw(self.bbs_surface)
                 elif self.state == "bbs_scroll":
                     self.draw_bbs_scroll()
                 elif self.state == "intro":
@@ -6136,7 +6818,7 @@ class GLYPHIS_IOBBS:
                     self.draw_main_menu()
                 elif self.state == "front_post":
                     self.draw_front_post_board()
-                elif self.state == "email_menu" or self.state == "compose" or self.state == "inbox" or self.state == "outbox" or self.state == "sent" or self.state == "reading":
+                elif self.state == "email_menu" or self.state == "compose" or self.state == "inbox" or self.state == "outbox" or self.state == "sent" or self.state == "archive" or self.state == "reading":
                     self.draw_email_system()
                 elif self.state == "games":
                     self.draw_games_module()
@@ -6180,6 +6862,14 @@ class GLYPHIS_IOBBS:
                             logger.debug(f"GHOST USER DRAW: OS mode not ready, drawing main menu (os_mode_active={self.os_mode_active}, os_mode={self.os_mode})")
                             self._ghost_user_draw_warned = True
                         self.draw_main_menu()
+                elif self.state == "school_hack_ghost_sequence":
+                    # Same pattern as ghost_user_sequence: BBS menu until OS activates, then OS mode
+                    if not self.os_mode_active:
+                        self.draw_main_menu()
+                    elif self.os_mode_active and self.os_mode:
+                        self.os_mode.draw()
+                    else:
+                        self.draw_main_menu()
                 elif self.state == "login_username":
                     self.draw_login_username_screen()
                 elif self.state == "login_pin_create":
@@ -6208,16 +6898,57 @@ class GLYPHIS_IOBBS:
                 elif self.state == "os_boot_playing":
                     # OSBoot video playing - render desktop video and OSBoot video (no BBS window)
                     if self.video_cap and _cv2_available:
-                        # Read and render desktop background video
-                        ret, frame = self.video_cap.read()
-                        if ret:
-                            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                            frame_resized = cv2.resize(frame_rgb, (self.screen_width, self.screen_height))
-                            frame_swapped = np.swapaxes(frame_resized, 0, 1)
-                            self.video_frame = pygame.surfarray.make_surface(frame_swapped)
+                        # OPTIMIZATION: Pause MP4 video when zoomed (motion not visible anyway)
+                        # Only pause MP4 files, not other video formats
+                        is_mp4 = self.desktop_video_filename and self.desktop_video_filename.lower().endswith('.mp4')
+                        if self.screen_zoom_active and is_mp4:
+                            # When zoomed, just use the current frame (paused)
+                            if self.video_frame:
+                                self.screen.blit(self.video_frame, (0, 0))
+                            else:
+                                # If no frame exists yet, read one frame to initialize
+                                ret, frame = self.video_cap.read()
+                                if ret:
+                                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                                    frame_resized = cv2.resize(frame_rgb, (self.screen_width, self.screen_height))
+                                    frame_swapped = np.swapaxes(frame_resized, 0, 1)
+                                    self.video_frame = pygame.surfarray.make_surface(frame_swapped)
+                                    self.screen.blit(self.video_frame, (0, 0))
+                                else:
+                                    self.screen.fill(BLACK)
+                        else:
+                            # Normal playback: Read and render desktop background video
+                            ret, frame = self.video_cap.read()
+                            if ret:
+                                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                                frame_resized = cv2.resize(frame_rgb, (self.screen_width, self.screen_height))
+                                frame_swapped = np.swapaxes(frame_resized, 0, 1)
+                                self.video_frame = pygame.surfarray.make_surface(frame_swapped)
+                                self.screen.blit(self.video_frame, (0, 0))
+                            else:
+                                self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                                ret, frame = self.video_cap.read()
+                                if ret:
+                                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                                    frame_resized = cv2.resize(frame_rgb, (self.screen_width, self.screen_height))
+                                    frame_swapped = np.swapaxes(frame_resized, 0, 1)
+                                    self.video_frame = pygame.surfarray.make_surface(frame_swapped)
+                                    self.screen.blit(self.video_frame, (0, 0))
+                                else:
+                                    self.screen.fill(BLACK)
+                    else:
+                        self.screen.fill(BLACK)
+                elif self.video_cap and _cv2_available:
+                    # Video mode: render video frame, then BBS window, then scanline overlay
+                    # OPTIMIZATION: Pause MP4 video when zoomed (motion not visible anyway)
+                    # Only pause MP4 files, not other video formats
+                    is_mp4 = self.desktop_video_filename and self.desktop_video_filename.lower().endswith('.mp4')
+                    if self.screen_zoom_active and is_mp4:
+                        # When zoomed, just use the current frame (paused)
+                        if self.video_frame:
                             self.screen.blit(self.video_frame, (0, 0))
                         else:
-                            self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            # If no frame exists yet, read one frame to initialize
                             ret, frame = self.video_cap.read()
                             if ret:
                                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -6228,35 +6959,32 @@ class GLYPHIS_IOBBS:
                             else:
                                 self.screen.fill(BLACK)
                     else:
-                        self.screen.fill(BLACK)
-                elif self.video_cap and _cv2_available:
-                    # Video mode: render video frame, then BBS window, then scanline overlay
-                    # Read next frame from video
-                    ret, frame = self.video_cap.read()
-                    if ret:
-                        # Convert BGR to RGB (OpenCV uses BGR, pygame uses RGB)
-                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        # Resize video frame to match screen size
-                        frame_resized = cv2.resize(frame_rgb, (self.screen_width, self.screen_height))
-                        # Convert numpy array to pygame surface
-                        # pygame.surfarray expects (width, height) format, so we need to swap axes
-                        frame_swapped = np.swapaxes(frame_resized, 0, 1)
-                        self.video_frame = pygame.surfarray.make_surface(frame_swapped)
-                        # Draw video frame as background
-                        self.screen.blit(self.video_frame, (0, 0))
-                    else:
-                        # Video ended, loop back to beginning
-                        self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        # Normal playback: Read next frame from video
                         ret, frame = self.video_cap.read()
                         if ret:
+                            # Convert BGR to RGB (OpenCV uses BGR, pygame uses RGB)
                             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                            # Resize video frame to match screen size
                             frame_resized = cv2.resize(frame_rgb, (self.screen_width, self.screen_height))
+                            # Convert numpy array to pygame surface
+                            # pygame.surfarray expects (width, height) format, so we need to swap axes
                             frame_swapped = np.swapaxes(frame_resized, 0, 1)
                             self.video_frame = pygame.surfarray.make_surface(frame_swapped)
+                            # Draw video frame as background
                             self.screen.blit(self.video_frame, (0, 0))
                         else:
-                            # Fallback if video can't be read
-                            self.screen.fill(BLACK)
+                            # Video ended, loop back to beginning
+                            self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            ret, frame = self.video_cap.read()
+                            if ret:
+                                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                                frame_resized = cv2.resize(frame_rgb, (self.screen_width, self.screen_height))
+                                frame_swapped = np.swapaxes(frame_resized, 0, 1)
+                                self.video_frame = pygame.surfarray.make_surface(frame_swapped)
+                                self.screen.blit(self.video_frame, (0, 0))
+                            else:
+                                # Fallback if video can't be read
+                                self.screen.fill(BLACK)
                     
                     # Draw BBS window on top of video
                     self.screen.blit(self.bbs_surface, (self.bbs_x, self.bbs_y))
@@ -6448,7 +7176,7 @@ class GLYPHIS_IOBBS:
 
                 # Draw OS Mode cursor (before scanlines) if in OS mode and mouse is in desktop
                 # But always show system cursor when an outside BBS is active
-                if self.paper_crane_bbs or self.echo_chamber_bbs:
+                if self.paper_crane_bbs or self.echo_chamber_bbs or self.never_again_bbs:
                     # Outside BBS is active - always show system cursor
                     pygame.mouse.set_visible(True)
                 elif self.os_mode_active and self.os_mode:
@@ -6536,7 +7264,7 @@ class GLYPHIS_IOBBS:
                 self.documentation_viewer.apply_cursor()
                 
                 # Update cursor based on mouse position (only for areas outside OS desktop)
-                if self.paper_crane_bbs or self.echo_chamber_bbs:
+                if self.paper_crane_bbs or self.echo_chamber_bbs or self.never_again_bbs:
                     # Outside BBS is active - show cursor everywhere, use hand cursor outside BBS window
                     mouse_x, mouse_y = pygame.mouse.get_pos()
                     if not self._is_mouse_in_bbs_window():
@@ -6670,6 +7398,54 @@ class GLYPHIS_IOBBS:
                     knob2_y = slider2_y + (slider_height - knob_height) // 2
                     self.screen.blit(self.slider_knob_image, (knob2_x, knob2_y))
             
+            # Apply screen zoom if active (browser-like zoom)
+            # PERFORMANCE NOTE: This operation is expensive because it:
+            # 1. Copies the entire screen (e.g., 2560x1440 = ~3.7M pixels)
+            # 2. Scales it to zoomed size (2x zoom = 4x pixels = ~14.7M pixels to process)
+            # 3. Happens every frame (60 times per second)
+            # This is why FPS drops when zoomed. To improve performance, consider:
+            # - Reducing zoom level (e.g., 1.5x instead of 2.0x)
+            # - Using a different rendering approach (render at higher resolution when zoomed)
+            # - Accepting the performance cost for the visual effect
+            if self.screen_zoom_active:
+                # Calculate the reference point in screen coordinates (45% x 62%)
+                # This point will be the bottom-right corner of the zoomed view
+                zoom_ref_x = int(self.screen_width * self.screen_zoom_center_x_pct)
+                zoom_ref_y = int(self.screen_height * self.screen_zoom_center_y_pct)
+                
+                # Scale the screen copy by zoom level
+                zoomed_width = int(self.screen_width * self.screen_zoom_level)
+                zoomed_height = int(self.screen_height * self.screen_zoom_level)
+                
+                # Copy and scale screen (using fast scale() method, not smoothscale() for better performance)
+                screen_copy = self.screen.copy()
+                zoomed_surface = pygame.transform.scale(screen_copy, (zoomed_width, zoomed_height))
+                
+                # Calculate the source rectangle to crop from the zoomed surface
+                # The reference point (45% x 62%) should be at the bottom-right corner of the visible area
+                # In the zoomed surface, the reference point is at (zoom_ref_x * zoom_level, zoom_ref_y * zoom_level)
+                zoom_ref_x_scaled = int(zoom_ref_x * self.screen_zoom_level)
+                zoom_ref_y_scaled = int(zoom_ref_y * self.screen_zoom_level)
+                
+                # Position the source rectangle so its bottom-right corner is at the reference point
+                source_x = max(0, min(zoomed_width - self.screen_width, zoom_ref_x_scaled - self.screen_width))
+                source_y = max(0, min(zoomed_height - self.screen_height, zoom_ref_y_scaled - self.screen_height))
+                
+                # Crop the zoomed surface to show the area with the reference point at bottom-right
+                source_rect = pygame.Rect(source_x, source_y, self.screen_width, self.screen_height)
+                
+                # Use subsurface with error handling in case of edge cases
+                try:
+                    cropped_surface = zoomed_surface.subsurface(source_rect)
+                    # Clear screen and blit the zoomed/cropped view
+                    self.screen.fill(BLACK)
+                    self.screen.blit(cropped_surface, (0, 0))
+                except (ValueError, pygame.error):
+                    # Fallback: if subsurface fails (shouldn't happen with proper clamping, but just in case)
+                    # Show the zoomed surface from top-left corner
+                    self.screen.fill(BLACK)
+                    self.screen.blit(zoomed_surface, (0, 0), (0, 0, self.screen_width, self.screen_height))
+            
             # Update display
             # Draw settings modal on top of everything (letterboxing already drawn above)
             pygame.display.flip()
@@ -6710,7 +7486,24 @@ class GLYPHIS_IOBBS:
             # If recipient is not in team list, keep current index
             pass
         self.compose_subject = subject
-        self.compose_body = ""
+        
+        # Check if this is Rain's school email and set up placeholder text (matching Astro Miner pattern)
+        is_rain_school_email = (hasattr(self.selected_email, 'sender') and 
+                                self.selected_email.sender == "rain@ciphernet.net" and
+                                hasattr(self.selected_email, 'subject') and 
+                                self.selected_email.subject == "A cry for help")
+        
+        if is_rain_school_email:
+            # Use placeholder format like Astro Miner, not pre-filled text
+            self.guided_email_active = True
+            self.guided_email_body_started = False
+            self.guided_email_body_placeholder = "[hey rain, count me in, what are the next steps?]"
+            self.guided_email_subject = ""  # Clear subject ghost text (Rain's subject is pre-filled, no validation needed)
+            self.compose_body = ""  # Empty, placeholder will show
+        else:
+            self.guided_email_active = False
+            self.compose_body = ""
+        
         self.state = "compose"
         self.active_field = "body"
         self.current_module = 0
@@ -6730,11 +7523,11 @@ class GLYPHIS_IOBBS:
             return
 
         origin_state = self.previous_email_state
-        if origin_state not in ("inbox", "outbox", "sent"):
+        if origin_state not in ("inbox", "outbox", "sent", "archive"):
             log_event("Delete email requested but origin mailbox unknown.")
             return
 
-        source_list = self.inbox if origin_state == "inbox" else (self.outbox if origin_state == "outbox" else self.sent)
+        source_list = self.inbox if origin_state == "inbox" else (self.outbox if origin_state == "outbox" else (self.sent if origin_state == "sent" else self.archive))
         if source_list is None:
             return
 
@@ -6763,8 +7556,44 @@ class GLYPHIS_IOBBS:
         log_event("Email deletion cancelled.")
         self._reset_delete_email_modal()
 
+    def _get_inbox_sorted(self):
+        """Return inbox sorted: unread first, then by timestamp descending (newest first)."""
+        def get_timestamp(email):
+            if hasattr(email, 'timestamp') and email.timestamp:
+                if isinstance(email.timestamp, str):
+                    try:
+                        from datetime import datetime
+                        return datetime.strptime(email.timestamp, "%Y-%m-%d %H:%M:%S").timestamp()
+                    except Exception:
+                        return 0
+                return float(email.timestamp) if email.timestamp else 0
+            return 0
+
+        return sorted(
+            self.inbox,
+            key=lambda e: (e.read, -get_timestamp(e)),
+        )
+
+    def _sort_archive_by_timestamp(self):
+        """Sort archive emails by timestamp, most recent first."""
+        def get_timestamp(email):
+            if hasattr(email, 'timestamp') and email.timestamp:
+                # Handle both string and numeric timestamps
+                if isinstance(email.timestamp, str):
+                    try:
+                        # Try to parse as date string or return 0
+                        from datetime import datetime
+                        # Common formats: "1989-12-25 14:30:00" or similar
+                        return datetime.strptime(email.timestamp, "%Y-%m-%d %H:%M:%S").timestamp()
+                    except:
+                        return 0
+                return float(email.timestamp) if email.timestamp else 0
+            return 0
+        
+        self.archive.sort(key=get_timestamp, reverse=True)
+
     def confirm_delete_email(self):
-        """Delete the selected email from its mailbox after confirmation."""
+        """Move the selected email to archive after confirmation (or permanently delete if from archive)."""
         if not self.delete_email_modal_active or not self.selected_email:
             return
 
@@ -6776,11 +7605,21 @@ class GLYPHIS_IOBBS:
         deleted = False
         if source_list is not None:
             if 0 <= index < len(source_list) and source_list[index] is email_to_remove:
-                source_list.pop(index)
+                removed_email = source_list.pop(index)
+                # Only add to archive if not already in archive
+                if origin_state != "archive":
+                    self.archive.append(removed_email)
+                    # Sort archive by timestamp (most recent first)
+                    self._sort_archive_by_timestamp()
                 deleted = True
             else:
                 try:
                     source_list.remove(email_to_remove)
+                    # Only add to archive if not already in archive
+                    if origin_state != "archive":
+                        self.archive.append(email_to_remove)
+                        # Sort archive by timestamp (most recent first)
+                        self._sort_archive_by_timestamp()
                     deleted = True
                 except ValueError:
                     deleted = False
@@ -6791,13 +7630,17 @@ class GLYPHIS_IOBBS:
             log_event("Failed to delete email; message not found in mailbox.")
             return
 
-        log_event("Email deleted from mailbox.")
+        if origin_state == "archive":
+            log_event("Email permanently deleted from archive.")
+        else:
+            log_event("Email moved to archive.")
+        
         self.selected_email = None
         self.previous_email_state = None
         self.email_scroll_y = 0
 
-        if origin_state in ("inbox", "outbox", "sent"):
-            target_list = self.inbox if origin_state == "inbox" else (self.outbox if origin_state == "outbox" else self.sent)
+        if origin_state in ("inbox", "outbox", "sent", "archive"):
+            target_list = self.inbox if origin_state == "inbox" else (self.outbox if origin_state == "outbox" else (self.sent if origin_state == "sent" else self.archive))
             self.state = origin_state
             if target_list:
                 self.current_module = max(0, min(index, len(target_list) - 1))
@@ -6807,7 +7650,7 @@ class GLYPHIS_IOBBS:
             self.state = "email_menu"
             self.current_module = 0
 
-        # Persist state (especially inbox changes)
+        # Persist state (especially inbox changes and archive)
         self.save_user_state()
 
     def draw_delete_email_modal(self):
@@ -6831,11 +7674,18 @@ class GLYPHIS_IOBBS:
         delete_message = f"Delete '{subject}'?"
         delete_lines = self._wrap_text(delete_message, self.font_small, available_text_width)
         
-        # Other message lines
-        other_message_lines = [
-            ("This will remove the email from your mailbox.", RED),
-            ("Press Y to confirm or N to cancel.", WHITE),
-        ]
+        # Other message lines - different message for archive vs other folders
+        origin_state = self.delete_email_origin_state
+        if origin_state == "archive":
+            other_message_lines = [
+                ("This will permanently delete the email.", RED),
+                ("Press Y to confirm or N to cancel.", WHITE),
+            ]
+        else:
+            other_message_lines = [
+                ("This will move the email to archive.", RED),
+                ("Press Y to confirm or N to cancel.", WHITE),
+            ]
 
         # Calculate total content height
         header_height = self.font_medium.get_height()
@@ -7020,13 +7870,97 @@ class GLYPHIS_IOBBS:
                         """Grant a token to the player."""
                         return self.grant_token(token, reason=reason)
                     
-                    self.os_mode = OSMode(self.screen, self.scale, reset_bbs_and_exit_os, 
+                    def set_quit_state_callback():
+                        """Set the game state to quit_confirm to show quit screen."""
+                        self.state = "quit_confirm"
+                        self.quit_confirm_selection = False
+                    
+                    def exit_game_callback():
+                        """Exit the game immediately (for factory reset)."""
+                        import sys
+                        pygame.quit()
+                        sys.exit(0)
+                    
+                    def open_email_callback():
+                        """Open the email system from OS Mode desktop."""
+                        self.selected_menu_item = 0  # EMAIL SYSTEM is first in list
+                        self.state = "email_menu"
+                        self.os_mode_active = False  # Exit OS mode to show email
+                    
+                    def get_inbox_emails():
+                        """Get inbox emails for BRADSONIC-MAIL."""
+                        user = self.get_active_user()
+                        if user:
+                            return user.get("inbox_emails", [])
+                        return []
+                    
+                    def save_inbox_emails(emails):
+                        """Save inbox emails from BRADSONIC-MAIL."""
+                        user = self.get_active_user()
+                        if user:
+                            user["inbox_emails"] = emails
+                            self.save_user_state()
+                    
+                    def send_mail_callback(to, subject, body):
+                        """Handle sent mail from BRADSONIC-MAIL compose."""
+                        logger.info(f"BRADSONIC-MAIL: Email sent to {to}, subject: {subject}")
+                    
+                    def get_mail_outbox():
+                        """Get outbox emails for BRADSONIC-MAIL."""
+                        user = self.get_active_user()
+                        if user:
+                            return user.get("mail_outbox", [])
+                        return []
+                    
+                    def save_mail_outbox(emails):
+                        """Save outbox emails for BRADSONIC-MAIL."""
+                        user = self.get_active_user()
+                        if user:
+                            user["mail_outbox"] = emails
+                            self.save_user_state()
+                    
+                    def get_mail_trash():
+                        """Get trash emails for BRADSONIC-MAIL."""
+                        user = self.get_active_user()
+                        if user:
+                            return user.get("mail_trash", [])
+                        return []
+                    
+                    def save_mail_trash(emails):
+                        """Save trash emails for BRADSONIC-MAIL."""
+                        user = self.get_active_user()
+                        if user:
+                            user["mail_trash"] = emails
+                            self.save_user_state()
+                    
+                    def get_downloaded_fugamatchi_tracks():
+                        """Get list of .sonic tracks downloaded from Never Again BBS."""
+                        user = self.get_active_user()
+                        if user:
+                            return user.get("downloaded_fugamatchi_tracks", [])
+                        return []
+                    
+                    def add_downloaded_fugamatchi_track(title):
+                        """Add a .sonic track to the user's downloads (for file system)."""
+                        user = self.get_active_user()
+                        if user:
+                            tracks = user.get("downloaded_fugamatchi_tracks", [])
+                            if title not in tracks:
+                                tracks.append(title)
+                                user["downloaded_fugamatchi_tracks"] = tracks
+                                self.save_user_state()
+                    
+                    self.os_mode = OSMode(self.screen, self.res_manager, reset_bbs_and_exit_os, 
                                           self.bbs_x, self.bbs_y, self.bbs_width, has_token,
                                           get_recording_state, set_recording_state,
                                           get_notes, save_notes, get_user_credentials,
                                           get_chess_stats, save_chess_stats, grant_token_callback,
                                           is_audio_streaming, self._get_radio_music_state,
-                                          self._stop_pirate_radio_audio)
+                                          self._stop_pirate_radio_audio, set_quit_state_callback, exit_game_callback,
+                                          open_email_callback, get_inbox_emails, save_inbox_emails,
+                                          send_mail_callback, get_mail_outbox, save_mail_outbox,
+                                          get_mail_trash, save_mail_trash, self._play_mail_sound,
+                                          get_downloaded_fugamatchi_tracks, add_downloaded_fugamatchi_track)
                 except Exception as e:
                     logger.warning(f"Failed to initialize OS Mode: {e}")
                     self.os_mode_active = False
@@ -7059,6 +7993,21 @@ class GLYPHIS_IOBBS:
         # If OS Mode Network is DISCONNECTED, cut Pirate Radio audio only
         if self.os_mode and not getattr(self.os_mode, "network_connected", True):
             self._stop_pirate_radio_audio(close_app=False)
+        # Check SCHOOL_HACK1 before MODEM1ST so vital mission (Notes ghost sequence) runs when player has both; skip if SCHOOL_HACK2 (region already set)
+        if self.inventory.has_token(Tokens.SCHOOL_HACK1) and not self.inventory.has_token(Tokens.SCHOOL_HACK2):
+            log_event("SCHOOL_HACK1 token detected on logout - starting school hack ghost sequence (like Node 7)")
+            log_event("School hack ghost: confirm_logout -> state=school_hack_ghost_sequence, step=0 (wait 2 beats)")
+            # Start Midnight Rootkit music (two tracks loop; volume = top slider)
+            self._start_midnight_rootkit_music()
+            self._initialize_os_mode_if_needed()
+            self.state = "school_hack_ghost_sequence"
+            self.school_hack_ghost_active = True
+            self.school_hack_ghost_step = 0
+            self.school_hack_ghost_timer = pygame.time.get_ticks()
+            self.school_hack_ghost_line_index = 0
+            self.school_hack_ghost_input_blocked = False
+            log_event(f"School hack ghost: os_mode={self.os_mode is not None}, os_mode_active={self.os_mode_active}")
+            return
         if self.inventory.has_token(Tokens.MODEM1ST):
             log_event("MODEM1ST token detected on logout - returning to OS Mode")
             self._toggle_os_mode(force_on=True)
@@ -7224,6 +8173,8 @@ class GLYPHIS_IOBBS:
             "sent_emails": [],
             "tokens": [],
             "inbox_emails": [],
+            "mail_outbox": [],
+            "mail_trash": [],
             "username_simulacra_tcs": None,
             "relationship_scores": {},
             "recording": False,
@@ -7380,6 +8331,19 @@ class GLYPHIS_IOBBS:
                     if email.email_id:
                         self.email_db.delivered_email_ids.add(email.email_id)
             
+            # Load archive emails
+            self.archive = []
+            for stored_email in user.get("archive_emails", []):
+                if not isinstance(stored_email, dict):
+                    continue
+                email_payload = dict(stored_email)
+                email_payload.setdefault("recipient", self.player_email)
+                email = Email.from_dict(email_payload)
+                if email:
+                    self.archive.append(email)
+            # Sort archive by timestamp (most recent first)
+            self._sort_archive_by_timestamp()
+            
             # Initialize Pirate Radio station minutes if player has RADIO_ACCESS1
             # (pirate_radio_app is initialized later in __init__, but attribute exists as None)
             if self.inventory.has_token("RADIO_ACCESS1") and self.pirate_radio_app is not None:
@@ -7391,6 +8355,7 @@ class GLYPHIS_IOBBS:
             self.email_db.sent_email_ids = set()
             self.email_db.delivered_email_ids = set()
             self.inbox = []
+            self.archive = []
 
         if self.player_pin and not self.inventory.has_token(Tokens.PIN_SET):
             self.grant_token(Tokens.PIN_SET, reason="restored from profile")
@@ -7453,6 +8418,25 @@ class GLYPHIS_IOBBS:
                     }
                 )
         user["inbox_emails"] = serialized_inbox
+        
+        # Serialize archive emails
+        serialized_archive = []
+        for email in self.archive:
+            if isinstance(email, Email):
+                serialized_archive.append(email.to_dict())
+            elif isinstance(email, dict):
+                serialized_archive.append(
+                    {
+                        "id": email.get("id"),
+                        "sender": email.get("sender"),
+                        "recipient": email.get("recipient", real_username),
+                        "subject": email.get("subject"),
+                        "body": email.get("body"),
+                        "timestamp": email.get("timestamp"),
+                        "read": bool(email.get("read", False)),
+                    }
+                )
+        user["archive_emails"] = serialized_archive
 
     def set_active_user_index(self, index: int) -> None:
         users = self.user_state.get("users", [])
@@ -8007,6 +8991,8 @@ class GLYPHIS_IOBBS:
         # When ASTROMINER1 token is granted (after playing the game), deliver jaxkando's email
         if token == Tokens.ASTROMINER1:
             self.deliver_email_to_player("jaxkando_astrominer_congrats_001")
+        
+        # Uncle-am's school email is delivered when player returns to MAIN MENU (not here)
     
     def _deliver_jaxkando_astrominer_email(self):
         """Deliver Jaxkando's email introducing ASTRO-MINER game cracking task."""
@@ -8091,6 +9077,7 @@ class GLYPHIS_IOBBS:
         self.inbox.clear()
         self.outbox.clear()
         self.sent.clear()
+        self.archive.clear()
         self.email_db.sent_email_ids.clear()
         self.inventory.clear()
         self.login_input = ""

@@ -1,3 +1,14 @@
+
+
+This is a post for all redit promotions to go into the body...
+
+This is my hacking game Glyphis_IO BBS: The Proxy Tapes 1989 (long title cause I'm a Philip K. Dick fan). It's on Steam to wishlist here.
+First Devlog for the project on YouTube is here.
+My background is board game design, hacking, quantum computing, world building, ARGs and AI - my YouTube channel reflects my experiments. I hope to get this game out by next year with a working demo by the summer.
+AI disclosure: I use Midjourney for visual prototyping, guided by my own Google-sourced mood boards and original assets. I use ElevenLabs to refine my less-than-glorious singing voice and Suno to complete melodies I've written. And, while learning Raylib and building the Virtual PC engine in C++, I occasionally lean on Claude to help debug and untangle the trickier bits of code.
+Edit: NSFW tag added by mistake. Sorry!!
+
+
 My first YouTube Series episode should be the following...
 
 Retro Cyberpunk: I'm building a BBS hacking sim set in an 

@@ -1,4 +1,4 @@
-# Complete C++ Game Integration Guide for GlyphisIO BBS
+﻿# Complete C++ Game Integration Guide for GlyphisIO BBS
 
 ## Overview
 
@@ -10,6 +10,22 @@ This guide explains **exactly** how to integrate a C++ game (like Astro Miner or
 4. Input is forwarded from Pygame to the DLL via exported functions
 
 This creates a seamless "game within the BBS" experience.
+
+### Embedded Launch Checklist (Critical)
+
+1. Build the DLL used by BBS, not the standalone EXE path.
+2. Use `build_dll.bat` for BBS validation; `build_and_run.bat` is standalone-only.
+3. Every `BeginTextureMode(g_framebuffer)` in embedded mode must close with `EndTextureMode()` (never `EndDrawing()`).
+4. Keep render + input using the same presented rectangle (same scale + offset math on Python side).
+5. If you get "black frame + cursor visible", treat alpha as suspect:
+   - The framebuffer RGB may be valid while alpha is zero.
+   - In Python, prefer an opaque `Surface` for final blit (`convert()`), unless your game explicitly guarantees alpha is fully authored.
+6. Define hotkey ownership explicitly between BBS and game:
+   - Keep BBS global zoom on `Shift + +/-`.
+   - If a game also needs zoom, move game zoom to a stronger combo (for example `Ctrl + Shift + +/-`).
+7. In embedded splash/startup phases, clamp invalid frame delta:
+   - `GetFrameTime()` may return `0` in hidden-window mode.
+   - If your splash/transition timers depend on `dt`, clamp to a sane default (e.g. `1/60`) or splash can remain black forever.
 
 > **Reference Implementations:** See `astrominer_embed.py`, `cybertrain_embed.py`, and their corresponding C++ `main.cpp` files for working examples.
 
@@ -1543,6 +1559,47 @@ def _get_game_mouse_pos(self, screen_pos):
     return (game_x, game_y)
 ```
 
+### 4.5 Aspect-Fit Contract (Critical for Correct Scaling + Input)
+
+When the displayed game frame uses aspect-fit scaling (letterbox/pillarbox), you must use the **same presented rect** for:
+
+1. frame blit position
+2. frame scaled size
+3. mouse-to-game coordinate mapping
+
+If these are not identical, the game appears offset/scaled incorrectly and mouse input drifts.
+
+```python
+def _compute_presented_frame_rect(desktop_x, desktop_y, desktop_w, desktop_h, frame_w, frame_h):
+    if frame_w <= 0 or frame_h <= 0:
+        return (desktop_x, desktop_y, max(1, desktop_w), max(1, desktop_h))
+
+    scale = min(desktop_w / frame_w, desktop_h / frame_h)
+    draw_w = max(1, int(frame_w * scale))
+    draw_h = max(1, int(frame_h * scale))
+    draw_x = desktop_x + (desktop_w - draw_w) // 2
+    draw_y = desktop_y + (desktop_h - draw_h) // 2
+    return (draw_x, draw_y, draw_w, draw_h)
+```
+
+Use that rect for both drawing and input conversion:
+
+```python
+draw_x, draw_y, draw_w, draw_h = _compute_presented_frame_rect(
+    desktop_x, desktop_y, desktop_w, desktop_h, frame_w, frame_h
+)
+
+# Render
+scaled = pygame.transform.smoothscale(frame, (draw_w, draw_h))
+screen.blit(scaled, (draw_x, draw_y))
+
+# Input mapping
+rel_x = mouse_x - draw_x
+rel_y = mouse_y - draw_y
+game_x = (rel_x / draw_w) * frame_w
+game_y = (rel_y / draw_h) * frame_h
+```
+
 ---
 
 ## Part 5: Memory Management for Performance
@@ -1765,6 +1822,17 @@ ctypes.CDLL("Data/games/YourGame/yourgame.dll")
 - Verify `GetFrameBuffer()` returns non-NULL
 - Ensure `g_standalone_mode = false` is set when called from Python
 
+**CyberTrain embedded incidents (March 3, 2026):**
+- **Symptom:** black screen with cursor visible, logs show splash/UI texture IDs are valid.
+  - **Cause:** Python-side debug sampler read a `memoryview` with unsupported format (`NotImplementedError: memoryview: unsupported format <B`) and `get_frame_surface()` returned `None`.
+  - **Fix:** keep `memoryview(...)` only for `pygame.image.frombuffer`, but sample bytes from the backing ctypes array (`raw_array[i]`) instead.
+- **Symptom:** frame fetch succeeds but frame is almost fully black (`non_black` near zero) even though render stage advances.
+  - **Cause:** readback used runtime texture format directly, which can be backend-dependent in embedded mode.
+  - **Fix:** force framebuffer readback to `PIXELFORMAT_UNCOMPRESSED_R8G8B8A8` in `GetFrameBuffer()`.
+- **Symptom:** stuck at splash phase 0 (`stage=10`, `splash=0`) with persistent black output.
+  - **Cause:** `GetFrameTime()` returning invalid/zero values during hidden-window startup; splash timer never advanced.
+  - **Fix:** clamp splash `dt` (`if dt <= 0 || dt > 0.1 -> dt = 1/60`).
+
 ### A.3 Input Not Working (CRITICAL!)
 
 **⚠️ MOST COMMON BUG:** Using raw Raylib input functions instead of Custom* wrappers!
@@ -1912,12 +1980,409 @@ def load_game() -> bool:
 
 ---
 
-## Appendix D: Audio Considerations
+## Appendix D: Audio System (Raylib Audio in Embedded DLL Mode)
 
-- Raylib's audio (`InitAudioDevice`, `PlaySound`, etc.) works in DLL mode
-- Audio is NOT affected by the hidden window
-- The BBS may have its own audio playing - consider volume levels
-- Use `SetMasterVolume()` or per-sound volume control
+Raylib's audio subsystem works fully inside a DLL alongside pygame — proven by both AstroMiner and CyberTrain. Audio is **not** affected by the hidden window. The BBS uses pygame.mixer for its own audio; Raylib audio coexists without conflict.
+
+### D.1 Audio Device Initialization
+
+**Critical:** Call `SetAudioStreamBufferSizeDefault(16384)` before `InitAudioDevice()`. The larger buffer prevents crackling/stuttering that occurs with the default 4096 buffer when running inside a DLL alongside pygame.
+
+#### Embedded Mode (`InitializeGame()` DLL export)
+```cpp
+__declspec(dllexport) bool InitializeGame() {
+    // ... window setup ...
+
+    // Audio init — MUST match this exact pattern
+    SetAudioStreamBufferSizeDefault(16384);
+    InitAudioDevice();
+    g_audio_initialized = true;
+
+    // ... load other assets ...
+    LoadAudioAssets();  // Load music + SFX after audio device is ready
+
+    return true;
+}
+```
+
+#### Standalone Mode (`main()`)
+```cpp
+int main() {
+    InitWindow(screenWidth, screenHeight, "YourGame");
+    SetAudioStreamBufferSizeDefault(16384);
+    InitAudioDevice();
+    // ... rest of init ...
+    LoadAudioAssets();
+    // ... game loop ...
+    UnloadAudioAssets();
+    CloseAudioDevice();
+    CloseWindow();
+}
+```
+
+#### Forward Declarations (Unity Build)
+
+Because the unity build includes files in order (`exports.cpp` before `ui.cpp`), you need forward declarations in the exports file:
+
+```cpp
+// At top of cybertrain_exports.cpp (before extern "C" block)
+static void LoadAudioAssets();
+static void UnloadAudioAssets();
+```
+
+### D.2 Audio Globals
+
+Declare all audio state in your core globals file so every translation unit can access them:
+
+```cpp
+// ── Audio assets ──
+static Music g_musicTracks[3] = {};    // Up to 3 background music tracks
+static bool g_musicLoaded = false;
+static int g_currentTrack = 0;         // Index of currently playing track
+
+static Sound g_sfxBuildTrain = {};     // Example: train-built sound
+static Sound g_sfxBuildSys = {};       // Example: generic system sound
+static Sound g_sfxFactoryBuilt = {};   // Example: factory-built sound
+static Sound g_sfxBureauBuilt = {};    // Example: bureau-built sound
+static Sound g_sfxSiloBuilt = {};      // Example: silo announcement
+static bool g_sfxLoaded = false;
+
+// ── Pending SFX (for delayed/chained sounds) ──
+static float g_pendingSfxTimer = 0.0f;
+static bool g_pendingSfxActive = false;
+
+// ── Volume/Options state ──
+static int g_musicVolume = 1;   // 0=LOW, 1=MID, 2=HIGH
+static int g_sfxVolume = 1;     // 0=LOW, 1=MID, 2=HIGH
+static int g_gammaLevel = 1;    // 0=LOW, 1=MID, 2=HIGH
+```
+
+### D.3 Multi-Path Asset Loading
+
+Audio files live in an `Audio/` subdirectory under the game folder. Use the same multi-path fallback pattern used for textures and fonts:
+
+```cpp
+static Music TryLoadMusic(const char* filename) {
+    const char* prefixes[] = { "Audio/", "../Audio/",
+                                "Data/games/YourGame/Audio/", "../../Audio/" };
+    for (int i = 0; i < 4; i++) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s%s", prefixes[i], filename);
+        if (FileExists(path)) {
+            Music m = LoadMusicStream(path);
+            if (m.ctxData != NULL) {
+                m.looping = false;  // We handle track advancement manually
+                return m;
+            }
+        }
+    }
+    return {};
+}
+
+static Sound TryLoadSound(const char* filename) {
+    const char* prefixes[] = { "Audio/", "../Audio/",
+                                "Data/games/YourGame/Audio/", "../../Audio/" };
+    for (int i = 0; i < 4; i++) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s%s", prefixes[i], filename);
+        if (FileExists(path)) {
+            Sound s = LoadSound(path);
+            if (s.frameCount > 0) return s;
+        }
+    }
+    return {};
+}
+```
+
+### D.4 LoadAudioAssets / UnloadAudioAssets
+
+```cpp
+static float GetVolumeFloat(int level) {
+    if (level <= 0) return 0.25f;  // LOW
+    if (level >= 2) return 1.0f;   // HIGH
+    return 0.5f;                   // MID
+}
+
+static void ApplyMusicVolume() {
+    float vol = GetVolumeFloat(g_musicVolume);
+    for (int i = 0; i < 3; i++) {
+        if (g_musicTracks[i].ctxData) SetMusicVolume(g_musicTracks[i], vol);
+    }
+}
+
+static void ApplySfxVolume() {
+    float vol = GetVolumeFloat(g_sfxVolume);
+    if (g_sfxBuildTrain.frameCount)   SetSoundVolume(g_sfxBuildTrain, vol);
+    if (g_sfxBuildSys.frameCount)     SetSoundVolume(g_sfxBuildSys, vol);
+    if (g_sfxFactoryBuilt.frameCount) SetSoundVolume(g_sfxFactoryBuilt, vol);
+    if (g_sfxBureauBuilt.frameCount)  SetSoundVolume(g_sfxBureauBuilt, vol);
+    if (g_sfxSiloBuilt.frameCount)    SetSoundVolume(g_sfxSiloBuilt, vol);
+}
+
+static void LoadAudioAssets() {
+    g_musicTracks[0] = TryLoadMusic("YourGame_Track1.mp3");
+    g_musicTracks[1] = TryLoadMusic("YourGame_Track2.mp3");
+    g_musicTracks[2] = TryLoadMusic("YourGame_Track3.mp3");
+    g_musicLoaded = (g_musicTracks[0].ctxData != NULL);
+
+    g_sfxBuildTrain   = TryLoadSound("BUILD-Train.wav");
+    g_sfxBuildSys     = TryLoadSound("BUILD-Sys.wav");
+    g_sfxFactoryBuilt = TryLoadSound("Factory-Built.wav");
+    g_sfxBureauBuilt  = TryLoadSound("Bureau-BUILT.wav");
+    g_sfxSiloBuilt    = TryLoadSound("SILO-Built.wav");
+    g_sfxLoaded = (g_sfxBuildTrain.frameCount > 0);
+
+    ApplyMusicVolume();
+    ApplySfxVolume();
+}
+
+static void UnloadAudioAssets() {
+    for (int i = 0; i < 3; i++) {
+        if (g_musicTracks[i].ctxData) {
+            StopMusicStream(g_musicTracks[i]);
+            UnloadMusicStream(g_musicTracks[i]);
+            g_musicTracks[i] = {};
+        }
+    }
+    g_musicLoaded = false;
+    if (g_sfxBuildTrain.frameCount)   UnloadSound(g_sfxBuildTrain);
+    if (g_sfxBuildSys.frameCount)     UnloadSound(g_sfxBuildSys);
+    if (g_sfxFactoryBuilt.frameCount) UnloadSound(g_sfxFactoryBuilt);
+    if (g_sfxBureauBuilt.frameCount)  UnloadSound(g_sfxBureauBuilt);
+    if (g_sfxSiloBuilt.frameCount)    UnloadSound(g_sfxSiloBuilt);
+    g_sfxLoaded = false;
+}
+```
+
+### D.5 Music Streaming (Manual Track Advancement)
+
+Set `m.looping = false` on each Music stream. Each frame, call `UpdateMusicStream()`. When a track finishes, advance to the next and loop back to track 0:
+
+```cpp
+static void UpdateMusic() {
+    if (!g_musicLoaded || !g_audio_initialized) return;
+
+    // Update the active stream
+    Music& current = g_musicTracks[g_currentTrack];
+    if (current.ctxData) UpdateMusicStream(current);
+
+    // If not playing, advance to next track
+    if (current.ctxData && !IsMusicStreamPlaying(current)) {
+        g_currentTrack = (g_currentTrack + 1) % 3;
+        Music& next = g_musicTracks[g_currentTrack];
+        if (next.ctxData) {
+            StopMusicStream(next);   // Reset to beginning
+            PlayMusicStream(next);
+        }
+    }
+
+    // Start music if nothing is playing yet (first frame)
+    if (current.ctxData && !IsMusicStreamPlaying(current)) {
+        PlayMusicStream(current);
+    }
+}
+```
+
+**Important:** Call `UpdateMusic()` at the top of your game loop body — including during splash screens. If your splash screen returns early from the main game loop (before the normal UpdateMusic call point), add an extra `UpdateMusic()` call inside the splash drawing function.
+
+### D.6 Sound Effects — Triggering at Events
+
+Play sounds at game events using `PlaySound()`:
+
+```cpp
+// Simple immediate SFX
+if (trainBuiltSuccessfully) {
+    if (g_sfxBuildTrain.frameCount) PlaySound(g_sfxBuildTrain);
+}
+
+// Chained SFX with delay (e.g., factory built → then system sound 0.15s later)
+if (factoryBuiltSuccessfully) {
+    if (g_sfxFactoryBuilt.frameCount) PlaySound(g_sfxFactoryBuilt);
+    g_pendingSfxActive = true;
+    g_pendingSfxTimer = 0.15f;
+}
+```
+
+Process the pending SFX timer at the top of your game loop:
+
+```cpp
+// In GameLoopBody(), near the top:
+float dt = GetFrameTime();
+if (g_pendingSfxActive) {
+    g_pendingSfxTimer -= dt;
+    if (g_pendingSfxTimer <= 0.0f) {
+        g_pendingSfxActive = false;
+        if (g_sfxBuildSys.frameCount) PlaySound(g_sfxBuildSys);
+    }
+}
+```
+
+### D.7 Volume System (3-Level: LOW / MID / HIGH)
+
+Use a simple 3-level system mapped to float values:
+
+| Level | Value | Float |
+|-------|-------|-------|
+| LOW   | 0     | 0.25f |
+| MID   | 1     | 0.50f |
+| HIGH  | 2     | 1.00f |
+
+Apply with `SetMusicVolume(track, vol)` and `SetSoundVolume(sfx, vol)`. Call `ApplyMusicVolume()` / `ApplySfxVolume()` whenever the user changes settings.
+
+### D.8 Options Screen Pattern
+
+Provide an in-game options overlay accessible via a hotkey (e.g., O). Implementation pattern:
+
+```cpp
+enum class OptionsScreen { Hidden, Visible };
+static OptionsScreen g_optionsScreen = OptionsScreen::Hidden;
+static int g_optionsSelection = 0;  // 0=music, 1=sfx, 2=gamma
+
+static void HandleOptionsInput() {
+    // UP/DOWN to change row
+    if (CustomIsKeyPressed(KEY_UP))   g_optionsSelection = (g_optionsSelection + 2) % 3;
+    if (CustomIsKeyPressed(KEY_DOWN)) g_optionsSelection = (g_optionsSelection + 1) % 3;
+
+    // LEFT/RIGHT to change value
+    int* target = nullptr;
+    if (g_optionsSelection == 0) target = &g_musicVolume;
+    else if (g_optionsSelection == 1) target = &g_sfxVolume;
+    else target = &g_gammaLevel;
+
+    if (CustomIsKeyPressed(KEY_LEFT)  && *target > 0) (*target)--;
+    if (CustomIsKeyPressed(KEY_RIGHT) && *target < 2) (*target)++;
+
+    ApplyMusicVolume();
+    ApplySfxVolume();
+
+    // ESC or ENTER or O to close
+    if (CustomIsKeyPressed(KEY_ESCAPE) || CustomIsKeyPressed(KEY_ENTER) ||
+        CustomIsKeyPressed(KEY_O)) {
+        g_optionsScreen = OptionsScreen::Hidden;
+    }
+}
+
+static void DrawOptionsScreen() {
+    // Semi-transparent dark overlay
+    DrawRectangle(0, 0, g_renderWidth, g_renderHeight, (Color){0, 0, 0, 180});
+
+    // Draw title, rows with [LOW] [MID] [HIGH] indicators
+    // Highlight selected row and current value
+    // (Use DrawTextEx with your game font for consistent style)
+}
+```
+
+In your game loop, toggle with O and add to your modal guard:
+
+```cpp
+bool anyModalOpen = g_helpModalOpen || g_introModalOpen ||
+                    (g_optionsScreen == OptionsScreen::Visible);
+
+// O key handler (allow toggle even when options is the active modal)
+if (CustomIsKeyPressed(KEY_O) && (!anyModalOpen ||
+    g_optionsScreen == OptionsScreen::Visible)) {
+    g_optionsScreen = (g_optionsScreen == OptionsScreen::Visible)
+        ? OptionsScreen::Hidden : OptionsScreen::Visible;
+}
+```
+
+### D.9 Gamma Overlay
+
+Simple gamma control using a fullscreen rectangle overlay drawn last (before the cursor):
+
+```cpp
+static void DrawGammaOverlay() {
+    if (g_gammaLevel == 0) {
+        // LOW gamma = darken screen
+        DrawRectangle(0, 0, g_renderWidth, g_renderHeight, (Color){0, 0, 0, 120});
+    } else if (g_gammaLevel == 2) {
+        // HIGH gamma = brighten screen
+        DrawRectangle(0, 0, g_renderWidth, g_renderHeight, (Color){255, 255, 255, 60});
+    }
+    // MID (1) = no overlay, normal brightness
+}
+```
+
+Draw this **after** all game content but **before** the custom cursor, in every render path (3D view, map view, and splash screens).
+
+### D.10 Audio Cleanup
+
+#### Embedded Mode (`CleanupGame()`)
+```cpp
+__declspec(dllexport) void CleanupGame() {
+    UnloadAudioAssets();   // Stop and unload all music/sfx FIRST
+    UnloadUIAssets();
+    // ... framebuffer cleanup ...
+    if (g_audio_initialized) {
+        CloseAudioDevice();
+        g_audio_initialized = false;
+    }
+}
+```
+
+#### Game-Over / Restart Reset
+When restarting to splash after game over, reset audio state:
+
+```cpp
+static void RestartToSplashAfterGameOver() {
+    // Stop current music, reset to track 0
+    for (int i = 0; i < 3; i++) {
+        if (g_musicTracks[i].ctxData) StopMusicStream(g_musicTracks[i]);
+    }
+    g_currentTrack = 0;
+    if (g_musicTracks[0].ctxData) PlayMusicStream(g_musicTracks[0]);
+
+    // Reset volumes to defaults
+    g_musicVolume = 1;  // MID
+    g_sfxVolume = 1;    // MID
+    g_gammaLevel = 1;   // MID
+    ApplyMusicVolume();
+    ApplySfxVolume();
+
+    // Reset pending SFX
+    g_pendingSfxActive = false;
+    g_pendingSfxTimer = 0.0f;
+
+    // ... rest of restart logic ...
+}
+```
+
+### D.11 Audio File Organization
+
+```
+Data/games/YourGame/
+├── Audio/
+│   ├── YourGame_Track1.mp3    # Background music (MP3 for size)
+│   ├── YourGame_Track2.mp3
+│   ├── YourGame_Track3.mp3
+│   ├── BUILD-Train.wav        # Sound effects (WAV for low latency)
+│   ├── BUILD-Sys.wav
+│   ├── Factory-Built.wav
+│   ├── Bureau-BUILT.wav
+│   └── SILO-Built.wav
+├── src/
+│   ├── cybertrain_core.cpp    # Audio globals here
+│   ├── cybertrain_exports.cpp # InitAudioDevice + LoadAudioAssets
+│   ├── cybertrain_ui.cpp      # Audio functions + options screen
+│   └── cybertrain_gameloop.cpp# UpdateMusic + SFX triggers
+└── main.cpp                   # Unity build includes all src/*.cpp
+```
+
+**Format guidance:**
+- Use **MP3** for music tracks (smaller files, streaming playback)
+- Use **WAV** for sound effects (zero decode latency, instant playback)
+
+### D.12 Common Audio Pitfalls
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| Crackling/stuttering music | Default 4096 buffer too small | `SetAudioStreamBufferSizeDefault(16384)` before `InitAudioDevice()` |
+| Sounds don't play in embedded mode | `InitAudioDevice()` never called | Add it to `InitializeGame()` DLL export |
+| Music stops after first track | `m.looping = true` (default) causes single-track loop | Set `m.looping = false`, implement manual track advancement |
+| Linker error: undefined LoadAudioAssets | Unity build order: exports before ui | Add `static void LoadAudioAssets();` forward declaration in exports |
+| Audio files not found | CWD differs between standalone and embedded | Use multi-path fallback pattern (4 prefixes) |
+| Volume changes don't take effect | Forgot to call Apply after changing level | Always call `ApplyMusicVolume()` / `ApplySfxVolume()` after changes |
+| Crash on cleanup | Unloading already-freed audio | Check `ctxData != NULL` / `frameCount > 0` before unloading |
 
 ---
 
@@ -2029,3 +2494,4 @@ Data/games/
 | `cleanup()` | `CleanupGame()` | Release resources |
 
 Follow this guide to integrate any C++ raylib game seamlessly into the GlyphisIO BBS!
+

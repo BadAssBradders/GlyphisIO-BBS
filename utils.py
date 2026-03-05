@@ -1,7 +1,7 @@
 """
-Utility functions for GlyphisIO BBS.
+utils.py - shared helpers for GlyphisIO BBS
 
-Common helper functions used throughout the application.
+Stuff I use everywhere: paths, timestamps, day/night logic, etc.
 """
 
 import sys
@@ -9,11 +9,11 @@ import os
 from datetime import datetime
 from typing import Optional
 
-# Try to import zoneinfo for timezone support (Python 3.9+)
+# Need zoneinfo for Tokyo timezone - Python 3.9+ has it built in
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
-    # Fallback for Python < 3.9 - use pytz if available, otherwise approximate
+    # Older Python - try pytz, otherwise we fall back to UTC+9
     try:
         import pytz
         ZoneInfo = lambda tz: pytz.timezone(tz)
@@ -23,108 +23,53 @@ except ImportError:
 
 def get_data_path(*path_parts):
     """
-    Returns the path to the Data folder, handling both development and built executable scenarios.
-    
-    In development: returns "Data/..." relative to script directory
-    In built exe: returns path to Data folder bundled with executable
+    Get path to Data folder - works when running as script or as built exe.
+    Dev: Data/... relative to script. Exe: PyInstaller unpacks to sys._MEIPASS.
     """
     if getattr(sys, 'frozen', False):
-        # Running as compiled executable
-        # PyInstaller sets sys._MEIPASS to the temp folder where it extracts files
+        # Built exe - PyInstaller extracts assets to a temp folder
         base_path = sys._MEIPASS
     else:
-        # Running as script
+        # Running from source
         base_path = os.path.dirname(os.path.abspath(__file__))
     
-    # Check if Data folder exists, if not fall back to root (for backwards compatibility)
+    # Prefer Data subfolder, fall back to root if it doesn't exist
     data_folder = os.path.join(base_path, "Data")
     if os.path.exists(data_folder):
         return os.path.join(data_folder, *path_parts)
     else:
-        # Fallback: look in root directory (for backwards compatibility during transition)
         return os.path.join(base_path, *path_parts)
 
 
 def log_event(message: str) -> None:
-    """Simple logging helper for terminal output."""
+    """Print to terminal with BBS timestamp prefix."""
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[BBS {timestamp}] {message}")
 
 
 def get_realtime_datetime():
-    """Get current real-world datetime."""
+    """Current real-world time (user's local machine)."""
     return datetime.now()
 
 
 def get_tokyo_datetime():
-    """Get current datetime in Tokyo timezone."""
+    """Current time in Tokyo - for anything that needs JP timezone."""
     if ZoneInfo:
         try:
             tokyo_tz = ZoneInfo("Asia/Tokyo")
             return datetime.now(tokyo_tz)
         except Exception:
             pass
-    # Fallback: approximate Tokyo time (UTC+9)
+    # No zoneinfo - use UTC+9 as approximation
     from datetime import timezone, timedelta
     tokyo_offset = timezone(timedelta(hours=9))
     return datetime.now(tokyo_offset)
 
 
 def _is_tokyo_nighttime():
-    """Check if it's nighttime in Tokyo (between 18:00 and 6:00)."""
-    tokyo_dt = get_tokyo_datetime()
-    hour = tokyo_dt.hour
-    return hour >= 18 or hour < 6
-
-
-def format_ingame_timestamp(dt=None):
-    """Format datetime as in-game timestamp (1989 format)."""
-    if dt is None:
-        dt = get_realtime_datetime()
-    # Force year to 1989
-    try:
-        dt = dt.replace(year=1989)
-    except ValueError:
-        # Handle leap years if necessary, though 1989 isn't one
-        pass
-    return dt.strftime("%Y-%m-%d %H:%M")
-
-
-def format_ingame_clock(dt=None):
-    """Format datetime as in-game clock display."""
-    if dt is None:
-        dt = get_realtime_datetime()
-    return dt.strftime("%H:%M")
-
-
-def normalize_timestamp_1989(timestamp_str):
-    """Normalize timestamp string to 1989 format if needed."""
-    if not timestamp_str:
-        return format_ingame_timestamp()
-    if timestamp_str.startswith("1989-"):
-        return timestamp_str
-    try:
-        if " " in timestamp_str:
-            date_part, time_part = timestamp_str.split(" ", 1)
-        else:
-            date_part, time_part = timestamp_str, ""
-        date_parts = date_part.split("-")
-        if len(date_parts) >= 3:
-            date_parts[0] = "1989"
-            date_part = "-".join(date_parts)
-        timestamp_str = f"{date_part} {time_part}".strip()
-    except Exception:
-        timestamp_str = format_ingame_timestamp()
-    if not timestamp_str.startswith("1989-"):
-        timestamp_str = format_ingame_timestamp()
-    return timestamp_str
-
-
-def _is_tokyo_nighttime():
     """
-    Determine if it's currently nighttime using local system time.
-    Uses Tokyo's sunrise/sunset times as a reference for day/night transitions.
-    Returns True if it's after sunset or before sunrise.
+    Is it nighttime right now? I use the user's local time but compare against
+    Tokyo sunrise/sunset times (varies by month). Returns True if it's dark.
     """
     local_time = get_realtime_datetime()
     month = local_time.month
@@ -132,7 +77,7 @@ def _is_tokyo_nighttime():
     minute = local_time.minute
     current_time_minutes = hour * 60 + minute
     
-    # Tokyo sunrise and sunset times by month
+    # Tokyo sunrise/sunset by month - (sunrise_hr, sunrise_min, sunset_hr, sunset_min)
     sunrise_sunset_times = {
         1: (6, 48, 16, 52),   # January
         2: (6, 26, 17, 23),   # February
@@ -155,13 +100,55 @@ def _is_tokyo_nighttime():
     return current_time_minutes < sunrise_minutes or current_time_minutes >= sunset_minutes
 
 
+def format_ingame_timestamp(dt=None):
+    """Format as in-game timestamp - always shows 1989 for the year."""
+    if dt is None:
+        dt = get_realtime_datetime()
+    try:
+        dt = dt.replace(year=1989)
+    except ValueError:
+        pass  # edge case for leap years
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def format_ingame_clock(dt=None):
+    """Just the time (HH:MM) for in-game clock display."""
+    if dt is None:
+        dt = get_realtime_datetime()
+    return dt.strftime("%H:%M")
+
+
+def normalize_timestamp_1989(timestamp_str):
+    """Force any timestamp string into 1989 format - used for consistency."""
+    if not timestamp_str:
+        return format_ingame_timestamp()
+    if timestamp_str.startswith("1989-"):
+        return timestamp_str
+    try:
+        if " " in timestamp_str:
+            date_part, time_part = timestamp_str.split(" ", 1)
+        else:
+            date_part, time_part = timestamp_str, ""
+        date_parts = date_part.split("-")
+        if len(date_parts) >= 3:
+            date_parts[0] = "1989"
+            date_part = "-".join(date_parts)
+        timestamp_str = f"{date_part} {time_part}".strip()
+    except Exception:
+        timestamp_str = format_ingame_timestamp()
+    if not timestamp_str.startswith("1989-"):
+        timestamp_str = format_ingame_timestamp()
+    return timestamp_str
+
+
 def _get_time_aware_video_name(base_filename: str) -> str:
     """
-    Returns the appropriate video filename based on local system time.
-    Uses Tokyo sunrise/sunset times as reference for day/night transitions.
-    Note: Uses the user's local computer time, not actual Tokyo timezone.
+    Pick the right video filename for day vs night. If it's nighttime (based on
+    my Tokyo sunrise/sunset logic above), I stick "night-" in front of the name
+    so we load the dark version. Uses local time, not actual Tokyo timezone.
     """
     if _is_tokyo_nighttime():
+        # Handle paths - only add night- to the filename part
         if '/' in base_filename or '\\' in base_filename:
             parts = base_filename.replace('\\', '/').rsplit('/', 1)
             if len(parts) == 2:
@@ -173,6 +160,5 @@ def _get_time_aware_video_name(base_filename: str) -> str:
     return base_filename
 
 
-# Import re for normalize_timestamp_1989
 import re
 

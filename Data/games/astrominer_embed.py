@@ -299,7 +299,29 @@ def initialize() -> bool:
                 _dll._has_cleanup = True
         except (AttributeError, OSError, TypeError):
             _dll._has_cleanup = False
-            
+
+        # Steam leaderboard injection exports (optional)
+        _dll._has_leaderboard_push = False
+        try:
+            plb = getattr(_dll, 'PushLeaderboardEntry', None)
+            glc = getattr(_dll, 'GetLeaderboardCount', None)
+            gle = getattr(_dll, 'GetLeaderboardEntry', None)
+            if plb is not None and glc is not None and gle is not None:
+                _dll.PushLeaderboardEntry.restype = None
+                _dll.PushLeaderboardEntry.argtypes = [ctypes.c_char_p, ctypes.c_int]
+                _dll.GetLeaderboardCount.restype = ctypes.c_int
+                _dll.GetLeaderboardCount.argtypes = []
+                _dll.GetLeaderboardEntry.restype = None
+                _dll.GetLeaderboardEntry.argtypes = [
+                    ctypes.c_int,
+                    ctypes.c_char_p,
+                    ctypes.c_int,
+                    ctypes.POINTER(ctypes.c_int),
+                ]
+                _dll._has_leaderboard_push = True
+        except (AttributeError, OSError, TypeError):
+            _dll._has_leaderboard_push = False
+
         print("Astro Miner initialized successfully")
         return True
         
@@ -491,6 +513,121 @@ def should_center_mouse() -> bool:
         except Exception:
             return False
     return False
+
+STEAM_APP_ID = 4179570
+STEAM_LEADERBOARD_NAME = "AstroMiner Best Miners"
+
+
+def push_leaderboard_entry(username: str, score: int) -> bool:
+    """Inject a single leaderboard entry (e.g. from Steam) into the C++ leaderboard."""
+    if _dll and _dll._has_leaderboard_push:
+        try:
+            _dll.PushLeaderboardEntry(username.encode('utf-8'), score)
+            return True
+        except Exception as e:
+            print(f"[astrominer_embed] push_leaderboard_entry failed: {e}")
+    return False
+
+
+def submit_steam_leaderboard(username: str, score: int) -> bool:
+    """Submit score to Steam and pull global top-10 back into the C++ leaderboard.
+
+    Requires the ``steamworks`` package (pip install steamworks).
+    ``steam_appid.txt`` must live in the AstroMiner game folder — it is placed
+    there automatically. The function temporarily changes CWD so steamworks
+    can find the file, then restores CWD when done.
+    """
+    try:
+        import steamworks  # type: ignore
+    except ImportError:
+        print("[astrominer_embed] steamworks package not installed; skipping Steam submission.")
+        return False
+
+    import os, time
+
+    _prev_cwd = os.getcwd()
+    try:
+        # steamworks needs steam_appid.txt in the working directory
+        astro_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AstroMiner")
+        os.chdir(astro_dir)
+
+        sw = steamworks.STEAMWORKS()
+        sw.initialize()
+
+        # ── Upload score ──────────────────────────────────────────────────────
+        lb_handle = [None]
+        upload_done = [False]
+        download_done = [False]
+        entries = []
+
+        def on_find(lb_name, lb_h):
+            lb_handle[0] = lb_h
+
+        def on_upload(success, lb_h, score_changed, new_score, prev_score):
+            upload_done[0] = True
+
+        def on_download(result):
+            nonlocal entries
+            try:
+                for entry in result:
+                    uname = entry.get("steamIDUser", "PLAYER")
+                    sc = entry.get("score", 0)
+                    entries.append((str(uname), int(sc)))
+            except Exception as ex:
+                print(f"[astrominer_embed] Error parsing Steam leaderboard entries: {ex}")
+            download_done[0] = True
+
+        sw.UserStats.FindLeaderboard(STEAM_LEADERBOARD_NAME, on_find)
+
+        # Wait for handle
+        deadline = time.time() + 10
+        while lb_handle[0] is None and time.time() < deadline:
+            sw.run_callbacks()
+            time.sleep(0.05)
+
+        if lb_handle[0] is None:
+            print("[astrominer_embed] Steam leaderboard not found.")
+            return False
+
+        sw.UserStats.UploadLeaderboardScore(
+            lb_handle[0], score,
+            steamworks.ELeaderboardUploadScoreMethod.KeepBest,
+            on_upload
+        )
+
+        deadline = time.time() + 10
+        while not upload_done[0] and time.time() < deadline:
+            sw.run_callbacks()
+            time.sleep(0.05)
+
+        # ── Download global top-10 ─────────────────────────────────────────
+        sw.UserStats.DownloadLeaderboardEntries(
+            lb_handle[0],
+            steamworks.ELeaderboardDataRequest.Global,
+            1, 10,
+            on_download
+        )
+
+        deadline = time.time() + 10
+        while not download_done[0] and time.time() < deadline:
+            sw.run_callbacks()
+            time.sleep(0.05)
+
+        # Push fetched entries into the C++ leaderboard
+        for (uname, sc) in entries:
+            push_leaderboard_entry(uname, sc)
+
+        print(f"[astrominer_embed] Steam leaderboard updated: submitted {score} for {username}, pulled {len(entries)} entries.")
+        return True
+
+    except Exception as e:
+        print(f"[astrominer_embed] Steam submission failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+    finally:
+        os.chdir(_prev_cwd)
+
 
 def cleanup():
     """Cleanup resources."""

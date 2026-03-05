@@ -41,6 +41,15 @@ class Tokens:
     ASTROMINER1 = "ASTROMINER1"  # Player has played AstroMiner game
     CYBERTRAIN = "CYBERTRAIN"
     PAPERCRANEBBS = "PAPERCRANEBBS"
+    PAPERCRANEBBS_IN = "PAPERCRANEBBS_IN"  # Player has dialed into Paper Crane BBS
+    NEVERAGAINBBS = "NEVERAGAINBBS"
+    NEVERAGAINBBS_IN = "NEVERAGAINBBS_IN"  # Player has dialed into Never Again BBS
+    JEWEL_VOICE = "JEWEL_VOICE"  # Played "Jewel Voice" on Paper Crane BBS
+    JEWEL_VOICE1 = "JEWEL_VOICE1"  # Read Glyphis' school grades post on The Wall
+    SCHOOL_HACK = "SCHOOL_HACK"  # Agreed to help Rain with school grades task
+    JAXGRADES = "JAXGRADES"  # Read uncle-am's email about school grades (after SCHOOL_HACK)
+    SCHOOL_HACK1 = "SCHOOL_HACK1"  # Read Rain's school op plan (region switch, email receptionist, etc.)
+    SCHOOL_HACK2 = "SCHOOL_HACK2"  # Changed OS region to American Mainland / US Mainland (no BBS pulse, no logout ghost)
     AUDIO_ON = "AUDIO_ON"  # Completed all 7 nodes, all LEDs green
     MODEM1ST = "MODEM1ST"  # First successful modem connection established
 
@@ -188,6 +197,51 @@ TOKEN_METADATA: Dict[str, TokenMeta] = {
         code=Tokens.PAPERCRANEBBS,
         label="PAPERCRANEBBS",
         description="Access to the Paper Crane BBS dial-in frequency",
+    ),
+    Tokens.PAPERCRANEBBS_IN: TokenMeta(
+        code=Tokens.PAPERCRANEBBS_IN,
+        label="PAPERCRANEBBS_IN",
+        description="Dialed into Paper Crane BBS",
+    ),
+    Tokens.NEVERAGAINBBS: TokenMeta(
+        code=Tokens.NEVERAGAINBBS,
+        label="NEVERAGAINBBS",
+        description="Access to the Never Again BBS dial-in frequency",
+    ),
+    Tokens.NEVERAGAINBBS_IN: TokenMeta(
+        code=Tokens.NEVERAGAINBBS_IN,
+        label="NEVERAGAINBBS_IN",
+        description="Dialed into Never Again BBS",
+    ),
+    Tokens.JEWEL_VOICE: TokenMeta(
+        code=Tokens.JEWEL_VOICE,
+        label="JEWEL_VOICE",
+        description="Played Jewel Voice on Paper Crane BBS",
+    ),
+    Tokens.JEWEL_VOICE1: TokenMeta(
+        code=Tokens.JEWEL_VOICE1,
+        label="JEWEL_VOICE1",
+        description="Read Glyphis' school grades post on The Wall",
+    ),
+    Tokens.SCHOOL_HACK: TokenMeta(
+        code=Tokens.SCHOOL_HACK,
+        label="SCHOOL_HACK",
+        description="Agreed to help Rain with the school grades task",
+    ),
+    Tokens.JAXGRADES: TokenMeta(
+        code=Tokens.JAXGRADES,
+        label="JAXGRADES",
+        description="Read uncle-am's email about school grades",
+    ),
+    Tokens.SCHOOL_HACK1: TokenMeta(
+        code=Tokens.SCHOOL_HACK1,
+        label="SCHOOL_HACK1",
+        description="Read Rain's school op plan (region switch, email receptionist)",
+    ),
+    Tokens.SCHOOL_HACK2: TokenMeta(
+        code=Tokens.SCHOOL_HACK2,
+        label="SCHOOL_HACK2",
+        description="Changed OS region to American Mainland / US Mainland",
     ),
     Tokens.AUDIO_ON: TokenMeta(
         code=Tokens.AUDIO_ON,

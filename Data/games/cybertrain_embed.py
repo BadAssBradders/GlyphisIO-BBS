@@ -13,6 +13,7 @@ _dll_path = None
 _PRESET_MAP = {"low": 0, "medium": 1, "high": 2}
 _render_preset: Optional[int] = None
 _requested_resolution: Optional[Tuple[int, int]] = None
+_debug_last_print_time = 0.0
 
 print(f"DEBUG: Loaded cybertrain_embed module from {__file__}")
 
@@ -22,15 +23,21 @@ def _find_dll() -> Optional[str]:
         base_path = os.path.dirname(os.path.abspath(__file__))
     except NameError:
         base_path = os.getcwd()
-    
-    # Hardcoded path for debugging
-    hardcoded_path = r"E:\Dev\Glyphis_IO BBS The Proxy Tapes\Data\games\CyberTrain\cybertrain.dll"
-    if os.path.exists(hardcoded_path):
-        print(f"DEBUG: Found DLL at hardcoded path: {hardcoded_path}")
-        return hardcoded_path
-    
+
+    # Optional explicit override for debugging and CI.
+    override = os.environ.get("CYBERTRAIN_DLL_PATH", "").strip()
+    if override and os.path.exists(override):
+        resolved = os.path.abspath(override)
+        print(f"DEBUG: Using CYBERTRAIN_DLL_PATH override: {resolved}")
+        return resolved
+
+    # Prefer project-local DLL next to this embed module.
+    repo_root = os.path.dirname(base_path)  # .../Data
+    repo_root = os.path.dirname(repo_root)  # project root
+
     dll_paths = [
         os.path.join(base_path, "CyberTrain", "cybertrain.dll"),
+        os.path.join(repo_root, "Data", "games", "CyberTrain", "cybertrain.dll"),
         os.path.join(base_path, "CyberTrain", "bin", "cybertrain.dll"),
         os.path.join(os.path.dirname(base_path), "games", "CyberTrain", "cybertrain.dll"),
         os.path.join("Data", "games", "CyberTrain", "cybertrain.dll"),
@@ -42,7 +49,9 @@ def _find_dll() -> Optional[str]:
         exists = os.path.exists(path)
         print(f"DEBUG: Checking {path} -> {exists}")
         if exists:
-            return os.path.abspath(path)
+            resolved = os.path.abspath(path)
+            print(f"DEBUG: Selected cybertrain.dll: {resolved}")
+            return resolved
     
     print("DEBUG: DLL NOT FOUND IN ANY PATH")
     return None
@@ -193,6 +202,17 @@ def initialize() -> bool:
         
         _dll.SetMouseDelta.restype = None
         _dll.SetMouseDelta.argtypes = [ctypes.c_float, ctypes.c_float]
+
+        # Optional character-input bridge for embedded text entry
+        _dll._has_char_input = False
+        try:
+            char_input_func = getattr(_dll, "SetCharInput", None)
+            if char_input_func is not None:
+                _dll.SetCharInput.restype = None
+                _dll.SetCharInput.argtypes = [ctypes.c_int]
+                _dll._has_char_input = True
+        except (AttributeError, OSError, TypeError):
+            _dll._has_char_input = False
         
         # Optional resolution functions
         try:
@@ -302,28 +322,6 @@ def initialize() -> bool:
         except (AttributeError, OSError, TypeError) as e:
             _dll._has_mouse_wheel = False
 
-        # Try to set up SaveGameData function (optional)
-        _dll._has_save_game = False
-        try:
-            save_game_func = getattr(_dll, 'SaveGameData', None)
-            if save_game_func is not None:
-                _dll.SaveGameData.restype = None
-                _dll.SaveGameData.argtypes = []
-                _dll._has_save_game = True
-        except (AttributeError, OSError, TypeError) as e:
-            _dll._has_save_game = False
-
-        # Try to set up LoadGameData function (optional)
-        _dll._has_load_game = False
-        try:
-            load_game_func = getattr(_dll, 'LoadGameData', None)
-            if load_game_func is not None:
-                _dll.LoadGameData.restype = ctypes.c_bool
-                _dll.LoadGameData.argtypes = []
-                _dll._has_load_game = True
-        except (AttributeError, OSError, TypeError) as e:
-            _dll._has_load_game = False
-
         # Optional cleanup hook so the BBS can tear down the DLL cleanly
         _dll._has_cleanup = False
         try:
@@ -334,7 +332,75 @@ def initialize() -> bool:
                 _dll._has_cleanup = True
         except (AttributeError, OSError, TypeError):
             _dll._has_cleanup = False
-            
+
+        # Optional debug exports (used to diagnose black-frame issues in BBS embedding)
+        debug_int_exports = [
+            "GetDebugFrameCounter",
+            "GetDebugRenderStage",
+            "GetDebugSplashPhase",
+            "GetDebugIntroModalOpen",
+            "GetDebugHelpModalOpen",
+            "GetDebugUIAssetsLoaded",
+            "GetDebugTextureIdUI",
+            "GetDebugTextureIdCursor",
+            "GetDebugTextureIdSplash1",
+            "GetDebugTextureIdSplash2",
+            "GetDebugTextureIdSplash3",
+            "GetDebugTextureIdModal",
+            "GetDebugTextureIdLargeModal",
+            "GetDebugFramebufferTextureId",
+        ]
+        _dll._debug_exports = {}
+        for export_name in debug_int_exports:
+            try:
+                func = getattr(_dll, export_name, None)
+                if func is not None:
+                    func.restype = ctypes.c_int
+                    func.argtypes = []
+                    _dll._debug_exports[export_name] = func
+            except (AttributeError, OSError, TypeError):
+                pass
+
+        # IsGameOver — signals year 6 reached
+        _dll._has_is_game_over = False
+        try:
+            if getattr(_dll, 'IsGameOver', None) is not None:
+                _dll.IsGameOver.restype = ctypes.c_bool
+                _dll.IsGameOver.argtypes = []
+                _dll._has_is_game_over = True
+        except (AttributeError, OSError, TypeError):
+            pass
+
+        # GetFinalScore — credits at game-over
+        _dll._has_get_final_score = False
+        try:
+            if getattr(_dll, 'GetFinalScore', None) is not None:
+                _dll.GetFinalScore.restype = ctypes.c_int
+                _dll.GetFinalScore.argtypes = []
+                _dll._has_get_final_score = True
+        except (AttributeError, OSError, TypeError):
+            pass
+
+        # PushLeaderboardEntry — inject Steam entries into the DLL display
+        _dll._has_push_leaderboard = False
+        try:
+            if getattr(_dll, 'PushLeaderboardEntry', None) is not None:
+                _dll.PushLeaderboardEntry.restype = None
+                _dll.PushLeaderboardEntry.argtypes = [ctypes.c_char_p, ctypes.c_int]
+                _dll._has_push_leaderboard = True
+        except (AttributeError, OSError, TypeError):
+            pass
+
+        # GetLeaderboardCount / GetLeaderboardEntry — read DLL leaderboard
+        _dll._has_get_lb_count = False
+        try:
+            if getattr(_dll, 'GetLeaderboardCount', None) is not None:
+                _dll.GetLeaderboardCount.restype = ctypes.c_int
+                _dll.GetLeaderboardCount.argtypes = []
+                _dll._has_get_lb_count = True
+        except (AttributeError, OSError, TypeError):
+            pass
+
         print("CyberTrain initialized successfully")
         return True
         
@@ -400,12 +466,49 @@ def get_frame_surface() -> Optional[pygame.Surface]:
         size = width * height * 4  # RGBA
         address = ctypes.addressof(ptr.contents)
         array_type = ctypes.c_ubyte * size
-        buf_view = memoryview(array_type.from_address(address))
+        raw_array = array_type.from_address(address)
+        buf_view = memoryview(raw_array)
         
         # Create pygame surface from buffer
         surf = pygame.image.frombuffer(buf_view, (width, height), "RGBA")
         surf = pygame.transform.flip(surf, False, True)  # Flip vertically
-        return surf.convert_alpha()
+        # Embedded composition should be opaque; do not rely on render-target alpha.
+        # Some GPU paths leave RGB valid but alpha at 0, which appears as black-only with cursor.
+        out = surf.convert()
+
+        # Periodic diagnostic: sample a small number of pixels to detect black/transparent frames.
+        global _debug_last_print_time
+        now = time.time()
+        if now - _debug_last_print_time >= 1.0:
+            _debug_last_print_time = now
+            sample_count = 0
+            non_black = 0
+            alpha_non_zero = 0
+            step = max(4, (size // 4096 // 4) * 4)
+            for i in range(0, size, step):
+                r = raw_array[i]
+                g = raw_array[i + 1]
+                b = raw_array[i + 2]
+                a = raw_array[i + 3]
+                sample_count += 1
+                if r or g or b:
+                    non_black += 1
+                if a:
+                    alpha_non_zero += 1
+            dbg = get_debug_state()
+            print(
+                "[cybertrain_embed][frame_debug] "
+                f"size={width}x{height} samples={sample_count} "
+                f"non_black={non_black} alpha_non_zero={alpha_non_zero} "
+                f"stage={dbg.get('render_stage')} splash={dbg.get('splash_phase')} "
+                f"intro={dbg.get('intro_modal')} help={dbg.get('help_modal')} "
+                f"ui_loaded={dbg.get('ui_loaded')} "
+                f"tex(ui/cursor/s1/s2/s3/modal/lmodal/fb)="
+                f"{dbg.get('tex_ui')}/{dbg.get('tex_cursor')}/{dbg.get('tex_splash1')}/"
+                f"{dbg.get('tex_splash2')}/{dbg.get('tex_splash3')}/{dbg.get('tex_modal')}/"
+                f"{dbg.get('tex_large_modal')}/{dbg.get('tex_framebuffer')}"
+            )
+        return out
     except Exception as e:
         print(f"[get_frame_surface] ERROR: Exception: {e}")
         import traceback
@@ -427,6 +530,54 @@ def get_size() -> Tuple[int, int]:
         return (0, 0)
 
 
+def get_debug_state() -> dict:
+    """Return debug state from optional DLL exports."""
+    state = {
+        "frame_counter": -1,
+        "render_stage": -1,
+        "splash_phase": -1,
+        "intro_modal": -1,
+        "help_modal": -1,
+        "ui_loaded": -1,
+        "tex_ui": -1,
+        "tex_cursor": -1,
+        "tex_splash1": -1,
+        "tex_splash2": -1,
+        "tex_splash3": -1,
+        "tex_modal": -1,
+        "tex_large_modal": -1,
+        "tex_framebuffer": -1,
+    }
+    if _dll is None:
+        return state
+    exports = getattr(_dll, "_debug_exports", {}) or {}
+    mapping = {
+        "GetDebugFrameCounter": "frame_counter",
+        "GetDebugRenderStage": "render_stage",
+        "GetDebugSplashPhase": "splash_phase",
+        "GetDebugIntroModalOpen": "intro_modal",
+        "GetDebugHelpModalOpen": "help_modal",
+        "GetDebugUIAssetsLoaded": "ui_loaded",
+        "GetDebugTextureIdUI": "tex_ui",
+        "GetDebugTextureIdCursor": "tex_cursor",
+        "GetDebugTextureIdSplash1": "tex_splash1",
+        "GetDebugTextureIdSplash2": "tex_splash2",
+        "GetDebugTextureIdSplash3": "tex_splash3",
+        "GetDebugTextureIdModal": "tex_modal",
+        "GetDebugTextureIdLargeModal": "tex_large_modal",
+        "GetDebugFramebufferTextureId": "tex_framebuffer",
+    }
+    for export_name, key in mapping.items():
+        func = exports.get(export_name)
+        if func is None:
+            continue
+        try:
+            state[key] = int(func())
+        except Exception:
+            pass
+    return state
+
+
 def set_key_state(key: int, down: bool):
     """Set a key state in the game."""
     if _dll:
@@ -434,6 +585,15 @@ def set_key_state(key: int, down: bool):
             _dll.SetKeyState(key, down)
         except Exception as e:
             print(f"ERROR: Failed to set key state: {e}")
+
+
+def set_char_input(codepoint: int):
+    """Push a typed character codepoint into the game's input queue."""
+    if _dll and hasattr(_dll, "_has_char_input") and _dll._has_char_input:
+        try:
+            _dll.SetCharInput(int(codepoint))
+        except Exception as e:
+            print(f"ERROR: Failed to set char input: {e}")
 
 
 def set_mouse_button_state(button: int, down: bool):
@@ -505,26 +665,6 @@ def should_center_mouse() -> bool:
     return False
 
 
-def save_game_data():
-    """Save game data to file."""
-    if _dll and hasattr(_dll, '_has_save_game') and _dll._has_save_game:
-        try:
-            _dll.SaveGameData()
-        except Exception as e:
-            print(f"[cybertrain_embed] Failed to save game data: {e}")
-
-
-def load_game_data() -> bool:
-    """Load game data from file."""
-    if _dll and hasattr(_dll, '_has_load_game') and _dll._has_load_game:
-        try:
-            return _dll.LoadGameData()
-        except Exception as e:
-            print(f"[cybertrain_embed] Failed to load game data: {e}")
-            return False
-    return False
-
-
 def reset_game() -> bool:
     """Reset all player stats to new game defaults. Call this when launching from BBS."""
     if _dll and hasattr(_dll, '_has_reset_game') and _dll._has_reset_game:
@@ -557,3 +697,162 @@ def cleanup():
     except Exception as exc:
         print(f"[cybertrain_embed] CleanupGame failed: {exc}")
     _dll = None
+
+
+# ── Year-6 game-over / leaderboard helpers ────────────────────────────────────
+
+STEAM_APP_ID           = 4179570
+STEAM_LEADERBOARD_NAME = "CyberTrain Best City Planners"
+
+
+def is_game_over() -> bool:
+    """Return True when CyberTrain has reached Year 6 (game over)."""
+    if _dll and getattr(_dll, '_has_is_game_over', False):
+        try:
+            return bool(_dll.IsGameOver())
+        except Exception:
+            pass
+    return False
+
+
+def get_final_score() -> int:
+    """Return the player's final net income (credits) at game-over."""
+    if _dll and getattr(_dll, '_has_get_final_score', False):
+        try:
+            return int(_dll.GetFinalScore())
+        except Exception:
+            pass
+    return 0
+
+
+def push_leaderboard_entry(username: str, score: int) -> bool:
+    """Push a single Steam leaderboard entry into the DLL for on-screen display."""
+    if _dll and getattr(_dll, '_has_push_leaderboard', False):
+        try:
+            _dll.PushLeaderboardEntry(username.encode('utf-8'), score)
+            return True
+        except Exception as exc:
+            print(f"[cybertrain_embed] push_leaderboard_entry failed: {exc}")
+    return False
+
+
+def submit_steam_leaderboard(username: str, score: int) -> bool:
+    """Submit *score* to the Steam leaderboard then pull the global top-10 back
+    into the DLL so it appears in the end-game / splash screen display.
+
+    Requires the ``steamworks`` Python package (pip install steamworks).
+    Silently skips if the package is absent or Steam is not running — the local
+    JSON leaderboard still works independently.
+
+    Steam partner portal settings for "CyberTrain Best City Planners":
+      Sort method:      Descending
+      Display type:     Numeric
+      Global Top Limit: 10000
+      Range Around User:10
+      Lobby:            (blank)
+      Reads:            (blank)  — public, all players can read
+      Writes:           (blank)  — game client writes directly
+      App ID:           4179570
+    """
+    try:
+        import steamworks  # pip install steamworks
+    except ImportError:
+        print("[cybertrain_embed] 'steamworks' package not installed — Steam submission skipped.")
+        return False
+
+    import time
+
+    # steamworks reads steam_appid.txt from the current working directory;
+    # temporarily switch to the CyberTrain folder where that file lives.
+    _prev_cwd = os.getcwd()
+    try:
+        _ct_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "CyberTrain")
+        if os.path.isdir(_ct_dir):
+            os.chdir(_ct_dir)
+    except Exception:
+        pass
+
+    try:
+        sw = steamworks.STEAMWORKS()
+        sw.initialize()
+
+        # ── Find the leaderboard (created on partner portal, not at runtime) ──
+        find_result: dict = {'done': False, 'handle': None}
+
+        def _on_find(result_data, io_failure):
+            if not io_failure and result_data.m_bLeaderboardFound:
+                find_result['handle'] = result_data.m_hSteamLeaderboard
+            find_result['done'] = True
+
+        sw.UserStats.FindLeaderboard(STEAM_LEADERBOARD_NAME, _on_find)
+
+        import time
+        deadline = time.time() + 5.0
+        while not find_result['done'] and time.time() < deadline:
+            sw.run_callbacks()
+            time.sleep(0.05)
+
+        if not find_result['handle']:
+            print(f"[cybertrain_embed] Steam leaderboard '{STEAM_LEADERBOARD_NAME}' not found.")
+            sw.unload()
+            return False
+
+        handle = find_result['handle']
+
+        # ── Upload score (keep best) ──────────────────────────────────────────
+        upload_done: dict = {'done': False}
+
+        def _on_upload(r, fail):
+            upload_done['done'] = True
+
+        sw.UserStats.UploadLeaderboardScore(
+            handle,
+            steamworks.defines.ELeaderboardUploadScoreMethod['KeepBest'],
+            score,
+            None,
+            _on_upload,
+        )
+        deadline = time.time() + 5.0
+        while not upload_done['done'] and time.time() < deadline:
+            sw.run_callbacks()
+            time.sleep(0.05)
+
+        # ── Download global top-10 ────────────────────────────────────────────
+        dl_result: dict = {'done': False, 'entries_handle': None, 'count': 0}
+
+        def _on_download(r, fail):
+            if not fail:
+                dl_result['entries_handle'] = r.m_hSteamLeaderboardEntries
+                dl_result['count'] = r.m_cEntryCount
+            dl_result['done'] = True
+
+        sw.UserStats.DownloadLeaderboardEntries(
+            handle,
+            steamworks.defines.ELeaderboardDataRequest['Global'],
+            1, 10,
+            _on_download,
+        )
+        deadline = time.time() + 5.0
+        while not dl_result['done'] and time.time() < deadline:
+            sw.run_callbacks()
+            time.sleep(0.05)
+
+        # ── Push entries into DLL display ─────────────────────────────────────
+        if dl_result['entries_handle'] and dl_result['count'] > 0:
+            for i in range(dl_result['count']):
+                entry = sw.UserStats.GetDownloadedLeaderboardEntry(
+                    dl_result['entries_handle'], i)
+                if entry:
+                    name = sw.Friends.GetFriendPersonaName(entry.m_steamIDUser) or "Unknown"
+                    push_leaderboard_entry(name, entry.m_nScore)
+
+        sw.unload()
+        print(f"[cybertrain_embed] Steam leaderboard submission complete. Score: {score}")
+        return True
+
+    except Exception as exc:
+        print(f"[cybertrain_embed] Steam leaderboard error: {exc}")
+        return False
+    finally:
+        os.chdir(_prev_cwd)

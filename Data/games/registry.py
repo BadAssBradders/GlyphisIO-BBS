@@ -735,7 +735,9 @@ class CyberTrainSession(BaseGameSession):
         pygame.K_4: 52, pygame.K_5: 53, pygame.K_6: 54, pygame.K_7: 55,
         pygame.K_8: 56, pygame.K_9: 57,
         pygame.K_MINUS: 45, pygame.K_EQUALS: 61,
+        pygame.K_BACKSPACE: 259,
         pygame.K_LSHIFT: 340, pygame.K_RSHIFT: 344,
+        pygame.K_LCTRL: 341, pygame.K_RCTRL: 345,
     }
     
     MOUSE_BUTTON_MAP = {1: 0, 3: 1, 2: 2}
@@ -745,8 +747,10 @@ class CyberTrainSession(BaseGameSession):
         self.embed_module = None
         self.last_frame: Optional[pygame.Surface] = None
         self.last_mouse_pos = (0, 0)
+        self._debug_counter = 0
         self.baseline_desktop_x = 176
         self.baseline_desktop_y = 209
+        self._cursor_hidden_for_game = False
     
     def _get_desktop_pos(self) -> Tuple[int, int]:
         return self.app.res_manager.coords(self.baseline_desktop_x, self.baseline_desktop_y)
@@ -779,23 +783,76 @@ class CyberTrainSession(BaseGameSession):
         width = max(720, width)
         height = max(480, height)
         return (width, height)
+
+    def _compute_presented_frame_rect(
+        self,
+        desktop_x: int,
+        desktop_y: int,
+        desktop_width: int,
+        desktop_height: int,
+        frame_width: int,
+        frame_height: int,
+    ) -> Tuple[int, int, int, int]:
+        """Return the actual on-screen rect where the game frame is presented.
+
+        This applies aspect-fit scaling and centers the result in the desktop area.
+        Mouse coordinate conversion must use this exact rect.
+        """
+        if frame_width <= 0 or frame_height <= 0 or desktop_width <= 0 or desktop_height <= 0:
+            return (desktop_x, desktop_y, max(1, desktop_width), max(1, desktop_height))
+
+        scale_x = desktop_width / frame_width
+        scale_y = desktop_height / frame_height
+        scale = min(scale_x, scale_y)
+
+        draw_width = max(1, int(frame_width * scale))
+        draw_height = max(1, int(frame_height * scale))
+        draw_x = desktop_x + (desktop_width - draw_width) // 2
+        draw_y = desktop_y + (desktop_height - draw_height) // 2
+        return (draw_x, draw_y, draw_width, draw_height)
     
     def _get_game_mouse_pos(self, screen_pos: Tuple[int, int]) -> Tuple[float, float]:
         desktop_x, desktop_y = self._get_desktop_pos()
         desktop_w, desktop_h = self._get_desktop_dimensions()
-        rel_x = screen_pos[0] - desktop_x
-        rel_y = screen_pos[1] - desktop_y
-        
+
         if self.embed_module:
             game_width, game_height = self.embed_module.get_size()
             if game_width > 0 and game_height > 0 and desktop_w > 0 and desktop_h > 0:
-                game_x = (rel_x / desktop_w) * game_width
-                game_y = (rel_y / desktop_h) * game_height
+                draw_x, draw_y, draw_w, draw_h = self._compute_presented_frame_rect(
+                    desktop_x, desktop_y, desktop_w, desktop_h, game_width, game_height
+                )
+                rel_x = screen_pos[0] - draw_x
+                rel_y = screen_pos[1] - draw_y
+                game_x = (rel_x / draw_w) * game_width
+                game_y = (rel_y / draw_h) * game_height
                 return (
                     max(0.0, min(float(game_width), float(game_x))),
                     max(0.0, min(float(game_height), float(game_y)))
                 )
+        rel_x = screen_pos[0] - desktop_x
+        rel_y = screen_pos[1] - desktop_y
         return (float(rel_x), float(rel_y))
+
+    def _get_presented_game_rect(self) -> pygame.Rect:
+        desktop_x, desktop_y = self._get_desktop_pos()
+        desktop_w, desktop_h = self._get_desktop_dimensions()
+        frame_w = frame_h = 0
+        if self.last_frame:
+            frame_w, frame_h = self.last_frame.get_size()
+        elif self.embed_module:
+            frame_w, frame_h = self.embed_module.get_size()
+        draw_x, draw_y, draw_w, draw_h = self._compute_presented_frame_rect(
+            desktop_x, desktop_y, desktop_w, desktop_h, frame_w, frame_h
+        )
+        return pygame.Rect(draw_x, draw_y, draw_w, draw_h)
+
+    def _is_mouse_over_game(self, pos: Tuple[int, int]) -> bool:
+        return self._get_presented_game_rect().collidepoint(pos)
+
+    def _set_game_cursor_capture(self, capture: bool) -> None:
+        if capture != self._cursor_hidden_for_game:
+            pygame.mouse.set_visible(not capture)
+            self._cursor_hidden_for_game = capture
     
     def enter(self) -> None:
         """Initialize the embedded game DLL."""
@@ -803,11 +860,14 @@ class CyberTrainSession(BaseGameSession):
             from . import cybertrain_embed
             self.embed_module = cybertrain_embed
             
-            # Set resolution to match desktop
+            # CyberTrain UI/layout is authored for 1200x800; keep internal render stable
+            # and let BBS scale the final frame into the desktop rect.
             desktop_width, desktop_height = self._get_desktop_dimensions()
-            print(f"[CyberTrainSession] Setting DLL resolution: {desktop_width}x{desktop_height}")
+            target_width, target_height = 1200, 800
+            print(f"[CyberTrainSession] Desktop area: {desktop_width}x{desktop_height}")
+            print(f"[CyberTrainSession] Setting DLL internal resolution: {target_width}x{target_height}")
             if hasattr(cybertrain_embed, "set_render_resolution"):
-                cybertrain_embed.set_render_resolution(desktop_width, desktop_height)
+                cybertrain_embed.set_render_resolution(target_width, target_height)
             
             # Sync username from BBS before initializing
             if hasattr(self.app, 'get_active_user'):
@@ -823,7 +883,7 @@ class CyberTrainSession(BaseGameSession):
                 self.exit_requested = True
                 return
             
-            pygame.mouse.set_visible(False)
+            self._set_game_cursor_capture(True)
             print("[CyberTrainSession] CyberTrain started successfully")
             
         except ImportError as e:
@@ -845,8 +905,17 @@ class CyberTrainSession(BaseGameSession):
             raylib_key = self.KEY_MAP.get(event.key)
             if raylib_key is not None:
                 self.embed_module.set_key_state(raylib_key, False)
+        elif event.type == pygame.TEXTINPUT:
+            # Forward printable characters for modal/text-box entry.
+            if self._is_mouse_over_game(pygame.mouse.get_pos()):
+                for ch in event.text:
+                    self.embed_module.set_char_input(ord(ch))
         
         if event.type == pygame.MOUSEBUTTONDOWN:
+            if not self._is_mouse_over_game(event.pos):
+                self._set_game_cursor_capture(False)
+                return None
+            self._set_game_cursor_capture(True)
             raylib_button = self.MOUSE_BUTTON_MAP.get(event.button)
             if raylib_button is not None:
                 self.embed_module.set_mouse_button_state(raylib_button, True)
@@ -860,11 +929,20 @@ class CyberTrainSession(BaseGameSession):
                 if hasattr(self.embed_module, 'set_mouse_wheel'):
                     self.embed_module.set_mouse_wheel(-1.0)
         elif event.type == pygame.MOUSEBUTTONUP:
+            if not self._is_mouse_over_game(event.pos):
+                self._set_game_cursor_capture(False)
+                return None
+            self._set_game_cursor_capture(True)
             raylib_button = self.MOUSE_BUTTON_MAP.get(event.button)
             if raylib_button is not None:
                 self.embed_module.set_mouse_button_state(raylib_button, False)
         
         if event.type == pygame.MOUSEMOTION:
+            if not self._is_mouse_over_game(event.pos):
+                self._set_game_cursor_capture(False)
+                self.embed_module.set_mouse_delta(0.0, 0.0)
+                return None
+            self._set_game_cursor_capture(True)
             dx, dy = 0.0, 0.0
             if hasattr(event, 'rel') and event.rel:
                 dx, dy = float(event.rel[0]), float(event.rel[1])
@@ -874,6 +952,10 @@ class CyberTrainSession(BaseGameSession):
             self.last_mouse_pos = event.pos
         
         if event.type == pygame.MOUSEWHEEL:
+            if not self._is_mouse_over_game(pygame.mouse.get_pos()):
+                self._set_game_cursor_capture(False)
+                return None
+            self._set_game_cursor_capture(True)
             if hasattr(self.embed_module, 'set_mouse_wheel'):
                 self.embed_module.set_mouse_wheel(float(event.y))
         
@@ -882,6 +964,7 @@ class CyberTrainSession(BaseGameSession):
     def update(self, dt: float) -> None:
         if not self.embed_module:
             return
+        self._debug_counter += 1
         
         rel_x, rel_y = pygame.mouse.get_rel()
         if abs(rel_x) > 0.01 or abs(rel_y) > 0.01:
@@ -890,8 +973,13 @@ class CyberTrainSession(BaseGameSession):
             self.embed_module.set_mouse_delta(0.0, 0.0)
         
         mouse_pos = pygame.mouse.get_pos()
+        mouse_over_game = self._is_mouse_over_game(mouse_pos)
+        self._set_game_cursor_capture(mouse_over_game)
         game_pos = self._get_game_mouse_pos(mouse_pos)
-        self.embed_module.set_mouse_position(game_pos[0], game_pos[1])
+        if mouse_over_game:
+            self.embed_module.set_mouse_position(game_pos[0], game_pos[1])
+        else:
+            self.embed_module.set_mouse_delta(0.0, 0.0)
         self.last_mouse_pos = mouse_pos
         
         # Sync username from BBS
@@ -914,6 +1002,16 @@ class CyberTrainSession(BaseGameSession):
         
         try:
             self.last_frame = self.embed_module.get_frame_surface()
+            if self._debug_counter % 120 == 0 and hasattr(self.embed_module, "get_debug_state"):
+                dbg = self.embed_module.get_debug_state()
+                print(
+                    "[CyberTrainSession][debug] "
+                    f"frame={dbg.get('frame_counter')} stage={dbg.get('render_stage')} "
+                    f"splash={dbg.get('splash_phase')} intro={dbg.get('intro_modal')} "
+                    f"help={dbg.get('help_modal')} ui_loaded={dbg.get('ui_loaded')} "
+                    f"tex_fb={dbg.get('tex_framebuffer')} tex_ui={dbg.get('tex_ui')} "
+                    f"tex_splash={dbg.get('tex_splash1')}/{dbg.get('tex_splash2')}/{dbg.get('tex_splash3')}"
+                )
         except Exception as e:
             print(f"[CyberTrainSession] ERROR getting frame: {e}")
     
@@ -927,21 +1025,19 @@ class CyberTrainSession(BaseGameSession):
         desktop_x, desktop_y = self._get_desktop_pos()
         desktop_width, desktop_height = self._get_desktop_dimensions()
         frame_width, frame_height = self.last_frame.get_size()
-        
-        if (frame_width, frame_height) != (desktop_width, desktop_height):
-            scale_x = desktop_width / frame_width
-            scale_y = desktop_height / frame_height
-            scale = min(scale_x, scale_y)
-            new_width = int(frame_width * scale)
-            new_height = int(frame_height * scale)
-            scaled_frame = pygame.transform.smoothscale(self.last_frame, (new_width, new_height))
+        draw_x, draw_y, draw_w, draw_h = self._compute_presented_frame_rect(
+            desktop_x, desktop_y, desktop_width, desktop_height, frame_width, frame_height
+        )
+
+        if (frame_width, frame_height) != (draw_w, draw_h):
+            scaled_frame = pygame.transform.smoothscale(self.last_frame, (draw_w, draw_h))
         else:
             scaled_frame = self.last_frame
-        
-        return (scaled_frame, (desktop_x, desktop_y))
+
+        return (scaled_frame, (draw_x, draw_y))
     
     def exit(self) -> None:
-        pygame.mouse.set_visible(True)
+        self._set_game_cursor_capture(False)
         print("[CyberTrainSession] Exiting, cursor restored")
         
         if self.embed_module:
@@ -951,6 +1047,7 @@ class CyberTrainSession(BaseGameSession):
                 print(f"[CyberTrainSession] Error cleaning up: {e}")
         self.embed_module = None
         self.last_frame = None
+        self._debug_counter = 0
 
 
 # ---------------------------------------------------------------------------
@@ -1042,4 +1139,3 @@ def launch_external_game(defn: GameDefinition) -> int:
             return completed.returncode
         except FileNotFoundError as exc:  # pragma: no cover - depends on filesystem
             raise RuntimeError(f"Unable to launch external game: {exc}") from exc
-

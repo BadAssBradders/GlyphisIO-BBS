@@ -2,6 +2,34 @@ from dataclasses import dataclass
 from typing import Tuple
 import pygame
 
+# --- Normalized display resolution (avoids stretch/hotspot issues on odd resolutions) ---
+# Preferred: game runs at this even on 4K+.
+PREFERRED_WIDTH = 2560
+PREFERRED_HEIGHT = 1440
+# Fallback: used for any non-blessed resolution (e.g. 2304x1536) so layout stays correct.
+FALLBACK_WIDTH = 1920
+FALLBACK_HEIGHT = 1080
+
+BLESSED_RESOLUTIONS = (
+    (PREFERRED_WIDTH, PREFERRED_HEIGHT),
+    (FALLBACK_WIDTH, FALLBACK_HEIGHT),
+)
+
+
+def get_effective_resolution(display_width: int, display_height: int) -> Tuple[int, int]:
+    """
+    Return a resolution the game should actually use for the display.
+    - If display is >= 2560x1440 (e.g. 4K): use 2560x1440 (cap).
+    - If display is exactly 1920x1080 or 2560x1440: use it.
+    - Otherwise (e.g. 2304x1536): use 1920x1080 so layout and hotspots stay correct.
+    """
+    if display_width >= PREFERRED_WIDTH and display_height >= PREFERRED_HEIGHT:
+        return (PREFERRED_WIDTH, PREFERRED_HEIGHT)
+    if (display_width, display_height) in BLESSED_RESOLUTIONS:
+        return (display_width, display_height)
+    return (FALLBACK_WIDTH, FALLBACK_HEIGHT)
+
+
 @dataclass
 class ResolutionManager:
     """

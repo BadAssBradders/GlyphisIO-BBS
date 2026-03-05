@@ -5,6 +5,9 @@ REM Can be called from Notepad++
 REM
 REM NOTE: This uses the SAME main.cpp source as build_dll.bat
 REM       For unified builds of both versions, use build_both.bat instead
+echo [INFO] This script validates standalone EXE behavior only.
+echo [INFO] For BBS embedding, use build_dll.bat to rebuild cybertrain.dll.
+echo.
 
 REM Get the script's directory
 set "SCRIPT_DIR=%~dp0"

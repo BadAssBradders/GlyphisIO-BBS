@@ -10,6 +10,7 @@ import sys
 import os
 import math
 import time
+import threading
 from typing import List, Dict, Tuple, Optional, Callable
 from datetime import datetime
 from systems.resolution import ResolutionManager
@@ -553,6 +554,7 @@ class ChatSystem:
         self.header_pos = header_pos
         self.scroll_offset = 0
         self.cursor_blink_state = True
+        self.loading_override = None  # When set (e.g. "Loading..."), overrides live_text in draw
         self.cursor_blink_timer = 0
         self.on_message_complete: Optional[Callable[[str], None]] = None
 
@@ -923,9 +925,10 @@ class ChatSystem:
             
         surface.blit(prompt_surf, (self.start_x + offset_x, self.live_y + offset_y))
         
-        # Draw live text with wrapping
-        if self.live_text:
-            wrapped_live = self._wrap_text(self.live_text, self.font, available_width)
+        # Draw live text with wrapping (or loading override when stations are loading)
+        display_text = self.loading_override if self.loading_override else self.live_text
+        if display_text:
+            wrapped_live = self._wrap_text(display_text, self.font, available_width)
             # Only show the last line of wrapped live text (most recent)
             if wrapped_live:
                 live_line = wrapped_live[-1]
@@ -1060,11 +1063,14 @@ class PirateRadioApp:
         
         # Radio stations state
         self.radio_manager = RadioStationManager()
-        # Initialize all possible stations immediately so they start "ticking" right away
-        # This provides the "live" feeling as soon as the BBS is launched.
-        self.radio_manager.initialize_minutes(NIGHT_STATIONS + DAY_STATIONS)
+        # Station time tracking is initialized when user enters (in _activate_radio_ui)
+        # Only current time-of-day stations are loaded - defer until start()
         
         self.current_stations: List[Dict] = []
+        self.stations_loading = False
+        self.stations_load_complete = False
+        self.stations_load_error = None  # If load fails, store error message
+        self._radio_ui_pending_finish = False  # True when in RADIO_STATIONS but waiting for load
         self.selected_station_index = 0
         # self.station_sounds is initialized earlier before _load_resources()
         self.radio_ui_active = False  # True when showing station list instead of tone buttons
@@ -1118,12 +1124,13 @@ class PirateRadioApp:
         self.intro_audio = pygame.mixer.Sound(get_data_path(INTRO_AUDIO))
         self.intro_audio.set_volume(0.8)  # Set volume to 80%
         
-        # Try to load radio station sounds
-        self._load_station_sounds()
+        # Station sounds are deferred - loaded in background when user enters Pirate Radio (start())
 
-    def _load_station_sounds(self):
-        """Load radio station audio files (both detuned and tuned versions) if they exist."""
-        all_stations = NIGHT_STATIONS + DAY_STATIONS
+    def _load_station_sounds(self, stations: Optional[List[Dict]] = None):
+        """Load radio station audio files (both detuned and tuned versions) if they exist.
+        If stations is None, loads all stations; otherwise loads only the given stations.
+        """
+        all_stations = stations if stations is not None else (NIGHT_STATIONS + DAY_STATIONS)
         for station in all_stations:
             station_name = station["name"]
 
@@ -1191,6 +1198,28 @@ class PirateRadioApp:
                 if tuned_sound:
                     self.station_sounds[f"{station_name}_tuned"] = tuned_sound
 
+    def _start_background_station_load(self):
+        """Start loading station audio in a background thread. Only loads stations for current time of day."""
+        if self.stations_loading:
+            return
+        self.stations_loading = True
+        self.stations_load_complete = False
+        self.stations_load_error = None
+        stations = NIGHT_STATIONS if _is_nighttime() else DAY_STATIONS
+
+        def _load_thread():
+            try:
+                self._load_station_sounds(stations)
+                self.stations_load_complete = True
+            except Exception as e:
+                self.stations_load_error = str(e)
+                print(f"Warning: Failed to load stations in background: {e}")
+            finally:
+                self.stations_loading = False
+
+        t = threading.Thread(target=_load_thread, daemon=True)
+        t.start()
+
     def _on_message_complete(self, message: str):
         """Callback when a chat message finishes displaying."""
         # Check if this was the final message that triggers radio UI
@@ -1208,8 +1237,24 @@ class PirateRadioApp:
             self.current_stations = NIGHT_STATIONS
         else:
             self.current_stations = DAY_STATIONS
-            
-        # Radio manager is already initialized in __init__ with all stations
+        
+        # Initialize radio manager time tracking for current stations only
+        self.radio_manager.initialize_minutes(self.current_stations)
+        
+        self.selected_station_index = 0
+        
+        # If stations are still loading, show Loading... in messages; finish in update()
+        if not self.stations_load_complete:
+            self._radio_ui_pending_finish = True
+            self.chat.loading_override = "Loading."
+            return
+        
+        self._finish_radio_ui_activation()
+    
+    def _finish_radio_ui_activation(self):
+        """Complete radio UI setup once station sounds are loaded."""
+        self._radio_ui_pending_finish = False
+        self.chat.loading_override = None
         
         # Ensure we have enough mixer channels for all stations (5 stations × 2 versions = 10 channels minimum)
         # Plus some extra for noise, tones, etc. - request 16 channels
@@ -1252,8 +1297,6 @@ class PirateRadioApp:
         
         print(f"Initialized {initialized_count}/{len(self.current_stations)} stations (streaming: {streaming_count})")
         
-        self.selected_station_index = 0
-        
         # Queue chat guidance: concise status if already unlocked, otherwise story message
         if not self.uncle_am_message_queued:
             self.uncle_am_message_queued = True
@@ -1276,6 +1319,9 @@ class PirateRadioApp:
         self.minimized = False
         self.current_station = None
         self.skip_challenge_active = self.skip_challenge
+        # Start loading stations in background (only time-of-day stations)
+        # Loading happens during video/splash - by the time user reaches RADIO_STATIONS it may be ready
+        self._start_background_station_load()
         self.skip_challenge_unlock_done = False
         # tokyo_yamoto_first_play is persistent throughout the app instance session
         self.skip_intro_messages = self.skip_challenge_active
@@ -1593,6 +1639,16 @@ class PirateRadioApp:
 
         if not self.app_started:
             return
+
+        # When in RADIO_STATIONS waiting for station load: cycle Loading. / Loading.. / Loading...
+        if self._radio_ui_pending_finish:
+            if self.stations_load_complete:
+                self._finish_radio_ui_activation()
+            elif not self.stations_loading and self.stations_load_error:
+                self.chat.loading_override = f"Load failed: {self.stations_load_error[:40]}..."
+            else:
+                step = (now // 400) % 3
+                self.chat.loading_override = ["Loading.", "Loading..", "Loading..."][step]
 
         # Background animation
         if now - self.bg_frame_timer >= BACKGROUND_FRAME_DURATION:

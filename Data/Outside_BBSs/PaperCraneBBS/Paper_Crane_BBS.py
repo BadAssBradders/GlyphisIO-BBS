@@ -32,11 +32,19 @@ class PaperCraneBBS:
     States: splash -> login -> menu -> panel. Esc/End Call exits.
     """
 
-    def __init__(self, width: int, height: int, scale: float, on_exit: Optional[Callable[[], None]] = None):
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        scale: float,
+        on_exit: Optional[Callable[[], None]] = None,
+        on_grant_token: Optional[Callable[[str, Optional[str]], bool]] = None,
+    ):
         self.width = width
         self.height = height
         self.scale = scale
         self.on_exit = on_exit
+        self.on_grant_token = on_grant_token
 
         # Fonts
         self.font_title = self._load_font("misaki_gothic.ttf", int(32 * self.scale), bold=False)
@@ -704,7 +712,7 @@ class PaperCraneBBS:
         line_height = int(24 * self.scale)
         visible_lines = (panel_rect.height - int(120 * self.scale)) // line_height
         
-        # Draw the logs
+        # Draw the logs (clip so text doesn't overlap window)
         display_logs = self.user_logs
         max_scroll = max(0, len(display_logs) - visible_lines)
         self.panel_scroll = max(0, min(self.panel_scroll, max_scroll))
@@ -712,6 +720,9 @@ class PaperCraneBBS:
         start = self.panel_scroll
         end = start + visible_lines
         
+        log_content_rect = pygame.Rect(panel_rect.x, panel_rect.y + int(55 * self.scale), panel_rect.width, panel_rect.height - int(100 * self.scale))
+        old_clip = surface.get_clip()
+        surface.set_clip(log_content_rect)
         for idx, line in enumerate(display_logs[start:end]):
             color = ERROR if "purged" in line or "ghost" in line else (GOLD if "SYSTEM" in line else TEXT)
             self._blit_text_with_shadow(
@@ -722,6 +733,7 @@ class PaperCraneBBS:
                 color,
                 (text_x, text_y + idx * line_height),
             )
+        surface.set_clip(old_clip)
 
         # WIPE TRACE BUTTON
         wipe_btn_rect = pygame.Rect(panel_rect.x + int(20 * self.scale), panel_rect.bottom - int(75 * self.scale), panel_rect.width - int(40 * self.scale), int(35 * self.scale))
@@ -785,6 +797,11 @@ class PaperCraneBBS:
                 pygame.mixer.music.play(-1) # Loop indefinitely
                 
                 self.current_playing_track = index
+                # Grant JEWEL_VOICE token when player plays "Jewel Voice" (or "Jewl Voice")
+                title = (track.get("title") or "").strip()
+                if title and self.on_grant_token:
+                    if title.lower() in ("jewel voice", "jewl voice"):
+                        self.on_grant_token("JEWEL_VOICE", reason="played Jewel Voice on Paper Crane BBS")
                 print(f"[DEBUG] _play_track: Playback started successfully.")
             else:
                 print(f"[DEBUG] _play_track ERROR: Audio file not found: {base_filename} in MiaZukiMatrix.")
@@ -1191,6 +1208,9 @@ class PaperCraneBBS:
         start = self.panel_scroll
         end = start + visible_lines
         
+        body_rect = pygame.Rect(panel_rect.x, panel_rect.y + int(55 * self.scale), panel_rect.width, panel_rect.height - int(80 * self.scale))
+        old_clip = surface.get_clip()
+        surface.set_clip(body_rect)
         for idx, line in enumerate(wrapped[start:end]):
             self._blit_text_with_shadow(
                 surface,
@@ -1200,6 +1220,7 @@ class PaperCraneBBS:
                 TEXT,
                 (text_x, text_y + idx * line_height),
             )
+        surface.set_clip(old_clip)
 
         # Unified Scroll Indicator
         self._draw_scroll_indicator(surface, panel_rect, self.panel_scroll, visible_lines, len(wrapped))
@@ -1297,6 +1318,8 @@ class PaperCraneBBS:
             max_scroll = max(0, len(wrapped_lyrics) - visible_lines)
             self.lyrics_scroll = min(self.lyrics_scroll, max_scroll)
             
+            old_clip = surface.get_clip()
+            surface.set_clip(lyrics_rect)
             y = lyrics_rect.y + int(10 * self.scale)
             for i in range(self.lyrics_scroll, min(len(wrapped_lyrics), self.lyrics_scroll + visible_lines)):
                 line = wrapped_lyrics[i]
@@ -1310,6 +1333,7 @@ class PaperCraneBBS:
                     (lyrics_rect.x + int(20 * self.scale), y),
                 )
                 y += line_h
+            surface.set_clip(old_clip)
                 
             # Unified Scroll Indicator
             self._draw_scroll_indicator(surface, lyrics_rect, self.lyrics_scroll, visible_lines, len(wrapped_lyrics))
@@ -1344,6 +1368,8 @@ class PaperCraneBBS:
         max_scroll = max(0, len(wrapped_msg) - visible_lines)
         self.audio_welcome_scroll = min(self.audio_welcome_scroll, max_scroll)
         
+        old_clip_msg = surface.get_clip()
+        surface.set_clip(msg_rect)
         y = msg_rect.y + int(15 * self.scale)
         for i in range(self.audio_welcome_scroll, min(len(wrapped_msg), self.audio_welcome_scroll + visible_lines)):
             line = wrapped_msg[i]
@@ -1356,6 +1382,7 @@ class PaperCraneBBS:
                 (msg_rect.x + int(15 * self.scale), y),
             )
             y += line_h
+        surface.set_clip(old_clip_msg)
 
         # Unified Scroll Indicator for Welcome Message
         self._draw_scroll_indicator(surface, msg_rect, self.audio_welcome_scroll, visible_lines, len(wrapped_msg))
@@ -1383,6 +1410,8 @@ class PaperCraneBBS:
         track_h = int(50 * self.scale)
         visible_tracks = list_rect.height // track_h
         
+        old_clip_list = surface.get_clip()
+        surface.set_clip(list_rect)
         for i in range(visible_tracks):
             idx = self.track_list_scroll + i
             if idx >= len(self.audio_tracks):
@@ -1434,6 +1463,7 @@ class PaperCraneBBS:
                     lyrics_color,
                     (list_rect.right - int(90 * self.scale), y + int(10 * self.scale)),
                 )
+        surface.set_clip(old_clip_list)
             
         # Unified Scroll Indicator for Track List
         self._draw_scroll_indicator(surface, list_rect, self.track_list_scroll, visible_tracks, len(self.audio_tracks))
@@ -1486,6 +1516,8 @@ class PaperCraneBBS:
         line_h = int(50 * self.scale)
         visible_docs = (left_rect.height - int(32 * self.scale)) // line_h
         
+        old_clip = surface.get_clip()
+        surface.set_clip(left_rect)
         for i in range(visible_docs):
             idx = self.archive_list_scroll + i
             if idx >= len(self.archive_docs):
@@ -1539,6 +1571,7 @@ class PaperCraneBBS:
                     (left_rect.x + int(25 * self.scale), display_y),
                 )
                 display_y += int(18 * self.scale)
+        surface.set_clip(old_clip)
 
         # Unified Scroll Indicator for Archive List
         self._draw_scroll_indicator(surface, left_rect, self.archive_list_scroll, visible_docs, len(self.archive_docs))
@@ -1611,8 +1644,20 @@ class PaperCraneBBS:
             return
 
         doc = self.archive_docs[self.archive_open_index]
-        title_surf = self._render_text(self.font_label, self.font_label_fallback, doc["title"], GOLD)
-        surface.blit(title_surf, (right_rect.x + padding, right_rect.y + int(15 * self.scale)))
+        # Wrap long titles so they don't overflow the window
+        title_wrapped = self._wrap_text_lines([doc["title"]], self.font_label, self.font_label_fallback, content_width)
+        title_y = right_rect.y + int(15 * self.scale)
+        old_clip_right = surface.get_clip()
+        surface.set_clip(right_rect)
+        for j, title_line in enumerate(title_wrapped[:2]):
+            self._blit_text_with_shadow(
+                surface,
+                self.font_label,
+                self.font_label_fallback,
+                title_line,
+                GOLD,
+                (right_rect.x + padding, title_y + j * int(22 * self.scale)),
+            )
         
         pygame.draw.line(surface, GOLD, (right_rect.x + padding, right_rect.y + int(45 * self.scale)), (right_rect.right - padding, right_rect.y + int(45 * self.scale)), 1)
 
@@ -1635,6 +1680,7 @@ class PaperCraneBBS:
             )
             y += line_height
 
+        surface.set_clip(old_clip_right)
         # Unified Scroll Indicator
         self._draw_scroll_indicator(surface, right_rect, start, visible_lines, len(wrapped))
 
@@ -1681,6 +1727,13 @@ class PaperCraneBBS:
             self._log_action(f"login failed: {self.username}")
 
     def _end_call(self) -> None:
+        # Stop any playing audio when hanging up (must cut when Network: Disconnected)
+        try:
+            if pygame.mixer.get_init() and pygame.mixer.music.get_busy():
+                pygame.mixer.music.stop()
+        except Exception:
+            pass
+        self.current_playing_track = None
         self.request_exit = True
         if self.on_exit:
             self.on_exit()

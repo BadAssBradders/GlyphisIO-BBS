@@ -8,6 +8,7 @@ import pygame
 import os
 import sys
 import time
+import shutil
 import math
 import json
 import random
@@ -48,8 +49,71 @@ MISSION_NOTE_CONTENT = (
 
 # BBS login note template (non-deletable login information note)
 BBS_LOGIN_NOTE_TITLE = "BBS Numbers and Logins"
+
+# Notes app: tab title display and edit limit
+NOTESTAB_TITLE_MAX_LEN = 20
+
+# School op ghost sequence: bullet list typed into a new note (player's notes to self; already logged out)
+SCHOOL_OP_NOTE_TITLE = "School Op - Steps"
+# Ghost types this version - no credentials; player must find them in LocaleProtocols.brad
+SCHOOL_HACK_NOTE_LINES_NO_CREDS = [
+    "• Desktop: HDD>System>Terminal, type file-system-start",
+    "• Open locale protocols file, find Switch Region String",
+    "• String (period-sep):",
+    "  - get admin-command...",
+    "  - command: ???",
+    "  - username: ???",
+    "  - password: ???",
+    "• Close terminal, reopen, run admin-command + user + pass",
+    "• Region change → American Mainland (no factory reset)",
+    "• Open email on desktop, send rain@ciphernet.net subj I'm in",
+    "• Wait for Rain's reply",
+]
+# Version with credentials - used when player observes LocaleProtocols.brad (marks progress)
+SCHOOL_HACK_NOTE_LINES_WITH_CREDS = [
+    "• Desktop: HDD>System>Terminal, type file-system-start",
+    "• Open locale protocols file, find Switch Region String",
+    "• String (period-sep):",
+    "  - get admin-command...",
+    "  - command: admin-subset",
+    "  - username: general",
+    "  - password: louis-sonic",
+    "• Close terminal, reopen, run admin-command + user + pass",
+    "• Region change → American Mainland (no factory reset)",
+    "• Open email on desktop, send rain@ciphernet.net subj I'm in",
+    "• Wait for Rain's reply",
+]
 BBS_NAME = "GLYPHIS_IO BBS"
 BBS_NUMBER = "0345728891"
+
+# BRADSONIC-MAIL guided compose placeholders (faint hints)
+MAIL_COMPOSE_PLACEHOLDER_TO = "rain@ci..."
+MAIL_COMPOSE_PLACEHOLDER_SUBJECT = "i'm in"
+MAIL_COMPOSE_PLACEHOLDER_BODY = (
+    "Okay, I'm in, US MAINLAND set as my current region locale, so what are your orders?"
+)
+# Rain's reply after connecting and sending "I'm in" to rain@ciphernet.net
+RAIN_REPLY_SUBJECT = "You're in - next steps"
+
+
+def _get_rain_reply_body(username: str) -> str:
+    """Build Rain's reply body with username. Only call when player sent 'I'm in' to Rain."""
+    u = username or "you"
+    return (
+        f"There will be new games in the games folder, check em out! Also, I bet you're wondering "
+        f"what the other icon is that just showed up? Well {u}, that's your dotSonic player, you can "
+        f"play all of the .sonic tracks you've downloaded from the likes of Paper Crane BBS and all "
+        f"of the other amazing BBSs out-there, downloads should have already gone to your media folder "
+        f"and with this new player you can simply play them like a cassette, cool right?\n\n"
+        "Congrats. You're inside the region-restricted area. Good work.\n\n"
+        "Here's how to use this mail client to pretend to be the telephone company. In Settings, set your "
+        "fake From address to: region-support@telco-relay.bradsonic.net - and add this signature: "
+        "\"Regional Line Testing - BRADSONIC-TELCO RELAY.\" Then compose a new message to the school's "
+        "front desk (add their address in your contacts). Request phone system numbers and PIN codes for "
+        "any telephone systems, answer machines, faxes, or modems. Write a lengthy email about system "
+        "security and that you need the info right away in order to test the lines and avoid any "
+        "disruptions. Keep it official and urgent."
+    )
 
 # Animation Constants
 HOVER_ANIMATION_SPEED = 8.0  # pixels per second
@@ -236,6 +300,24 @@ except Exception as e:
     PirateRadioApp = None
     print(f"Warning: Could not import PirateRadioApp: {e}")
 
+# dotSONIC Media Player
+try:
+    dotsonic_dir = os.path.dirname(os.path.abspath(__file__))
+    dotsonic_path = os.path.join(dotsonic_dir, "dotSONIC", "DotSonicMediaPlayer.py")
+    if os.path.exists(dotsonic_path):
+        spec = importlib.util.spec_from_file_location("dot_sonic_module", dotsonic_path)
+        dot_sonic_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(dot_sonic_module)
+        DotSonicMediaPlayer = dot_sonic_module.DotSonicMediaPlayer
+        _dot_sonic_available = True
+    else:
+        _dot_sonic_available = False
+        DotSonicMediaPlayer = None
+except Exception as e:
+    _dot_sonic_available = False
+    DotSonicMediaPlayer = None
+    print(f"Warning: Could not import DotSonicMediaPlayer: {e}")
+
 # Data path helper - works for both development and built executable
 def get_data_path(*path_parts):
     """
@@ -264,7 +346,7 @@ class OSMode:
     """
     persisted_network_connected = False  # Persist connection state across OS Mode instances
     
-    def __init__(self, screen: pygame.Surface, res_manager: ResolutionManager, reset_bbs_callback=None, bbs_x=None, bbs_y=None, bbs_width=None, has_token_callback=None, get_recording_state_callback=None, set_recording_state_callback=None, get_notes_callback=None, save_notes_callback=None, get_user_credentials_callback=None, get_chess_stats_callback=None, save_chess_stats_callback=None, grant_token_callback=None, is_audio_streaming_callback=None, get_radio_music_callback=None, stop_radio_audio_callback=None):
+    def __init__(self, screen: pygame.Surface, res_manager: ResolutionManager, reset_bbs_callback=None, bbs_x=None, bbs_y=None, bbs_width=None, has_token_callback=None, get_recording_state_callback=None, set_recording_state_callback=None, get_notes_callback=None, save_notes_callback=None, get_user_credentials_callback=None, get_chess_stats_callback=None, save_chess_stats_callback=None, grant_token_callback=None, is_audio_streaming_callback=None, get_radio_music_callback=None, stop_radio_audio_callback=None, set_quit_state_callback=None, exit_game_callback=None, open_email_callback=None, get_inbox_emails_callback=None, save_inbox_emails_callback=None, send_mail_callback=None, get_mail_outbox_callback=None, save_mail_outbox_callback=None, get_mail_trash_callback=None, save_mail_trash_callback=None, play_mail_sound_callback=None, get_downloaded_fugamatchi_tracks_callback=None, add_downloaded_fugamatchi_track_callback=None):
         """
         Initialize OS Mode.
         """
@@ -287,6 +369,19 @@ class OSMode:
         self.is_audio_streaming = is_audio_streaming_callback or (lambda: False)
         self.get_radio_music = get_radio_music_callback or (lambda: False)
         self.stop_radio_audio = stop_radio_audio_callback or (lambda close_app=True: None)
+        self.set_quit_state = set_quit_state_callback or (lambda: None)
+        self.exit_game = exit_game_callback or (lambda: None)
+        self.open_email = open_email_callback or (lambda: None)
+        self.get_inbox_emails = get_inbox_emails_callback or (lambda: [])
+        self.save_inbox_emails = save_inbox_emails_callback or (lambda emails: None)
+        self.send_mail = send_mail_callback or (lambda to, subject, body: None)
+        self.get_mail_outbox = get_mail_outbox_callback or (lambda: [])
+        self.save_mail_outbox = save_mail_outbox_callback or (lambda emails: None)
+        self.get_mail_trash = get_mail_trash_callback or (lambda: [])
+        self.save_mail_trash = save_mail_trash_callback or (lambda emails: None)
+        self.play_mail_sound = play_mail_sound_callback or (lambda: None)
+        self.get_downloaded_fugamatchi_tracks = get_downloaded_fugamatchi_tracks_callback or (lambda: [])
+        self.add_downloaded_fugamatchi_track = add_downloaded_fugamatchi_track_callback or (lambda title: None)
         self.modem_tone_sounds: Dict[str, Optional[pygame.mixer.Sound]] = {}
         self._load_modem_tone_sounds()
         
@@ -341,14 +436,25 @@ class OSMode:
         )
         
         # Load icons (both normal and selected "S" versions)
+        # Display labels under each icon (same style as file system: Pixellari, cyan, center-aligned)
+        DESKTOP_ICON_LABELS = {
+            "tape-icon.png": "DATASETTE",
+            "hard-drive-icon.png": "HDD",
+            "modem-iconpng.png": "MODEM",
+            "games-folder.png": "GAMES",
+            "notes-icon.png": "NOTES",
+            "sonic-icon.png": "dotSONIC",
+        }
         self.icons = []
         icon_files = [
             "tape-icon.png",
             "hard-drive-icon.png",
             "modem-iconpng.png",
             "games-folder.png",
-            "notes-icon.png"
+            "notes-icon.png",
         ]
+        if os.path.exists(get_data_path("OS", "sonic-icon.png")):
+            icon_files.append("sonic-icon.png")
         
         icon_spacing = 0  # Will be calculated based on icon height
         current_y = self.desktop_y + int(70 * self.scale)  # Start 70px down from desktop top
@@ -393,6 +499,7 @@ class OSMode:
                     icon_x = self.desktop_x + int(10 * self.scale)  # Small margin from left
                     icon_y = current_y
                 
+                from_saved = icon_file in saved_positions
                 icon_data = {
                     "image": icon_image,  # Normal version
                     "s_image": s_icon_image,  # Selected "S" version
@@ -401,10 +508,12 @@ class OSMode:
                     "width": icon_size[0],
                     "height": icon_size[1],
                     "name": icon_file,
+                    "label": DESKTOP_ICON_LABELS.get(icon_file, icon_file),
                     "selected": False,  # Track if this icon is selected
                     "dragging": False,
                     "drag_offset_x": 0,
-                    "drag_offset_y": 0
+                    "drag_offset_y": 0,
+                    "from_saved": from_saved,
                 }
                 self.icons.append(icon_data)
                 
@@ -416,6 +525,8 @@ class OSMode:
                 print(f"Warning: Failed to load {icon_file}: {e}")
         
         self._align_icons_to_tape_center()
+        # Apply vertical offsets to reduce overlap (percent of desktop height); only when using default positions
+        self._apply_desktop_icon_vertical_offsets()
         
         # Load custom mouse cursor
         cursor_path = get_data_path("OS", "mouse_cursor.png")
@@ -557,6 +668,70 @@ class OSMode:
         self.modem_modal_key_flash_label: Optional[str] = None
         self.modem_modal_key_flash_timer: float = 0.0
         
+        # Saved regional/locale setting (must be set before _load_games_icons which filters by region)
+        # 1=American Mainland, 2=Europe, 3=American Pacific Isles (default)
+        self.os_locale: int = 3
+        self.mail_icon_visible: bool = False  # Whether mail icon is visible on desktop (Mainland America)
+        
+        # BRADSONIC-MAIL client state
+        self.mail_view: str = "inbox"  # "inbox", "compose", "outbox", "trash", "reading", "settings", "connect"
+        self.mail_selected_index: int = -1
+        self.mail_reading_email: Optional[Dict] = None
+        self.mail_compose_to: str = ""
+        self.mail_compose_subject: str = ""
+        self.mail_compose_body: str = ""
+        self.mail_compose_active_field: str = "to"  # "to", "subject", "body"
+        self.mail_scroll_offset: int = 0
+        self.mail_cursor_blink_timer: float = 0.0
+        self.mail_compose_cursor: int = 0
+        self.mail_status_message: str = ""
+        self.mail_status_timer: float = 0.0
+        # BRADSONIC-MAIL separate inbox (not the BBS inbox)
+        self.mail_local_inbox: List[Dict] = []
+        # BRADSONIC-MAIL settings (1989 mail client technobabble)
+        self.mail_settings: Dict[str, Any] = {
+            "mail_from": "user@bradsonic.net",
+            "display_name": "BRADSONIC User",
+            "reply_to": "",
+            "smtp_server": "smtp.bradsonic-relay.net",
+            "smtp_port": "25",
+            "pop3_server": "pop3.bradsonic-relay.net",
+            "pop3_port": "110",
+            "protocol": "POP3",         # POP3 or IMAP
+            "auth_method": "LOGIN",     # LOGIN, PLAIN, CRAM-MD5
+            "encryption": "None",       # None, SSL, TLS
+            "max_msg_size": "2048",
+            "check_interval": "15",
+            "leave_on_server": True,
+            "auto_bcc": False,
+            "x_mailer_header": True,
+            "mime_encoding": "quoted-printable",  # quoted-printable, base64, 7bit
+            "charset": "US-ASCII",      # US-ASCII, ISO-8859-1, UTF-8
+            "signature": "-- \nSent via BRADSONIC-MAIL v2.1\nInterconnecting the American Mainland and beyond!",
+            "line_wrap": "76",
+            "delivery_receipt": False,
+            "read_receipt": False,
+        }
+        self.mail_settings_active_field: Optional[str] = None  # Currently focused text field key
+        self.mail_settings_cursor: int = 0
+        self.mail_settings_scroll: int = 0
+        # BRADSONIC-MAIL server connection (outbox sends only when connected)
+        self.mail_server_connected: bool = False
+        self.mail_connect_phase: str = "idle"  # "idle" | "connecting" | "connected"
+        self.mail_connect_technobabble_timer: float = 0.0  # Show technobabble then CONNECTED
+        self.mail_rain_delivery_timer: float = -1.0  # After connect+flush, deliver Rain reply
+        self.mail_pulse_timer: float = 0.0  # For COMPOSE / SEND pulse animation
+        self.mail_opened_once: bool = False  # True after first open (for COMPOSE pulse)
+        # BRADSONIC-MAIL connect terminal (1989 modem-style)
+        self.mail_connect_terminal_lines: List[str] = []
+        self.mail_connect_terminal_line_index: int = 0
+        self.mail_connect_terminal_timer: float = 0.0
+        self.mail_connect_terminal_complete: bool = False
+        self.mail_connect_dialup_started: bool = False
+        self._mail_connect_steps: List[Tuple[str, float, Optional[str]]] = []
+        self._mail_connect_sent_this_session: bool = False
+        self.mail_connect_terminal_scroll: int = 0
+
         # Games modal state
         self.games_icon_defs = [
             {
@@ -603,6 +778,74 @@ class OSMode:
         self.games_modal_last_click_name: Optional[str] = None
         self.games_modal_last_click_time: float = 0.0
         self._load_games_icons()
+
+        # Hard drive modal state
+        self.hard_drive_modal_icon: Optional[Dict[str, object]] = None
+        self.hard_drive_modal_file_system_icon: Optional[Dict[str, object]] = None  # File System icon (US MAINLAND only)
+        self.hard_drive_modal_content_rect: Optional[pygame.Rect] = None
+        self.hard_drive_modal_dragging_icon: Optional[Dict[str, object]] = None
+        self.hard_drive_modal_drag_offset = (0, 0)
+        self.hard_drive_modal_last_click_time: float = 0.0
+        self.hard_drive_modal_last_clicked_icon: Optional[str] = None  # "system" or "file_system"
+        self._load_hard_drive_icon()
+
+        # System folder modal state
+        self.system_folder_modal_icon: Optional[Dict[str, object]] = None
+        self.system_folder_modal_content_rect: Optional[pygame.Rect] = None
+        self.system_folder_modal_dragging_icon: Optional[Dict[str, object]] = None
+        self.system_folder_modal_drag_offset = (0, 0)
+        self.system_folder_modal_last_click_time: float = 0.0
+        self._load_system_folder_icon()
+
+        # File system browser modal state (double-click File System icon when US MAINLAND)
+        self.file_system_browser_path: List[str] = []  # current path (folder names)
+        self.file_system_browser_items: List[Dict[str, Any]] = []  # [{ "type": "folder"|"file", "display_name": str, "real_name": str }]
+        self.file_system_browser_selected_index: int = -1
+        self.file_system_browser_last_click_time: float = 0.0
+        self.file_system_browser_last_clicked_key: Optional[str] = None
+        self.file_system_browser_dragging_item: Optional[Tuple[Dict[str, Any], int, int]] = None  # (item, offset_x, offset_y) when dragging
+        self.file_system_browser_folder_icon: Optional[Dict[str, object]] = None
+        self.file_system_browser_brad_icon: Optional[Dict[str, object]] = None
+        self.file_system_browser_font: Optional[pygame.font.Font] = None  # Pixellari
+        self._load_file_system_browser_assets()
+
+        # Multiple terminal file windows (double-click .brad in browser opens file in new window)
+        self.terminal_file_windows: List[Dict[str, Any]] = []  # [{ "content": list of str, "title": str, "position": (x,y), "scroll": int, "rect": None, "dragging": False, "drag_offset": (0,0) }]
+
+        # Terminal application state
+        self.terminal_active: bool = False
+        self.terminal_text: str = ""
+        self.terminal_cursor_blink_timer: float = 0.0
+        self.terminal_cursor_visible: bool = True
+        self.terminal_font: Optional[pygame.font.Font] = None
+        self.terminal_position: Optional[Tuple[int, int]] = None  # Store terminal position for dragging
+        self.terminal_dragging: bool = False
+        self.terminal_drag_offset: Tuple[int, int] = (0, 0)
+        self.terminal_mode: str = "command"  # "command", "admin_login_username", "admin_login_password", "admin_menu", "region_select", "message"
+        self.terminal_admin_menu_selection: int = 1  # Selected menu item (1-4)
+        self.terminal_region_selection: int = 1  # Selected region (1-3)
+        self.terminal_message: str = ""  # Temporary message to display
+        self.terminal_message_timer: float = 0.0  # Timer for message display
+        self.terminal_input_buffer: str = ""  # Current input being typed
+        self.terminal_login_stage: int = 0  # 0 = not logging in, 1 = username, 2 = password
+        
+        # (os_locale and mail_icon_visible defined earlier, before _load_games_icons)
+        
+        # File system state
+        self.terminal_file_system_mode: bool = False  # Whether in file system mode
+        self.terminal_file_system_path: List[str] = []  # Current path (list of folder names)
+        self.terminal_file_content: List[str] = []  # Content of currently open file
+        self.terminal_file_view_filename: str = ""  # Name of file currently displayed (e.g. LocaleProtocols.brad) for pulse hints
+        self.terminal_file_scroll_index: int = 0  # Scroll position in file view
+        self.terminal_file_system_base_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "FILE-SYSTEM")
+        
+        # Command history (MS-DOS style)
+        self.terminal_command_history: List[str] = []  # List of previous commands
+        self.terminal_history_index: int = -1  # Current position in history (-1 = not browsing, 0 = most recent)
+        self.terminal_current_input_line: str = ""  # Current line being typed (before Enter)
+        self.terminal_cursor_index: int = 0  # Cursor position within current input line (0 = start)
+        
+        self._load_terminal_font()
 
         # Chess game instance
         if _chess_available and ChessGame:
@@ -719,7 +962,8 @@ class OSMode:
                     health_monitor_y,
                     self.bbs_x or 0,
                     self.bbs_width or 0,
-                    self.get_radio_music
+                    self.get_radio_music,
+                    exit_app_callback=self._civitas_quit_return_to_desktop,
                 )
             except Exception as e:
                 print(f"Warning: Failed to initialize CivitasNihiliumGame: {e}")
@@ -730,6 +974,23 @@ class OSMode:
             self.civitas_game = None
             if not _civitas_nihilium_available:
                 print(f"Warning: Civitas Nihilium module not available. _civitas_nihilium_available={_civitas_nihilium_available}, CivitasNihiliumGame={CivitasNihiliumGame}")
+        
+        # dotSONIC Media Player instance
+        self.dot_sonic_app = None
+        self.file_system_browser_opened_from_dot_sonic = False
+        if _dot_sonic_available and DotSonicMediaPlayer:
+            try:
+                health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
+                self.dot_sonic_app = DotSonicMediaPlayer(
+                    self.screen, self.scale,
+                    self.desktop_x, self.desktop_y, self.desktop_size, health_monitor_y,
+                    get_downloaded_tracks=self.get_downloaded_fugamatchi_tracks,
+                    open_file_browser_callback=self._dot_sonic_open_file_browser,
+                    close_callback=self._dot_sonic_closed,
+                )
+            except Exception as e:
+                print(f"Warning: Failed to initialize DotSonicMediaPlayer: {e}")
+                self.dot_sonic_app = None
         
         # Pirate Radio App instance
         self.pirate_radio_app = None
@@ -749,6 +1010,25 @@ class OSMode:
         """Launch the Pirate Radio application."""
         if self.pirate_radio_app:
             self.pirate_radio_app.start()
+    
+    def _civitas_quit_return_to_desktop(self):
+        """Called when user quits Civitas Nihilium - close window and return to desktop (do NOT exit game)."""
+        if self.civitas_game and self.civitas_game.active:
+            self.civitas_game.close()
+
+    def _dot_sonic_closed(self):
+        """Called when dotSONIC app closes itself - sync OS modal state."""
+        self.active_modals = [name for name in self.active_modals if name != "dot_sonic"]
+        if "dot_sonic" in self.modal_positions:
+            del self.modal_positions["dot_sonic"]
+    
+    def _dot_sonic_open_file_browser(self):
+        """Open file system browser for loading .sonic files into dotSONIC playlist."""
+        self.file_system_browser_opened_from_dot_sonic = True
+        self.file_system_browser_path = []
+        self.file_system_browser_items = self._list_file_system_browser_directory()
+        self.file_system_browser_selected_index = -1
+        self._open_modal("file_system_browser")
 
     def handle_event(self, event: pygame.event.Event) -> bool:
         """
@@ -757,6 +1037,16 @@ class OSMode:
         """
         if self.pirate_radio_app and self.pirate_radio_app.active and self.pirate_radio_app.handle_event(event):
             return True
+        # dotSONIC: pass events when dragging (window/vol/bal) so it receives MOUSEMOTION/MOUSEBUTTONUP
+        if (self.dot_sonic_app and self.dot_sonic_app.active and
+                (self.dot_sonic_app.dragging_window or self.dot_sonic_app.dragging_vol or self.dot_sonic_app.dragging_bal)):
+            if self.dot_sonic_app.handle_event(event):
+                return True
+        # dotSONIC: pass KEYDOWN (arrow keys for track scroll) when top-most - before games can consume them
+        if (event.type == pygame.KEYDOWN and self.dot_sonic_app and self.dot_sonic_app.active and
+                "dot_sonic" in self.active_modals and self.active_modals[-1] == "dot_sonic"):
+            if self.dot_sonic_app.handle_event(event):
+                return True
         if self.chess_game and self.chess_game.active and self.chess_game.handle_event(event):
             return True
         if self.solitaire_game and self.solitaire_game.active and self.solitaire_game.handle_event(event):
@@ -772,6 +1062,34 @@ class OSMode:
             
             # Update hover states for visual feedback
             self._update_hover_states(event.pos[0], event.pos[1])
+            
+            # Handle terminal file window dragging
+            for win in self.terminal_file_windows:
+                if win.get("dragging") and self.mouse_pressed:
+                    ox, oy = win["drag_offset"]
+                    new_x = self.mouse_pos[0] - ox
+                    new_y = self.mouse_pos[1] - oy
+                    tw = int(500 * self.scale)
+                    th = int(320 * self.scale)
+                    new_x = max(self.desktop_x, min(new_x, self.desktop_x + self.desktop_size[0] - tw))
+                    new_y = max(self.desktop_y, min(new_y, self.desktop_y + self.desktop_size[1] - th))
+                    win["position"] = (new_x, new_y)
+                    return True
+            # Handle terminal dragging
+            if self.mouse_pressed and self.terminal_dragging:
+                terminal_w = int(665 * self.scale)  # 33% larger: 500 * 1.33 = 665
+                terminal_h = int(375 * self.scale)  # 25% larger: 300 * 1.25 = 375
+                new_x = self.mouse_pos[0] - self.terminal_drag_offset[0]
+                new_y = self.mouse_pos[1] - self.terminal_drag_offset[1]
+                
+                # Constrain to desktop boundaries
+                new_x = max(self.desktop_rect.left, 
+                           min(new_x, self.desktop_rect.right - terminal_w))
+                new_y = max(self.desktop_rect.top, 
+                           min(new_y, self.desktop_rect.bottom - terminal_h))
+                
+                self.terminal_position = (new_x, new_y)
+                return True
             
             # Handle modal dragging
             if self.mouse_pressed and self.modal_dragging:
@@ -809,6 +1127,31 @@ class OSMode:
                         icon["x"] = new_x
                         icon["y"] = new_y
                         return True
+                
+                # Handle hard drive modal icon dragging
+                if self.hard_drive_modal_dragging_icon and self.hard_drive_modal_content_rect:
+                    if self._update_hard_drive_icon_drag(self.mouse_pos[0], self.mouse_pos[1]):
+                        return True
+                
+                # Handle system folder modal icon dragging
+                if self.system_folder_modal_dragging_icon and self.system_folder_modal_content_rect:
+                    if self._update_system_folder_icon_drag(self.mouse_pos[0], self.mouse_pos[1]):
+                        return True
+                
+                # Handle hard drive modal icon dragging
+                if self.hard_drive_modal_dragging_icon and self.hard_drive_modal_content_rect:
+                    if self._update_hard_drive_icon_drag(self.mouse_pos[0], self.mouse_pos[1]):
+                        return True
+                
+                # Handle system folder modal icon dragging
+                if self.system_folder_modal_dragging_icon and self.system_folder_modal_content_rect:
+                    if self._update_system_folder_icon_drag(self.mouse_pos[0], self.mouse_pos[1]):
+                        return True
+                
+                # Handle games modal icon dragging
+                if self.games_modal_dragging_icon and self.games_modal_content_rect:
+                    if self._update_games_icon_drag(self.mouse_pos[0], self.mouse_pos[1]):
+                        return True
 
             if (self.notes_modal_dragging_selection and
                     "notes" in self.active_modals and
@@ -830,20 +1173,32 @@ class OSMode:
                 # Focus the top-most modal under the click (like a real OS)
                 focused_modal = None
                 for modal_name in reversed(self.active_modals):
-                    modal_x, modal_y = self.modal_positions.get(modal_name, (0, 0))
-                    modal_w, modal_h = self._get_modal_size(modal_name)
-                    # Apply clamping to match the actual drawn modal size
-                    modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
-                    modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
-                    if modal_rect.collidepoint(mouse_x, mouse_y):
-                        focused_modal = modal_name
-                        break
+                    if modal_name == "dot_sonic" and self.dot_sonic_app and self.dot_sonic_app.active:
+                        modal_rect = self.dot_sonic_app.window_rect
+                        if modal_rect and modal_rect.collidepoint(mouse_x, mouse_y):
+                            focused_modal = modal_name
+                            break
+                    else:
+                        modal_x, modal_y = self.modal_positions.get(modal_name, (0, 0))
+                        modal_w, modal_h = self._get_modal_size(modal_name)
+                        modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
+                        modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
+                        if modal_rect.collidepoint(mouse_x, mouse_y):
+                            focused_modal = modal_name
+                            break
                 if focused_modal:
                     self._focus_modal(focused_modal)
+                
+                # Route click to dotSONIC when it's top-most (before title bar / icon checks)
+                if focused_modal == "dot_sonic" and self.dot_sonic_app and self.dot_sonic_app.active:
+                    if self.dot_sonic_app.handle_event(event):
+                        return True
                 
                 # Check if clicking on a modal title bar for dragging (but exclude close buttons)
                 # Check modals in reverse order (top-most first) to handle close buttons correctly
                 for modal_name in reversed(self.active_modals.copy()):
+                    if modal_name == "dot_sonic":
+                        continue  # dotSONIC handles its own window drag
                     modal_x, modal_y = self.modal_positions.get(modal_name, (0, 0))
                     modal_w, modal_h = self._get_modal_size(modal_name)
                     # Apply clamping to match the actual drawn modal size
@@ -879,6 +1234,12 @@ class OSMode:
                 icon_clicked = False
                 clicked_icon = None
                 for icon in self.icons:
+                    # Skip mail icon when not in US Mainland (no click/launch in Europe or Pacifica)
+                    if icon["name"] == "mail-icon.png" and self.os_locale != 1:
+                        continue
+                    # Skip dotSONIC icon when in Pacifica (only visible in Europe and US Mainland)
+                    if icon["name"] == "sonic-icon.png" and self.os_locale == 3:
+                        continue
                     icon_rect = pygame.Rect(
                         icon["x"],
                         icon["y"],
@@ -898,10 +1259,34 @@ class OSMode:
                         )
                         
                         if is_double_click:
-                            # Double-click detected - open modal based on icon
+                            # Double-click detected - open modal or launch app based on icon
                             icon_name = icon["name"]
                             modal_name = None
-                            if "tape-icon" in icon_name:
+                            if "sonic-icon" in icon_name:
+                                # Launch dotSONIC Media Player
+                                if _dot_sonic_available and self.dot_sonic_app:
+                                    health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
+                                    self.dot_sonic_app.update_desktop(self.desktop_x, self.desktop_y, self.desktop_size, health_monitor_y)
+                                    self.dot_sonic_app.start()
+                                    self._open_modal("dot_sonic")
+                                elif _dot_sonic_available and DotSonicMediaPlayer:
+                                    try:
+                                        health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
+                                        self.dot_sonic_app = DotSonicMediaPlayer(
+                                            self.screen, self.scale,
+                                            self.desktop_x, self.desktop_y, self.desktop_size, health_monitor_y,
+                                            get_downloaded_tracks=self.get_downloaded_fugamatchi_tracks,
+                                            open_file_browser_callback=self._dot_sonic_open_file_browser,
+                                            close_callback=self._dot_sonic_closed,
+                                        )
+                                        self.dot_sonic_app.start()
+                                        self._open_modal("dot_sonic")
+                                    except Exception as e:
+                                        print(f"Failed to launch DotSonicMediaPlayer: {e}")
+                                        import traceback
+                                        traceback.print_exc()
+                                modal_name = None  # Don't open modal
+                            elif "tape-icon" in icon_name:
                                 modal_name = "tape"
                                 self.tape_modal_terminal_text = ""
                                 self._stop_tape_video()
@@ -925,6 +1310,16 @@ class OSMode:
                                 modal_name = "games"
                             elif "notes-icon" in icon_name:
                                 modal_name = "notes"
+                            elif "mail-icon" in icon_name and self.os_locale == 1:
+                                # Mail icon opens BRADSONIC-MAIL client (only in US Mainland)
+                                modal_name = "mail"
+                                # Sync inbox from game state when opening
+                                self.mail_local_inbox = list(self.get_inbox_emails())
+                                self.mail_view = "inbox"
+                                self.mail_selected_index = -1
+                                self.mail_reading_email = None
+                                self.mail_scroll_offset = 0
+                                self.mail_opened_once = True
                             
                             if modal_name:
                                 # Activate modal and bring it to front
@@ -953,8 +1348,18 @@ class OSMode:
                 # Handle modal button clicks (check modals in reverse order for top-most first)
                 # Only check modals if we didn't click on an icon
                 if not icon_clicked:
+                    # Check terminal file windows (multiple .brad viewers)
+                    if self._handle_terminal_file_windows_click(mouse_x, mouse_y):
+                        return True
+                    
                     for modal_name in reversed(self.active_modals.copy()):
-                        if modal_name == "tape":
+                        if modal_name == "terminal":
+                            rect = self._get_terminal_rect()
+                            if rect.collidepoint(mouse_x, mouse_y):
+                                self._focus_modal("terminal")
+                                if self._handle_terminal_click(mouse_x, mouse_y):
+                                    return True
+                        elif modal_name == "tape":
                             if self._handle_tape_modal_click(mouse_x, mouse_y):
                                 return True
                         elif modal_name == "modem":
@@ -965,6 +1370,18 @@ class OSMode:
                                 return True
                         elif modal_name == "games":
                             if self._handle_games_modal_click(mouse_x, mouse_y):
+                                return True
+                        elif modal_name == "hard_drive":
+                            if self._handle_hard_drive_modal_click(mouse_x, mouse_y):
+                                return True
+                        elif modal_name == "system_folder":
+                            if self._handle_system_folder_modal_click(mouse_x, mouse_y):
+                                return True
+                        elif modal_name == "file_system_browser":
+                            if self._handle_file_system_browser_modal_click(mouse_x, mouse_y):
+                                return True
+                        elif modal_name == "mail":
+                            if self._handle_mail_modal_click(mouse_x, mouse_y):
                                 return True
                 
                 # If clicking on desktop (not on an icon), deselect all icons
@@ -978,9 +1395,57 @@ class OSMode:
         
         elif event.type == pygame.MOUSEBUTTONUP:
             if event.button == 1:  # Left mouse button
+                # Handle file system browser drop (e.g. .sonic onto dotSONIC, or file onto folder to move)
+                if self.file_system_browser_dragging_item:
+                    drag_item, _ox, _oy = self.file_system_browser_dragging_item
+                    mx, my = event.pos
+                    handled = False
+                    if self.dot_sonic_app and self.dot_sonic_app.active and self.dot_sonic_app.window_rect:
+                        if self.dot_sonic_app.window_rect.collidepoint(mx, my) and drag_item.get("file_type") == "sonic":
+                            self.dot_sonic_app.add_track_to_playlist(
+                                drag_item["display_name"],
+                                drag_item["real_name"],
+                                file_type="sonic",
+                                file_path=drag_item.get("file_path")
+                            )
+                            handled = True
+                    if not handled and "file_system_browser" in self.active_modals and drag_item.get("type") == "file":
+                        for item in self.file_system_browser_items:
+                            if item.get("type") == "folder" and item.get("rect") and item["rect"].collidepoint(mx, my):
+                                src_path = drag_item.get("file_path")
+                                if not src_path and drag_item.get("file_type") == "brad":
+                                    browser_path = self._get_file_system_browser_path()
+                                    src_path = os.path.join(browser_path, drag_item["real_name"])
+                                if src_path and os.path.isfile(src_path):
+                                    dest_folder = item["real_name"]
+                                    if dest_folder == "..":
+                                        if self.file_system_browser_path:
+                                            dest_path = os.path.join(
+                                                self.terminal_file_system_base_path,
+                                                *self.file_system_browser_path[:-1]
+                                            )
+                                        else:
+                                            dest_path = self.terminal_file_system_base_path
+                                    else:
+                                        dest_path = os.path.join(self._get_file_system_browser_path(), dest_folder)
+                                    if os.path.isdir(dest_path):
+                                        try:
+                                            dest_file = os.path.join(dest_path, os.path.basename(src_path))
+                                            shutil.move(src_path, dest_file)
+                                            self.file_system_browser_items = self._list_file_system_browser_directory()
+                                        except Exception as e:
+                                            print(f"Could not move file: {e}")
+                                break
+                    self.file_system_browser_dragging_item = None
                 self.mouse_pressed = False
                 self.notes_modal_dragging_selection = False
                 self.games_modal_dragging_icon = None
+                self.hard_drive_modal_dragging_icon = None
+                self.system_folder_modal_dragging_icon = None
+                self.terminal_dragging = False
+                for win in self.terminal_file_windows:
+                    if win.get("dragging"):
+                        win["dragging"] = False
                 # Stop dragging all icons
                 for icon in self.icons:
                     if icon["dragging"]:
@@ -988,6 +1453,37 @@ class OSMode:
                         return True
         
         elif event.type == pygame.MOUSEWHEEL:
+            mouse_x, mouse_y = pygame.mouse.get_pos()
+            # Handle mouse wheel for terminal file windows (top-most first)
+            for win in reversed(self.terminal_file_windows):
+                r = win.get("rect")
+                if r and r.collidepoint(mouse_x, mouse_y):
+                    scroll_amount = int(event.y * 2)
+                    win["scroll"] = max(0, min(win["scroll"] - scroll_amount, max(0, len(win["content"]) - 1)))
+                    return True
+            # Handle mouse wheel scrolling for mail modal
+            if "mail" in self.active_modals:
+                modal_x, modal_y = self.modal_positions.get("mail", (0, 0))
+                modal_w, modal_h = self._get_modal_size("mail")
+                modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
+                modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
+                mouse_x, mouse_y = pygame.mouse.get_pos()
+                if modal_rect.collidepoint(mouse_x, mouse_y):
+                    if self.mail_view in ("inbox", "outbox", "trash", "reading"):
+                        scroll_amount = int(event.y * 3)
+                        self.mail_scroll_offset = max(0, self.mail_scroll_offset - scroll_amount)
+                        return True
+                    elif self.mail_view == "connect":
+                        scroll_amount = int(event.y * 3)
+                        max_scroll = max(0, len(self.mail_connect_terminal_lines) - 15)
+                        self.mail_connect_terminal_scroll = max(0, min(
+                            self.mail_connect_terminal_scroll + scroll_amount, max_scroll
+                        ))
+                        return True
+                    elif self.mail_view == "settings":
+                        scroll_amount = int(event.y * 20)
+                        self.mail_settings_scroll = max(0, self.mail_settings_scroll - scroll_amount)
+                        return True
             # Handle mouse wheel scrolling for notes modal
             if "notes" in self.active_modals and not self.notes_modal_edit_mode:
                 modal_x, modal_y = self.modal_positions.get("notes", (0, 0))
@@ -1003,9 +1499,30 @@ class OSMode:
                     return True
         
         elif event.type == pygame.KEYDOWN:
+            # OS-level region hotkeys (A=US Mainland, S=Europe, D=Pacifica) - only when desktop visible
+            if not self.active_modals:
+                if event.key == pygame.K_a:
+                    self._switch_os_region(1)
+                    return True
+                elif event.key == pygame.K_s:
+                    self._switch_os_region(2)
+                    return True
+                elif event.key == pygame.K_d:
+                    self._switch_os_region(3)
+                    return True
+
+            # Handle terminal keyboard input only when terminal is top-most
+            if self.active_modals and self.active_modals[-1] == "terminal":
+                if self._handle_terminal_keydown(event):
+                    return True
+            
             # Handle keyboard input for modals in z-order (top-most first)
             for modal_name in reversed(self.active_modals):
-                if modal_name == "notes":
+                if modal_name == "dot_sonic" and self.dot_sonic_app and self.dot_sonic_app.active:
+                    if self.dot_sonic_app.handle_event(event):
+                        return True
+                    break
+                elif modal_name == "notes":
                     if self.notes_modal_edit_mode:
                         if self._notes_handle_keydown(event):
                             return True
@@ -1014,10 +1531,18 @@ class OSMode:
                         if self._notes_handle_view_scroll(event):
                             return True
                     break  # Notes modal captured focus but didn't handle key
+                elif modal_name == "mail" and self.mail_view in ("compose", "settings"):
+                    if self._mail_handle_keydown(event):
+                        return True
+                    break  # Mail modal captured focus
                 elif modal_name == "modem" and not self.modem_modal_connection_started:
                     if self._modem_handle_keydown(event):
                         return True
                     break  # Modem modal captured focus but didn't handle key
+
+        # In OS mode, ESC must never open the BBS - consume any unhandled ESC
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            return True
 
         elif event.type == pygame.TEXTINPUT:
             # Handle text input for modals in z-order (top-most first)
@@ -1026,6 +1551,10 @@ class OSMode:
                     if self._notes_handle_textinput(event.text):
                         return True
                     break  # Notes modal captured focus but didn't handle text
+                elif modal_name == "mail" and self.mail_view in ("compose", "settings"):
+                    if self._mail_handle_textinput(event.text):
+                        return True
+                    break  # Mail modal captured focus
                 elif modal_name == "modem" and not self.modem_modal_connection_started:
                     if self._modem_handle_textinput(event.text):
                         return True
@@ -1052,6 +1581,23 @@ class OSMode:
         elif modal_name == "games":
             modal_w = int(560 * self.scale)
             modal_h = int(420 * self.scale) + self.modal_title_bar_height
+        elif modal_name == "hard_drive":
+            modal_w = int(400 * self.scale)
+            modal_h = int(300 * self.scale) + self.modal_title_bar_height
+        elif modal_name == "system_folder":
+            modal_w = int(400 * self.scale)
+            modal_h = int(300 * self.scale) + self.modal_title_bar_height
+        elif modal_name == "file_system_browser":
+            modal_w = int(480 * self.scale)
+            modal_h = int(360 * self.scale) + self.modal_title_bar_height
+        elif modal_name == "mail":
+            modal_w = int(780 * self.scale)
+            modal_h = int(580 * self.scale) + self.modal_title_bar_height
+        elif modal_name == "terminal":
+            modal_w = int(665 * self.scale)
+            modal_h = int(375 * self.scale)
+        elif modal_name == "dot_sonic" and self.dot_sonic_app and self.dot_sonic_app.active and self.dot_sonic_app.window_rect:
+            return self.dot_sonic_app.window_rect.size
         else:
             # Default dimensions
             modal_w = int(400 * self.scale)
@@ -1071,17 +1617,50 @@ class OSMode:
             stored_y = max(self.desktop_y, min(stored_y, max_y))
             return (stored_x, stored_y)
         
-        # Position modal with margin from desktop edges
-        margin = int(50 * self.scale)
-        modal_x = self.desktop_x + margin
-        modal_y = self.desktop_y + margin
+        # Datasette (tape) modal uses original positioning - don't move it
+        if modal_name == "tape":
+            # Position modal with margin from desktop edges (original behavior)
+            margin = int(50 * self.scale)
+            modal_x = self.desktop_x + margin
+            modal_y = self.desktop_y + margin
+            
+            # Ensure modal doesn't extend beyond desktop boundaries
+            max_x = self.desktop_x + self.desktop_size[0] - modal_w - margin
+            max_y = self.desktop_y + self.desktop_size[1] - modal_h - margin
+            
+            modal_x = max(self.desktop_x + margin, min(modal_x, max_x))
+            modal_y = max(self.desktop_y + margin, min(modal_y, max_y))
+            
+            return (modal_x, modal_y)
+        
+        # For all other modals: count how many are open (excluding tape) to determine position
+        screen_w, screen_h = self.screen.get_size()
+        
+        # Count active modals excluding tape and the current one (if it's already in the list)
+        other_modals_count = 0
+        for other_modal_name in self.active_modals:
+            if other_modal_name != "tape" and other_modal_name != modal_name:
+                other_modals_count += 1
+        
+        # First modal (excluding tape): 15% from left, 18% from top
+        # Second modal (excluding tape): 22% from left, 23% from top
+        if other_modals_count == 0:
+            # First modal
+            modal_x = int(screen_w * 0.15)
+            modal_y = int(screen_h * 0.18)
+        else:
+            # Second modal (or more - they all use the second position for now)
+            modal_x = int(screen_w * 0.22)
+            modal_y = int(screen_h * 0.23)
         
         # Ensure modal doesn't extend beyond desktop boundaries
-        max_x = self.desktop_x + self.desktop_size[0] - modal_w - margin
-        max_y = self.desktop_y + self.desktop_size[1] - modal_h - margin
+        max_x = self.desktop_x + self.desktop_size[0] - modal_w
+        max_y = self.desktop_y + self.desktop_size[1] - modal_h
+        min_x = self.desktop_x
+        min_y = self.desktop_y
         
-        modal_x = max(self.desktop_x + margin, min(modal_x, max_x))
-        modal_y = max(self.desktop_y + margin, min(modal_y, max_y))
+        modal_x = max(min_x, min(modal_x, max_x))
+        modal_y = max(min_y, min(modal_y, max_y))
         
         return (modal_x, modal_y)
     
@@ -1095,6 +1674,16 @@ class OSMode:
     
     def _open_modal(self, modal_name: str):
         """Ensure a modal is active, positioned, and top-most."""
+        if modal_name == "terminal":
+            if modal_name not in self.active_modals:
+                self.active_modals.append(modal_name)
+            self._focus_modal(modal_name)
+            return
+        if modal_name == "dot_sonic":
+            if modal_name not in self.active_modals:
+                self.active_modals.append(modal_name)
+            self._focus_modal(modal_name)
+            return  # dotSONIC manages its own window position
         if modal_name not in self.active_modals:
             self.active_modals.append(modal_name)
         # Always bring to front when (re)opening
@@ -1365,6 +1954,22 @@ class OSMode:
                     "Handshaking...",
                     "Packets found!",
                     "Routing to ECHO CHAMBER...",
+                    "Connection established!"
+                ],
+                "delays": [2.1, 2.1, 4.0, 4.0, 3.0, 4.0, 3.0],
+            }
+
+        if self.has_token("NEVERAGAINBBS"):
+            connections["0340899891"] = {
+                "target": "never_again",
+                "number": "0340899891",
+                "messages": [
+                    "Initializing modem connection...",
+                    "Dialing 0340899891...",
+                    "Establishing connection...",
+                    "Handshaking...",
+                    "Packets found!",
+                    "Routing to NEVER AGAIN...",
                     "Connection established!"
                 ],
                 "delays": [2.1, 2.1, 4.0, 4.0, 3.0, 4.0, 3.0],
@@ -1758,7 +2363,8 @@ class OSMode:
                             health_monitor_y,
                             self.bbs_x or 0,
                             self.bbs_width or 0,
-                            self.get_radio_music
+                            self.get_radio_music,
+                            exit_app_callback=self._civitas_quit_return_to_desktop,
                         )
                         self.civitas_game.start()
                     except Exception as e:
@@ -1769,7 +2375,7 @@ class OSMode:
             print(f"{icon_name.title()} is not available yet.")
 
     def _play_modem_dial_sound(self) -> None:
-        """Play dialup.wav on successful connection, interrupting other music if needed."""
+        """Play dialup.wav - mixes with background music (does not stop it)."""
         if not pygame.mixer.get_init():
             try:
                 pygame.mixer.init()
@@ -1777,11 +2383,7 @@ class OSMode:
                 print("Warning: Could not initialize mixer for dialup.wav")
                 return
         try:
-            # Stop any currently playing music
-            if pygame.mixer.music.get_busy():
-                pygame.mixer.music.stop()
-            
-            # Stop any currently playing sounds (including this one if already playing)
+            # Do NOT stop music - dialup plays on a sound channel, mixes with music
             if self.modem_dial_sound:
                 try:
                     self.modem_dial_sound.stop()
@@ -2159,13 +2761,15 @@ class OSMode:
     
     def _stop_tape_video(self):
         """Stop playing the tape video."""
+        was_playing = self.tape_modal_video_playing
         self.tape_modal_video_playing = False
         if self.tape_modal_video_cap:
             self.tape_modal_video_cap.release()
             self.tape_modal_video_cap = None
         self.tape_modal_video_frame = None
-        # Stop audio playback
-        if pygame.mixer.music.get_busy():
+        # Only stop music if the Datasette video was actually playing
+        # (avoids killing pirate radio or other audio)
+        if was_playing and pygame.mixer.music.get_busy():
             pygame.mixer.music.stop()
         self.tape_modal_video_audio_channel = None
         # Reset fade state
@@ -2240,11 +2844,117 @@ class OSMode:
             if self.modem_modal_error_timer <= 0:
                 self.modem_modal_error_message = ""
 
+        # Decay BRADSONIC-MAIL status message timer
+        if self.mail_status_timer > 0:
+            self.mail_status_timer = max(0.0, self.mail_status_timer - dt)
+            if self.mail_status_timer <= 0:
+                self.mail_status_message = ""
+
+        # BRADSONIC-MAIL: connect button technobabble then CONNECTED (legacy flow)
+        if self.mail_connect_phase == "connecting" and self.mail_connect_technobabble_timer >= 0:
+            self.mail_connect_technobabble_timer -= dt
+            if self.mail_connect_technobabble_timer <= 0:
+                self.mail_connect_phase = "connected"
+                self.mail_server_connected = True
+                outbox = self.get_mail_outbox()
+                sent_im_in_to_rain = any(
+                    (msg.get("recipient", "") or "").strip().lower() == "rain@ciphernet.net"
+                    and "i'm in" in ((msg.get("subject", "") or "").lower())
+                    for msg in outbox
+                )
+                for msg in outbox:
+                    self.send_mail(msg.get("recipient", ""), msg.get("subject", ""), msg.get("body", ""))
+                self.save_mail_outbox([])
+                if sent_im_in_to_rain:
+                    self.mail_rain_delivery_timer = 30.0  # Rain's reply takes at least 30 sec
+
+        # BRADSONIC-MAIL: deliver Rain reply (only when "I'm in" was sent to Rain)
+        if self.mail_rain_delivery_timer > 0:
+            self.mail_rain_delivery_timer -= dt
+            if self.mail_rain_delivery_timer <= 0:
+                username, _ = self.get_user_credentials()
+                rain_email = {
+                    "id": f"rain_{int(time.time())}",
+                    "sender": "rain@ciphernet.net",
+                    "recipient": self.mail_settings.get("mail_from", "user@bradsonic.net"),
+                    "subject": RAIN_REPLY_SUBJECT,
+                    "body": _get_rain_reply_body(username),
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "read": False,
+                }
+                self.mail_local_inbox.insert(0, rain_email)
+                self.save_inbox_emails(self.mail_local_inbox)
+                self.play_mail_sound()
+                self.mail_rain_delivery_timer = -1.0
+
+        # Mail pulse timer for COMPOSE / SEND
+        self.mail_pulse_timer += dt
+
+        # BRADSONIC-MAIL CONNECT view: terminal sequence (Modem detected → Line detected → Dial up → send/receive)
+        if (self.mail_view == "connect" and self._mail_connect_steps and
+                self.mail_connect_terminal_line_index < len(self._mail_connect_steps)):
+            self.mail_connect_terminal_timer -= dt
+            if self.mail_connect_terminal_timer <= 0:
+                line, delay, action = self._mail_connect_steps[self.mail_connect_terminal_line_index]
+                if action == "play_dialup":
+                    self._play_modem_dial_sound()
+                    self.mail_connect_dialup_started = True
+                elif action == "do_send":
+                    outbox = self.get_mail_outbox()
+                    self._mail_sent_im_in_to_rain = any(
+                        (m.get("recipient", "") or "").strip().lower() == "rain@ciphernet.net"
+                        and "i'm in" in ((m.get("subject", "") or "").lower())
+                        for m in outbox
+                    )
+                    for msg in outbox:
+                        self.send_mail(msg.get("recipient", ""), msg.get("subject", ""), msg.get("body", ""))
+                    self.save_mail_outbox([])
+                elif action == "do_receive":
+                    inbox_before = len(self.mail_local_inbox)
+                    if self._mail_sent_im_in_to_rain:
+                        username, _ = self.get_user_credentials()
+                        rain_email = {
+                            "id": f"rain_{int(time.time())}",
+                            "sender": "rain@ciphernet.net",
+                            "recipient": self.mail_settings.get("mail_from", "user@bradsonic.net"),
+                            "subject": RAIN_REPLY_SUBJECT,
+                            "body": _get_rain_reply_body(username),
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            "read": False,
+                        }
+                        self.mail_local_inbox.insert(0, rain_email)
+                        self.save_inbox_emails(self.mail_local_inbox)
+                        self.play_mail_sound()
+                    new_count = len(self.mail_local_inbox) - inbox_before
+                    line = f"New mail found: {new_count} message(s)." if new_count > 0 else "No new mail."
+                elif action == "complete":
+                    self.mail_server_connected = True
+                    self.mail_connect_terminal_complete = True
+                if line and line != "PLACEHOLDER_RECEIVE":
+                    self.mail_connect_terminal_lines.append(line)
+                self.mail_connect_terminal_line_index += 1
+                if self.mail_connect_terminal_line_index < len(self._mail_connect_steps):
+                    self.mail_connect_terminal_timer = delay
+                else:
+                    self.mail_connect_terminal_timer = 0.0
+
         # Update cursor blink timer for notes modal
         if "notes" in self.active_modals and self.notes_modal_edit_mode:
             self.notes_modal_cursor_blink_timer += dt
             if self.notes_modal_cursor_blink_timer > 1.0:
                 self.notes_modal_cursor_blink_timer = 0.0
+        
+        # Update terminal cursor blink timer
+        if self.terminal_active:
+            if self.terminal_mode == "command":
+                self.terminal_cursor_blink_timer += dt
+                blink_interval = 0.5  # Blink every 0.5 seconds
+                if self.terminal_cursor_blink_timer >= blink_interval:
+                    self.terminal_cursor_blink_timer -= blink_interval
+                    self.terminal_cursor_visible = not self.terminal_cursor_visible
+            else:
+                # Don't blink cursor in menu/message modes
+                self.terminal_cursor_visible = False
         
         # Stop video if modal is closed (but keep recording flag)
         # However, if recording is active, allow video to continue playing even if modal is closed
@@ -2299,6 +3009,9 @@ class OSMode:
                             self.modem_modal_should_exit_os = True
                         elif target == "echo_chamber":
                             self.modem_modal_external_bbs = "echo_chamber"
+                            self.modem_modal_should_exit_os = True
+                        elif target == "never_again":
+                            self.modem_modal_external_bbs = "never_again"
                             self.modem_modal_should_exit_os = True
                         else:
                             self.modem_modal_should_reset_bbs = True
@@ -2418,10 +3131,18 @@ class OSMode:
         self.screen.blit(self.desktop_image, (self.desktop_x, self.desktop_y))
         
         # Draw icons (use selected "S" version if selected, otherwise normal version)
+        # Mail icon only visible in US Mainland (os_locale == 1); hidden in Europe and Pacifica
+        # dotSONIC icon only visible in Europe and US Mainland; hidden in Pacifica
         for icon in self.icons:
+            if icon["name"] == "mail-icon.png" and self.os_locale != 1:
+                continue
+            if icon["name"] == "sonic-icon.png" and self.os_locale == 3:
+                continue
             # Use S version if selected, otherwise normal version
             icon_to_draw = icon["s_image"] if icon["selected"] else icon["image"]
             self.screen.blit(icon_to_draw, (icon["x"], icon["y"]))
+            # Label under icon (same font/colour/size/gap as file system; center-aligned)
+            self._draw_label_under_icon(icon["x"], icon["y"], icon["width"], icon["height"], icon.get("label", ""))
         
         # Draw clock (on same layer as icons, before modals)
         self._draw_clock()
@@ -2439,6 +3160,22 @@ class OSMode:
                 self._draw_notes_modal()
             elif modal_name == "games":
                 self._draw_games_modal()
+            elif modal_name == "hard_drive":
+                self._draw_hard_drive_modal()
+            elif modal_name == "system_folder":
+                self._draw_system_folder_modal()
+            elif modal_name == "file_system_browser":
+                self._draw_file_system_browser_modal()
+            elif modal_name == "mail":
+                self._draw_mail_modal()
+            elif modal_name == "terminal":
+                self._draw_terminal()
+            elif modal_name == "dot_sonic" and self.dot_sonic_app and self.dot_sonic_app.active:
+                self.dot_sonic_app.draw()
+        
+        # Draw terminal file windows (multiple .brad file viewers)
+        for win in self.terminal_file_windows:
+            self._draw_terminal_file_window(win)
 
         if self.chess_game and self.chess_game.active:
             self.chess_game.draw()
@@ -2619,7 +3356,26 @@ class OSMode:
             pass
         
         # Note: Video drawing moved to draw_tape_video() method to be called after scanlines/overlay
-    
+
+    def _get_harddisk_usage_mb(self) -> Tuple[float, float]:
+        """Calculate hard disk used space. .sonic = 1MB, .brad = 0.05MB. Total 50MB.
+        .sonic = virtual downloads (Fugamatchi) + physical .mp3/.wav in FILE-SYSTEM.
+        Returns (used_mb, total_mb)."""
+        TOTAL_MB = 50
+        sonic_count = len(self.get_downloaded_fugamatchi_tracks())
+        brad_count = 0
+        base_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "FILE-SYSTEM")
+        if os.path.isdir(base_path):
+            for _root, _dirs, files in os.walk(base_path):
+                for f in files:
+                    lower = f.lower()
+                    if lower.endswith(".txt"):
+                        brad_count += 1
+                    elif lower.endswith((".mp3", ".wav")):
+                        sonic_count += 1
+        used_mb = sonic_count * 1.0 + brad_count * 0.05  # 1MB per sonic, 0.05MB per brad
+        return (used_mb, TOTAL_MB)
+
     def _draw_clock(self):
         """Draw the BRADSONIC 69000 Health Monitor in OS mode."""
         if self.bbs_x is None or self.bbs_y is None or self.bbs_width is None:
@@ -2694,12 +3450,15 @@ class OSMode:
         system_label_surface = status_font.render(system_label, True, COLOR_CYAN)
         system_value_surface = status_font.render("OPERATIONAL", True, COLOR_GREEN)
         
-        # HardDisk: label in cyan, first value in red, second value in green
+        # HardDisk: label in cyan, remaining in red, total (50mb) in green
+        # .sonic = 1MB, .brad = 0.05MB; total 50MB. Always whole numbers.
+        used_mb, total_mb = self._get_harddisk_usage_mb()
+        remaining_mb = max(0, total_mb - used_mb)
+        harddisk_used = f"{round(remaining_mb):.0f}mb"
+        harddisk_free = f"/{round(total_mb):.0f}mb"
         harddisk_label = "  HardDisk: "
         harddisk_label_surface = status_font.render(harddisk_label, True, COLOR_CYAN)
-        harddisk_used = "50mb"
         harddisk_used_surface = status_font.render(harddisk_used, True, COLOR_RED)
-        harddisk_free = "/50mb"
         harddisk_free_surface = status_font.render(harddisk_free, True, COLOR_GREEN)
         
         # LAPC-1: label in cyan, status in red if inactive, green if activated
@@ -2718,7 +3477,13 @@ class OSMode:
         network_label_surface = status_font.render(network_label, True, COLOR_CYAN)
         network_value_surface = status_font.render(network_status, True, network_color)
         
-        # Calculate max width (in order: System, HardDisk, LAPC-1, Datasette, Network)
+        # Locale: saved region (PACIFICA / US MAINLAND / EUROPE)
+        locale_label = "  Locale: "
+        locale_value = "PACIFICA" if self.os_locale == 3 else "US MAINLAND" if self.os_locale == 1 else "EUROPE"
+        locale_label_surface = status_font.render(locale_label, True, COLOR_CYAN)
+        locale_value_surface = status_font.render(locale_value, True, COLOR_GREEN)
+        
+        # Calculate max width (in order: System, HardDisk, LAPC-1, Datasette, Network, Locale)
         max_width = max(
             title_surface.get_width(),
             status_label_surface.get_width(),
@@ -2726,7 +3491,8 @@ class OSMode:
             harddisk_label_surface.get_width() + harddisk_used_surface.get_width() + harddisk_free_surface.get_width(),
             lapc1_label_surface.get_width() + lapc1_status_surface.get_width(),
             datasette_label_surface.get_width() + datasette_status_surface.get_width(),
-            network_label_surface.get_width() + network_value_surface.get_width()
+            network_label_surface.get_width() + network_value_surface.get_width(),
+            locale_label_surface.get_width() + locale_value_surface.get_width()
         )
         
         # Calculate heights
@@ -2735,7 +3501,7 @@ class OSMode:
         time_bar_height = int(20 * self.scale)
         box_padding = int(12 * self.scale)
         
-        # Content height (status lines in order: System, HardDisk, LAPC-1, Datasette, Network)
+        # Content height (status lines in order: System, HardDisk, LAPC-1, Datasette, Network, Locale)
         content_height = (
             status_label_surface.get_height() + int(4 * self.scale) +  # Status label + spacing
             line_height +  # System
@@ -2743,7 +3509,8 @@ class OSMode:
             line_height +  # LAPC-1
             line_height +  # Datasette
             line_height +  # Network
-            int(20 * self.scale) +  # Padding under Network status (20px)
+            line_height +  # Locale
+            int(20 * self.scale) +  # Padding under Locale status (20px)
             int(4 * self.scale)  # Extra spacing before time bar
         )
         
@@ -2810,6 +3577,12 @@ class OSMode:
         self.screen.blit(network_label_surface, (text_x, text_y))
         network_value_x = text_x + network_label_surface.get_width()
         self.screen.blit(network_value_surface, (network_value_x, text_y))
+        text_y += line_height
+        
+        # Locale (label cyan, value green) - Sixth
+        self.screen.blit(locale_label_surface, (text_x, text_y))
+        locale_value_x = text_x + locale_label_surface.get_width()
+        self.screen.blit(locale_value_surface, (locale_value_x, text_y))
         text_y += int(4 * self.scale)
         
         # Draw time bar at bottom (similar shaded section as title)
@@ -2892,8 +3665,10 @@ class OSMode:
         system_value_surface = status_font.render("OPERATIONAL", True, COLOR_GREEN)
         harddisk_label = "  HardDisk: "
         harddisk_label_surface = status_font.render(harddisk_label, True, COLOR_CYAN)
-        harddisk_used_surface = status_font.render("50mb", True, COLOR_RED)
-        harddisk_free_surface = status_font.render("/50mb", True, COLOR_GREEN)
+        used_mb, total_mb = self._get_harddisk_usage_mb()
+        remaining_mb = max(0, total_mb - used_mb)
+        harddisk_used_surface = status_font.render(f"{round(remaining_mb):.0f}mb", True, COLOR_RED)
+        harddisk_free_surface = status_font.render(f"/{round(total_mb):.0f}mb", True, COLOR_GREEN)
         lapc1_label = "  LAPC-1 Soundcard: "
         lapc1_label_surface = status_font.render(lapc1_label, True, COLOR_CYAN)
         lapc1_status_surface = status_font.render("ACTIVE", True, COLOR_GREEN)
@@ -2903,10 +3678,13 @@ class OSMode:
         network_label = "  Network: "
         network_label_surface = status_font.render(network_label, True, COLOR_CYAN)
         network_value_surface = status_font.render("DISCONNECTED", True, COLOR_GREY)
+        locale_label = "  Locale: "
+        locale_label_surface = status_font.render(locale_label, True, COLOR_CYAN)
+        locale_value_surface = status_font.render("PACIFICA", True, COLOR_GREEN)
         health_title_text = "BRADSONIC 69000 Health Monitor"
         health_title_surface = title_font.render(health_title_text, True, COLOR_WHITE)
         
-        # Calculate max width (same as health monitor)
+        # Calculate max width (same as health monitor, including Locale)
         health_max_width = max(
             health_title_surface.get_width(),
             status_label_surface.get_width(),
@@ -2914,7 +3692,8 @@ class OSMode:
             harddisk_label_surface.get_width() + harddisk_used_surface.get_width() + harddisk_free_surface.get_width(),
             lapc1_label_surface.get_width() + lapc1_status_surface.get_width(),
             datasette_label_surface.get_width() + datasette_status_surface.get_width(),
-            network_label_surface.get_width() + network_value_surface.get_width()
+            network_label_surface.get_width() + network_value_surface.get_width(),
+            locale_label_surface.get_width() + locale_value_surface.get_width()
         )
         health_monitor_box_width = health_max_width + 2 * box_padding
         
@@ -2924,7 +3703,7 @@ class OSMode:
         health_monitor_box_x = self.bbs_x + self.bbs_width - health_monitor_box_width - health_monitor_padding + health_monitor_offset_right
         health_monitor_box_y = self.bbs_y + int(10 * self.scale)
         
-        # Calculate health monitor height
+        # Calculate health monitor height (including Locale line)
         line_height = status_font.get_height() + int(2 * self.scale)
         health_monitor_content_height = (
             status_label_surface.get_height() + int(4 * self.scale) +  # Status label + spacing
@@ -2933,7 +3712,8 @@ class OSMode:
             line_height +  # LAPC-1
             line_height +  # Datasette
             line_height +  # Network
-            int(20 * self.scale) +  # Padding under Network status
+            line_height +  # Locale
+            int(20 * self.scale) +  # Padding under Locale status
             int(4 * self.scale)  # Extra spacing before time bar
         )
         health_monitor_height = title_bar_height + health_monitor_content_height + time_bar_height
@@ -3414,7 +4194,6 @@ class OSMode:
             # This ensures icons are properly spaced even if initial positioning had issues
             self._fix_overlapping_games_icons()
 
-        label_font = pygame.font.Font(None, max(int(14 * self.scale), 10))
         for icon in self.games_modal_icons:
             icon["rel_x"] = max(0, min(icon["rel_x"], max(0, inner_rect.width - icon["width"])))
             icon["rel_y"] = max(0, min(icon["rel_y"], max(0, inner_rect.height - icon["height"])))
@@ -3423,7 +4202,9 @@ class OSMode:
             image = icon["s_image"] if icon["selected"] else icon["image"]
             self.screen.blit(image, (draw_x, draw_y))
             icon["rect"] = pygame.Rect(draw_x, draw_y, icon["width"], icon["height"])
-            icon["label"] = icon["label"]  # Preserve data even though not rendered
+            # Label under icon (same font/colour/size/gap as file system; center-aligned; uppercase for consistency)
+            label_text = (icon.get("label") or "").upper()
+            self._draw_label_under_icon(draw_x, draw_y, icon["width"], icon["height"], label_text)
 
     def _draw_notes_modal(self):
         """Draw the revamped notes application modal."""
@@ -3481,16 +4262,20 @@ class OSMode:
         self._ensure_notes_tab_index(notes)
 
         gap = int(10 * self.scale)
-        tab_height = int(30 * self.scale)
+        tab_height = int(38 * self.scale)  # Taller tabs (was 30)
         tab_area_y = modal_y + self.modal_title_bar_height + gap
         max_tabs = min(10, len(notes) + 1)
         tab_width = (modal_w - 2 * gap) // max_tabs if max_tabs > 0 else 0
         tab_start_x = modal_x + gap
 
-        try:
-            tab_font = pygame.font.SysFont("Segoe Script", max(int(14 * self.scale), 10))
-        except Exception:
-            tab_font = pygame.font.Font(None, max(int(14 * self.scale), 10))
+        # Cache tab font by scale to avoid recreating every frame (FPS fix)
+        if getattr(self, "_notes_tab_font_scale", None) != self.scale:
+            try:
+                self._notes_tab_font = pygame.font.SysFont("Segoe Script", max(int(14 * self.scale), 10))
+            except Exception:
+                self._notes_tab_font = pygame.font.Font(None, max(int(14 * self.scale), 10))
+            self._notes_tab_font_scale = self.scale
+        tab_font = self._notes_tab_font
 
         for i in range(max_tabs):
             tab_x = tab_start_x + i * tab_width
@@ -3502,19 +4287,18 @@ class OSMode:
             pygame.draw.rect(self.screen, COLOR_CYAN, tab_rect, 2 if is_selected else 1)
             pygame.draw.rect(self.screen, COLOR_CYAN, tab_rect, 1)
 
-            label = "+ New" if i >= len(notes) else notes[i].get("title", "Untitled")
-            lines = self._wrap_text_lines(label, tab_font, max(tab_rect.width - int(8 * self.scale), 1))[:2]
-            if not lines:
-                lines = [label]
+            label = "+ New" if i >= len(notes) else (notes[i].get("title", "Untitled") or "Untitled")[:NOTESTAB_TITLE_MAX_LEN]
+            max_label_w = max(1, tab_rect.width - int(8 * self.scale))
+            # Single line only: truncate with ellipsis if too wide (no 2nd row ever)
+            if tab_font.size(label)[0] > max_label_w:
+                while label and tab_font.size(label + "...")[0] > max_label_w:
+                    label = label[:-1]
+                label = (label or "") + "..."
             line_height = tab_font.get_height()
-            total_height = line_height * len(lines)
-            text_y = tab_rect.y + (tab_rect.height - total_height) // 2
-
-            for line in lines:
-                text_surface = tab_font.render(line, True, COLOR_CYAN)
-                text_x = tab_rect.x + int(4 * self.scale)
-                self.screen.blit(text_surface, (text_x, text_y))
-                text_y += line_height
+            text_y = tab_rect.y + (tab_rect.height - line_height) // 2
+            text_surface = tab_font.render(label, True, COLOR_CYAN)
+            text_x = tab_rect.x + int(4 * self.scale)
+            self.screen.blit(text_surface, (text_x, text_y))
 
             self.notes_modal_hitboxes["tabs"].append((tab_rect, i))
 
@@ -3535,6 +4319,1241 @@ class OSMode:
         else:
             self._draw_note_view(note, content_area_rect, modal_x, modal_y, modal_w)
         
+    # -------------------------------------------------------------------------
+    # BRADSONIC-MAIL Client
+    # -------------------------------------------------------------------------
+
+    def _draw_mail_modal(self):
+        """Draw the BRADSONIC-MAIL email client modal."""
+        modal_w, modal_h = self._get_modal_size("mail")
+        modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
+        modal_x, modal_y = self.modal_positions.get("mail", self._get_modal_position(modal_w, modal_h, "mail"))
+        if "mail" not in self.modal_positions:
+            self.modal_positions["mail"] = (modal_x, modal_y)
+
+        gap = int(10 * self.scale)
+        font_size = max(int(16 * self.scale), 12)
+
+        # Cache fonts - content fonts are 2x the original for readability
+        if getattr(self, "_mail_font_scale", None) != self.scale:
+            self._mail_title_font = pygame.font.Font(None, max(int(20 * self.scale), 14))
+            self._mail_tagline_font = pygame.font.Font(None, max(int(12 * self.scale), 9))
+            self._mail_menu_font = pygame.font.Font(None, font_size)
+            # Content fonts: 200% of the original sizes for inbox/compose/reading
+            self._mail_body_font = pygame.font.Font(None, max(int(26 * self.scale), 18))
+            self._mail_small_font = pygame.font.Font(None, max(int(22 * self.scale), 16))
+            # Settings page uses a smaller font to fit the dense controls
+            self._mail_settings_font = pygame.font.Font(None, max(int(15 * self.scale), 11))
+            self._mail_font_scale = self.scale
+
+        # -- Window frame --
+        modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
+        pygame.draw.rect(self.screen, COLOR_BG_DARK, modal_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, modal_rect, 2)
+
+        # -- Title bar --
+        title_bar_rect = pygame.Rect(modal_x, modal_y, modal_w, self.modal_title_bar_height)
+        pygame.draw.rect(self.screen, COLOR_BG_TITLE, title_bar_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, title_bar_rect, 1)
+
+        title_text = self._mail_title_font.render("BRADSONIC-MAIL", True, COLOR_CYAN)
+        self.screen.blit(title_text, (modal_x + int(10 * self.scale), modal_y + int(5 * self.scale)))
+
+        # Close button
+        close_btn_size = int(20 * self.scale)
+        close_btn_x = modal_x + modal_w - close_btn_size - int(5 * self.scale)
+        close_btn_y = modal_y + int(5 * self.scale)
+        close_btn_rect = pygame.Rect(close_btn_x, close_btn_y, close_btn_size, close_btn_size)
+        is_hovered = self.hovered_button == ("mail", "title_close")
+        close_color = COLOR_RED if is_hovered else COLOR_RED_DARK
+        pygame.draw.rect(self.screen, close_color, close_btn_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, close_btn_rect, 1)
+        close_font = pygame.font.Font(None, max(int(14 * self.scale), 10))
+        close_text = close_font.render("X", True, COLOR_WHITE)
+        close_text_rect = close_text.get_rect(center=close_btn_rect.center)
+        self.screen.blit(close_text, close_text_rect)
+
+        y_cursor = modal_y + self.modal_title_bar_height
+
+        # -- Tagline bar --
+        tagline_h = int(18 * self.scale)
+        tagline_rect = pygame.Rect(modal_x, y_cursor, modal_w, tagline_h)
+        pygame.draw.rect(self.screen, (15, 15, 35), tagline_rect)
+        pygame.draw.line(self.screen, COLOR_CYAN, (modal_x, y_cursor + tagline_h), (modal_x + modal_w, y_cursor + tagline_h), 1)
+        tagline_surf = self._mail_tagline_font.render("Interconnecting the American Mainland and beyond!", True, COLOR_AMBER)
+        tagline_x = modal_x + (modal_w - tagline_surf.get_width()) // 2
+        self.screen.blit(tagline_surf, (tagline_x, y_cursor + (tagline_h - tagline_surf.get_height()) // 2))
+        y_cursor += tagline_h
+
+        # -- Menu bar: COMPOSE | INBOX | OUTBOX | TRASH | SETTINGS --
+        menu_h = int(28 * self.scale)
+        menu_rect = pygame.Rect(modal_x, y_cursor, modal_w, menu_h)
+        pygame.draw.rect(self.screen, (30, 30, 55), menu_rect)
+        pygame.draw.line(self.screen, COLOR_CYAN, (modal_x, y_cursor + menu_h), (modal_x + modal_w, y_cursor + menu_h), 1)
+
+        menu_items = ["COMPOSE", "INBOX", "OUTBOX", "TRASH", "CONNECT", "SETTINGS"]
+        menu_view_map = {"COMPOSE": "compose", "INBOX": "inbox", "OUTBOX": "outbox", "TRASH": "trash", "CONNECT": "connect", "SETTINGS": "settings"}
+        menu_btn_w = int(72 * self.scale)
+        menu_start_x = modal_x + gap
+        self._mail_menu_hitboxes = []
+
+        for i, label in enumerate(menu_items):
+            btn_x = menu_start_x + i * (menu_btn_w + int(4 * self.scale))
+            btn_rect = pygame.Rect(btn_x, y_cursor + int(3 * self.scale), menu_btn_w, menu_h - int(6 * self.scale))
+            is_active = self.mail_view == menu_view_map[label] or (self.mail_view == "reading" and label == "INBOX") or (self.mail_view == "connect" and label == "CONNECT")
+            is_hover = self.hovered_button == ("mail", f"menu_{label}")
+            # Pulse COMPOSE when viewing inbox (guide player to compose first)
+            pulse_compose = label == "COMPOSE" and self.mail_view == "inbox"
+            pulse_alpha = 0.5 + 0.5 * math.sin(self.mail_pulse_timer * 3.0) if pulse_compose else 0.0
+
+            if is_active:
+                pygame.draw.rect(self.screen, (60, 60, 100), btn_rect)
+                pygame.draw.rect(self.screen, COLOR_CYAN, btn_rect, 2)
+            elif is_hover:
+                pygame.draw.rect(self.screen, (45, 45, 75), btn_rect)
+                pygame.draw.rect(self.screen, COLOR_CYAN, btn_rect, 1)
+            else:
+                pygame.draw.rect(self.screen, COLOR_CYAN, btn_rect, 1)
+            if pulse_alpha > 0:
+                pulse_color = (int(0 + pulse_alpha * 0), int(200 + pulse_alpha * 55), int(255))
+                pygame.draw.rect(self.screen, pulse_color, btn_rect, max(1, int(2 * pulse_alpha)))
+
+            label_surf = self._mail_menu_font.render(label, True, COLOR_CYAN if is_active else COLOR_WHITE)
+            label_rect = label_surf.get_rect(center=btn_rect.center)
+            self.screen.blit(label_surf, label_rect)
+            self._mail_menu_hitboxes.append((btn_rect, menu_view_map[label]))
+
+        # CONNECT TO MAIL SERVER button - visible on OUTBOX when not in connect view (legacy); CONNECT menu opens full terminal
+
+        y_cursor += menu_h + 1  # 1px for the border line
+
+        # -- Content area --
+        content_rect = pygame.Rect(modal_x + gap, y_cursor + gap, modal_w - 2 * gap, modal_h - (y_cursor - modal_y) - 2 * gap)
+        pygame.draw.rect(self.screen, COLOR_BLACK, content_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, content_rect, 1)
+
+        # Clip to content area
+        old_clip = self.screen.get_clip()
+        self.screen.set_clip(content_rect)
+
+        if self.mail_view == "inbox":
+            self._draw_mail_list(content_rect, self.mail_local_inbox, "inbox")
+        elif self.mail_view == "outbox":
+            self._draw_mail_list(content_rect, self.get_mail_outbox(), "outbox")
+        elif self.mail_view == "trash":
+            self._draw_mail_list(content_rect, self.get_mail_trash(), "trash")
+        elif self.mail_view == "compose":
+            self._draw_mail_compose(content_rect)
+        elif self.mail_view == "reading":
+            self._draw_mail_reading(content_rect)
+        elif self.mail_view == "connect":
+            self._draw_mail_connect(content_rect)
+        elif self.mail_view == "settings":
+            self._draw_mail_settings(content_rect)
+
+        self.screen.set_clip(old_clip)
+
+        # -- Status bar --
+        if self.mail_status_message and self.mail_status_timer > 0:
+            status_surf = self._mail_small_font.render(self.mail_status_message, True, COLOR_AMBER)
+            self.screen.blit(status_surf, (modal_x + gap, modal_y + modal_h - int(14 * self.scale)))
+
+    def _draw_mail_list(self, content_rect: pygame.Rect, emails: list, list_type: str):
+        """Draw an email list (inbox, outbox, or trash). Outbox includes STATUS column."""
+        gap = int(10 * self.scale)
+        row_h = int(34 * self.scale)
+        font = self._mail_body_font
+        small_font = self._mail_small_font
+        x = content_rect.x + int(8 * self.scale)
+        y_start = content_rect.y + int(5 * self.scale)
+
+        # Column layout: outbox has STATUS column
+        if list_type == "outbox":
+            col_status_w = int(100 * self.scale)
+            col_date_x = content_rect.right - int(130 * self.scale) - col_status_w
+            col_status_x = content_rect.right - int(130 * self.scale)
+        else:
+            col_date_x = content_rect.right - int(130 * self.scale)
+            col_status_x = None
+
+        # Column header
+        header_y = y_start
+        col_from_label = "TO" if list_type == "outbox" else "FROM"
+        header_from = small_font.render(col_from_label, True, COLOR_GREY)
+        header_subject = small_font.render("SUBJECT", True, COLOR_GREY)
+        header_date = small_font.render("DATE", True, COLOR_GREY)
+
+        col_from_x = x
+        col_subject_x = x + int(180 * self.scale)
+        col_from_w = int(172 * self.scale)   # TO/FROM column width (before subject)
+        col_subject_w = int(300 * self.scale)
+        if list_type == "outbox":
+            col_subject_x = x + int(140 * self.scale)
+            col_from_w = int(132 * self.scale)  # Narrower; STATUS column takes space
+            col_subject_w = int(220 * self.scale)
+
+        self.screen.blit(header_from, (col_from_x, header_y))
+        self.screen.blit(header_subject, (col_subject_x, header_y))
+        self.screen.blit(header_date, (col_date_x, header_y))
+        if list_type == "outbox" and col_status_x is not None:
+            header_status = small_font.render("STATUS", True, COLOR_GREY)
+            self.screen.blit(header_status, (col_status_x, header_y))
+
+        # Separator line
+        sep_y = header_y + small_font.get_height() + int(2 * self.scale)
+        pygame.draw.line(self.screen, COLOR_CYAN, (x, sep_y), (content_rect.right - int(5 * self.scale), sep_y), 1)
+
+        if not emails:
+            empty_text = "No messages."
+            empty_surf = font.render(empty_text, True, COLOR_GREY)
+            self.screen.blit(empty_surf, (x, sep_y + int(10 * self.scale)))
+            self._mail_list_hitboxes = []
+            return
+
+        self._mail_list_hitboxes = []
+        visible_start = sep_y + int(4 * self.scale)
+        max_visible = (content_rect.bottom - visible_start) // row_h
+
+        # Clamp scroll offset
+        self.mail_scroll_offset = max(0, min(self.mail_scroll_offset, max(0, len(emails) - max_visible)))
+
+        for i in range(self.mail_scroll_offset, min(len(emails), self.mail_scroll_offset + max_visible)):
+            email = emails[i]
+            row_y = visible_start + (i - self.mail_scroll_offset) * row_h
+            row_rect = pygame.Rect(content_rect.x + 1, row_y, content_rect.width - 2, row_h)
+
+            is_selected = (i == self.mail_selected_index)
+            is_unread = not email.get("read", True)
+
+            if is_selected:
+                pygame.draw.rect(self.screen, (40, 60, 80), row_rect)
+            elif is_unread:
+                pygame.draw.rect(self.screen, (20, 25, 45), row_rect)
+
+            text_color = COLOR_CYAN if is_unread else COLOR_WHITE
+            from_field = email.get("recipient", "") if list_type == "outbox" else email.get("sender", "")
+            # Truncate TO/FROM: 17 chars for inbox/trash, 14 for outbox (narrower column)
+            max_from = 14 if list_type == "outbox" else 17
+            if len(from_field) > max_from:
+                from_text = from_field[:max_from] + "..."
+            else:
+                from_text = from_field
+
+            subject_text = email.get("subject", "(no subject)")
+            # Truncate SUBJECT: 28 for outbox (narrower), 35 for inbox/trash
+            max_subj = 28 if list_type == "outbox" else 35
+            if len(subject_text) > max_subj:
+                subject_text = subject_text[:max_subj] + "..."
+
+            date_text = email.get("timestamp", "")
+            if len(date_text) > 16:
+                date_text = date_text[:16]
+
+            from_surf = font.render(from_text, True, text_color)
+            subj_surf = font.render(subject_text, True, text_color)
+            date_surf = small_font.render(date_text, True, COLOR_GREY)
+
+            text_y = row_y + (row_h - font.get_height()) // 2
+            from_rect = pygame.Rect(col_from_x, text_y, col_from_w, row_h)
+            subj_rect = pygame.Rect(col_subject_x, text_y, col_subject_w, row_h)
+            old_clip = self.screen.get_clip()
+            self.screen.set_clip(from_rect)
+            self.screen.blit(from_surf, (col_from_x, text_y))
+            self.screen.set_clip(subj_rect)
+            self.screen.blit(subj_surf, (col_subject_x, text_y))
+            self.screen.set_clip(old_clip)
+            self.screen.blit(date_surf, (col_date_x, text_y + int(2 * self.scale)))
+            if list_type == "outbox" and col_status_x is not None:
+                status_text = "CONNECTED" if self.mail_server_connected else "DISCONNECTED"
+                status_surf = small_font.render(status_text, True, COLOR_AMBER if self.mail_server_connected else COLOR_GREY)
+                self.screen.blit(status_surf, (col_status_x, text_y + int(2 * self.scale)))
+
+            # Unread indicator dot
+            if is_unread:
+                dot_x = col_from_x - int(8 * self.scale)
+                dot_y = text_y + font.get_height() // 2
+                pygame.draw.circle(self.screen, COLOR_CYAN, (dot_x, dot_y), int(3 * self.scale))
+
+            self._mail_list_hitboxes.append((row_rect, i))
+
+        # Scroll indicators
+        if self.mail_scroll_offset > 0:
+            arrow_surf = small_font.render("^ more ^", True, COLOR_CYAN)
+            self.screen.blit(arrow_surf, (content_rect.centerx - arrow_surf.get_width() // 2, visible_start - int(2 * self.scale)))
+        if self.mail_scroll_offset + max_visible < len(emails):
+            arrow_surf = small_font.render("v more v", True, COLOR_CYAN)
+            self.screen.blit(arrow_surf, (content_rect.centerx - arrow_surf.get_width() // 2, content_rect.bottom - int(12 * self.scale)))
+
+    def _draw_mail_compose(self, content_rect: pygame.Rect):
+        """Draw the compose email form."""
+        gap = int(10 * self.scale)
+        font = self._mail_body_font
+        small_font = self._mail_small_font
+        x = content_rect.x + int(8 * self.scale)
+        y = content_rect.y + int(8 * self.scale)
+        field_w = content_rect.width - int(16 * self.scale)
+        field_h = int(32 * self.scale)
+
+        # Cursor blink
+        self.mail_cursor_blink_timer += 0.05
+        show_cursor = (self.mail_cursor_blink_timer % 1.0) < 0.5
+
+        # TO: field
+        label_w = int(100 * self.scale)
+        to_label = font.render("TO:", True, COLOR_CYAN)
+        self.screen.blit(to_label, (x, y + int(4 * self.scale)))
+        to_field_x = x + label_w
+        to_field_rect = pygame.Rect(to_field_x, y, field_w - label_w, field_h)
+        field_bg = (30, 30, 55) if self.mail_compose_active_field == "to" else (15, 15, 30)
+        pygame.draw.rect(self.screen, field_bg, to_field_rect)
+        border_color = COLOR_CYAN if self.mail_compose_active_field == "to" else COLOR_GREY
+        pygame.draw.rect(self.screen, border_color, to_field_rect, 1)
+        text_pad = int(6 * self.scale)
+        to_display = self.mail_compose_to if self.mail_compose_to else MAIL_COMPOSE_PLACEHOLDER_TO
+        to_color = COLOR_WHITE if self.mail_compose_to else (60, 80, 90)  # Faint placeholder
+        to_text = font.render(to_display, True, to_color)
+        self.screen.blit(to_text, (to_field_x + text_pad, y + text_pad))
+        if show_cursor and self.mail_compose_active_field == "to":
+            cursor_x = to_field_x + text_pad + font.size(self.mail_compose_to[:self.mail_compose_cursor])[0]
+            pygame.draw.line(self.screen, COLOR_WHITE, (cursor_x, y + text_pad), (cursor_x, y + field_h - text_pad), 1)
+        self._mail_compose_to_rect = to_field_rect
+        y += field_h + int(6 * self.scale)
+
+        # SUBJECT: field
+        subj_label = font.render("SUBJECT:", True, COLOR_CYAN)
+        self.screen.blit(subj_label, (x, y + int(4 * self.scale)))
+        subj_field_x = x + label_w
+        subj_field_rect = pygame.Rect(subj_field_x, y, field_w - label_w, field_h)
+        field_bg = (30, 30, 55) if self.mail_compose_active_field == "subject" else (15, 15, 30)
+        pygame.draw.rect(self.screen, field_bg, subj_field_rect)
+        border_color = COLOR_CYAN if self.mail_compose_active_field == "subject" else COLOR_GREY
+        pygame.draw.rect(self.screen, border_color, subj_field_rect, 1)
+        subj_display = self.mail_compose_subject if self.mail_compose_subject else MAIL_COMPOSE_PLACEHOLDER_SUBJECT
+        subj_color = COLOR_WHITE if self.mail_compose_subject else (60, 80, 90)
+        subj_text = font.render(subj_display, True, subj_color)
+        self.screen.blit(subj_text, (subj_field_x + text_pad, y + text_pad))
+        if show_cursor and self.mail_compose_active_field == "subject":
+            cursor_x = subj_field_x + text_pad + font.size(self.mail_compose_subject[:self.mail_compose_cursor])[0]
+            pygame.draw.line(self.screen, COLOR_WHITE, (cursor_x, y + text_pad), (cursor_x, y + field_h - text_pad), 1)
+        self._mail_compose_subj_rect = subj_field_rect
+        y += field_h + int(6 * self.scale)
+
+        # BODY: text area
+        body_label = font.render("BODY:", True, COLOR_CYAN)
+        self.screen.blit(body_label, (x, y))
+        y += font.get_height() + int(4 * self.scale)
+        body_h = content_rect.bottom - y - int(36 * self.scale)
+        body_rect = pygame.Rect(x, y, field_w, body_h)
+        field_bg = (30, 30, 55) if self.mail_compose_active_field == "body" else (15, 15, 30)
+        pygame.draw.rect(self.screen, field_bg, body_rect)
+        border_color = COLOR_CYAN if self.mail_compose_active_field == "body" else COLOR_GREY
+        pygame.draw.rect(self.screen, border_color, body_rect, 1)
+
+        # Render body text with word wrapping (or faint placeholder when empty)
+        body_pad = int(6 * self.scale)
+        body_display = self.mail_compose_body if self.mail_compose_body else MAIL_COMPOSE_PLACEHOLDER_BODY
+        body_lines = self._mail_wrap_text(body_display, font, body_rect.width - 2 * body_pad)
+        line_h = font.get_height()
+        for li, line in enumerate(body_lines):
+            line_y = y + body_pad + li * line_h
+            if line_y + line_h > body_rect.bottom:
+                break
+            body_line_color = COLOR_WHITE if self.mail_compose_body else (60, 80, 90)
+            line_surf = font.render(line, True, body_line_color)
+            self.screen.blit(line_surf, (x + body_pad, line_y))
+
+        if show_cursor and self.mail_compose_active_field == "body":
+            # Find cursor position in wrapped text
+            cursor_pos = min(self.mail_compose_cursor, len(self.mail_compose_body))
+            text_before = self.mail_compose_body[:cursor_pos]
+            before_lines = self._mail_wrap_text(text_before, font, body_rect.width - 2 * body_pad)
+            if before_lines:
+                cursor_line = len(before_lines) - 1
+                cursor_x_offset = font.size(before_lines[-1])[0]
+            else:
+                cursor_line = 0
+                cursor_x_offset = 0
+            cx = x + body_pad + cursor_x_offset
+            cy = y + body_pad + cursor_line * line_h
+            if cy + line_h <= body_rect.bottom:
+                pygame.draw.line(self.screen, COLOR_WHITE, (cx, cy), (cx, cy + line_h), 1)
+
+        self._mail_compose_body_rect = body_rect
+
+        # SEND button (pulse when subject is "i'm in" or close)
+        send_btn_w = int(100 * self.scale)
+        send_btn_h = int(24 * self.scale)
+        send_btn_x = content_rect.right - send_btn_w - int(8 * self.scale)
+        send_btn_y = content_rect.bottom - send_btn_h - int(6 * self.scale)
+        send_btn_rect = pygame.Rect(send_btn_x, send_btn_y, send_btn_w, send_btn_h)
+        is_hover = self.hovered_button == ("mail", "send")
+        subj_lower = self.mail_compose_subject.strip().lower().replace("'", "").replace(" ", "")
+        send_ready = "imin" in subj_lower or "i'm in" in self.mail_compose_subject.strip().lower()
+        send_pulse = send_ready and (0.5 + 0.5 * math.sin(self.mail_pulse_timer * 3.0)) > 0.7
+        btn_color = (60, 60, 100) if is_hover else (40, 40, 70)
+        pygame.draw.rect(self.screen, btn_color, send_btn_rect)
+        border_w = 2 if (is_hover or send_pulse) else 1
+        pygame.draw.rect(self.screen, COLOR_CYAN, send_btn_rect, border_w)
+        send_label = self._mail_menu_font.render("SEND", True, COLOR_CYAN)
+        send_label_rect = send_label.get_rect(center=send_btn_rect.center)
+        self.screen.blit(send_label, send_label_rect)
+        self._mail_send_btn_rect = send_btn_rect
+
+        # CLEAR button
+        clear_btn_x = send_btn_x - send_btn_w - int(8 * self.scale)
+        clear_btn_rect = pygame.Rect(clear_btn_x, send_btn_y, send_btn_w, send_btn_h)
+        is_hover_clear = self.hovered_button == ("mail", "clear")
+        btn_color_clear = (60, 40, 40) if is_hover_clear else (40, 30, 30)
+        pygame.draw.rect(self.screen, btn_color_clear, clear_btn_rect)
+        pygame.draw.rect(self.screen, COLOR_RED, clear_btn_rect, 2 if is_hover_clear else 1)
+        clear_label = self._mail_menu_font.render("CLEAR", True, COLOR_RED)
+        clear_label_rect = clear_label.get_rect(center=clear_btn_rect.center)
+        self.screen.blit(clear_label, clear_label_rect)
+        self._mail_clear_btn_rect = clear_btn_rect
+
+    def _draw_mail_connect(self, content_rect: pygame.Rect):
+        """Draw the CONNECT view - terminal-style modem connection (1989 aesthetic)."""
+        if not self.terminal_font:
+            self._load_terminal_font()
+        mono_font = self.terminal_font or self._mail_body_font
+        x = content_rect.x + int(8 * self.scale)
+        y = content_rect.y + int(8 * self.scale)
+
+        # Terminal area (modem look - dark with cyan text)
+        term_h = content_rect.height - int(60 * self.scale)
+        term_rect = pygame.Rect(x, y, content_rect.width - int(16 * self.scale), term_h)
+        pygame.draw.rect(self.screen, (8, 12, 24), term_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, term_rect, 1)
+        # Header
+        header = mono_font.render("BBS POP3 International Ciphernet Client", True, COLOR_AMBER)
+        self.screen.blit(header, (term_rect.x + int(6 * self.scale), term_rect.y + int(4 * self.scale)))
+
+        # Terminal content
+        line_h = mono_font.get_height() + int(2 * self.scale)
+        text_x = term_rect.x + int(6 * self.scale)
+        text_y = term_rect.y + int(26 * self.scale)
+        max_lines = (term_rect.height - int(30 * self.scale)) // line_h
+
+        visible_lines = self.mail_connect_terminal_lines
+        max_scroll = max(0, len(visible_lines) - max_lines)
+        self.mail_connect_terminal_scroll = min(self.mail_connect_terminal_scroll, max_scroll)
+        start = max(0, len(visible_lines) - max_lines - self.mail_connect_terminal_scroll)
+        for i in range(start, len(visible_lines)):
+            line_surf = mono_font.render(visible_lines[i], True, COLOR_CYAN)
+            self.screen.blit(line_surf, (text_x, text_y + (i - start) * line_h))
+
+        # Blinking cursor when in progress
+        if not self.mail_connect_terminal_complete and (
+            self.mail_connect_terminal_line_index > 0 or len(self.mail_connect_terminal_lines) > 0
+        ):
+            cursor_blink = (self.mail_pulse_timer * 2) % 1.0 < 0.5
+            if cursor_blink:
+                last_line_idx = min(len(visible_lines) - 1 - start, max_lines - 1)
+                if last_line_idx >= 0:
+                    cur_y = text_y + last_line_idx * line_h
+                    pygame.draw.line(
+                        self.screen, COLOR_CYAN,
+                        (text_x + int(4 * self.scale), cur_y),
+                        (text_x + int(4 * self.scale), cur_y + line_h - 2), 1
+                    )
+
+        # Button row: SEND/RX (when connected) + DIAL or CONNECTED
+        btn_y = content_rect.bottom - int(36 * self.scale)
+        btn_h = int(28 * self.scale)
+        btn_spacing = int(8 * self.scale)
+        dial_btn_w = int(120 * self.scale)
+        sendrx_btn_w = int(100 * self.scale)
+        dial_btn_x = content_rect.right - dial_btn_w - int(12 * self.scale)
+        dial_btn_rect = pygame.Rect(dial_btn_x, btn_y, dial_btn_w, btn_h)
+        self._mail_dial_btn_rect = dial_btn_rect
+
+        # SEND/RX button - next to CONNECTED, only when connected
+        if self.mail_server_connected:
+            sendrx_btn_x = dial_btn_x - sendrx_btn_w - btn_spacing
+            sendrx_btn_rect = pygame.Rect(sendrx_btn_x, btn_y, sendrx_btn_w, btn_h)
+            self._mail_sendrx_btn_rect = sendrx_btn_rect
+            is_sendrx_hover = self.hovered_button == ("mail", "sendrx")
+            sendrx_color = (30, 70, 80) if is_sendrx_hover else (20, 60, 70)
+            pygame.draw.rect(self.screen, sendrx_color, sendrx_btn_rect)
+            pygame.draw.rect(self.screen, COLOR_CYAN, sendrx_btn_rect, 2)
+            sendrx_surf = self._mail_menu_font.render("SEND/RX", True, COLOR_CYAN)
+            self.screen.blit(sendrx_surf, sendrx_surf.get_rect(center=sendrx_btn_rect.center))
+        else:
+            self._mail_sendrx_btn_rect = None
+
+        if self.mail_connect_terminal_complete and self.mail_server_connected:
+            label = "CONNECTED"
+            btn_color = (20, 80, 60)
+        elif self.mail_connect_terminal_line_index > 0 and not self.mail_connect_terminal_complete:
+            label = "CONNECTING..."
+            btn_color = (40, 60, 80)
+        else:
+            label = "DIAL"
+            btn_color = (20, 50, 60)
+
+        is_hover = self.hovered_button == ("mail", "dial")
+        if is_hover and not (self.mail_connect_terminal_line_index > 0 and not self.mail_connect_terminal_complete):
+            btn_color = (30, 70, 80)
+        pygame.draw.rect(self.screen, btn_color, dial_btn_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, dial_btn_rect, 2)
+        dial_surf = self._mail_menu_font.render(label, True, COLOR_CYAN)
+        self.screen.blit(dial_surf, dial_surf.get_rect(center=dial_btn_rect.center))
+
+    def _start_mail_connect_sequence(self) -> None:
+        """Start the 1989-style modem connection sequence. 20 sec offline, then dial (27s audio), then send/receive."""
+        self.mail_connect_terminal_lines = []
+        self.mail_connect_terminal_line_index = 0
+        self.mail_connect_terminal_timer = 0.4
+        self.mail_connect_terminal_complete = False
+        self.mail_connect_dialup_started = False
+        self._mail_sent_im_in_to_rain = False
+        self.mail_connect_terminal_scroll = 0
+        outbox = self.get_mail_outbox()
+        outbox_count = len(outbox)
+        # Only deliver Rain's reply when "I'm in" was sent TO rain@ciphernet.net
+        has_im_in_to_rain = any(
+            (m.get("recipient", "") or "").strip().lower() == "rain@ciphernet.net"
+            and "i'm in" in ((m.get("subject", "") or "").lower())
+            for m in outbox
+        )
+        # Phase 1: ~20 sec offline technobabble (1989 modem init)
+        self._mail_connect_steps = [
+            ("BRADSONIC-MAIL POP3 Client v2.1 initializing...", 1.8, None),
+            ("Checking serial port COM1...", 1.3, None),
+            ("Hayes-compatible modem detected: 2400 baud", 1.3, None),
+            ("ATZ", 0.8, None),
+            ("OK", 0.6, None),
+            ("ATE0", 0.6, None),
+            ("OK", 0.6, None),
+            ("ATM0", 0.6, None),
+            ("OK", 0.6, None),
+            ("AT+FCLASS=0", 0.8, None),
+            ("OK", 0.6, None),
+            ("Modem ready.", 1.0, None),
+            ("Checking line status...", 1.2, None),
+            ("Line detected. Dial tone present.", 1.2, None),
+            ("Carrier detect: READY", 1.0, None),
+            ("Initializing MNP error correction...", 1.2, None),
+            ("LAPM negotiation complete.", 1.0, None),
+            ("Configuring UART 16550...", 1.0, None),
+            ("DTE rate: 9600, DCE rate: 2400", 0.9, None),
+            ("Ready to dial.", 1.0, None),
+            ("", 0.5, None),
+            # Phase 2: Initiating dial
+            ("Initiating dial sequence...", 0.8, None),
+            ("Dial up!", 0.3, "play_dialup"),
+            # Phase 3: Connection technobabble (during 27s dialup.wav - spread over ~22 sec)
+            ("DT 0345728891", 2.2, None),
+            ("RING", 1.8, None),
+            ("RING", 1.8, None),
+            ("CONNECT 2400", 2.0, None),
+            ("Negotiating link protocol...", 2.2, None),
+            ("CCITT V.42 bis compression: ON", 1.8, None),
+            ("Finalizing handshake...", 2.0, None),
+            ("Link established.", 1.5, None),
+            ("Connecting to pop3.ciphernet-relay.net:110...", 2.2, None),
+            ("+OK BBS POP3 International Ciphernet ready", 1.8, None),
+            ("USER check", 1.0, None),
+            ("PASS ***", 0.8, None),
+            ("+OK Authenticated", 1.0, None),
+            # Phase 4: Mail transfer
+            ("STAT", 0.5, None),
+            ("+OK Mailbox ready", 0.6, None),
+        ]
+        if outbox_count > 0:
+            self._mail_connect_steps.append((f"Sending mail... ({outbox_count} message(s))", 0.8, None))
+            self._mail_connect_steps.append((f"Mail sent: {outbox_count} message(s).", 0.6, "do_send"))
+            if has_im_in_to_rain:
+                self._mail_connect_steps.append(("Waiting for reply...", 30.0, None))
+        else:
+            self._mail_connect_steps.append(("Outbox empty.", 0.5, None))
+        self._mail_connect_steps.append(("RETR - Checking for new mail...", 0.8, None))
+        self._mail_connect_steps.append(("PLACEHOLDER_RECEIVE", 0.5, "do_receive"))
+        self._mail_connect_steps.append(("Connection complete.", 0.4, "complete"))
+
+    def _mail_do_send_rx(self) -> None:
+        """Quick send outbox + receive when already connected (SEND/RX button). Rain's reply only when 'I'm in' sent to Rain."""
+        outbox = self.get_mail_outbox()
+        outbox_count = len(outbox)
+        sent_im_in_to_rain = False
+        if outbox_count > 0:
+            sent_im_in_to_rain = any(
+                (m.get("recipient", "") or "").strip().lower() == "rain@ciphernet.net"
+                and "i'm in" in ((m.get("subject", "") or "").lower())
+                for m in outbox
+            )
+            for msg in outbox:
+                self.send_mail(msg.get("recipient", ""), msg.get("subject", ""), msg.get("body", ""))
+            self.save_mail_outbox([])
+        inbox_before = len(self.mail_local_inbox)
+        if sent_im_in_to_rain:
+            username, _ = self.get_user_credentials()
+            rain_email = {
+                "id": f"rain_{int(time.time())}",
+                "sender": "rain@ciphernet.net",
+                "recipient": self.mail_settings.get("mail_from", "user@bradsonic.net"),
+                "subject": RAIN_REPLY_SUBJECT,
+                "body": _get_rain_reply_body(username),
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "read": False,
+            }
+            self.mail_local_inbox.insert(0, rain_email)
+            self.save_inbox_emails(self.mail_local_inbox)
+            self.play_mail_sound()
+        new_count = len(self.mail_local_inbox) - inbox_before
+        self.mail_connect_terminal_lines.append("")
+        if outbox_count > 0:
+            self.mail_connect_terminal_lines.append(f"Sending mail... ({outbox_count} message(s))")
+            self.mail_connect_terminal_lines.append(f"Mail sent: {outbox_count} message(s).")
+        else:
+            self.mail_connect_terminal_lines.append("Outbox empty.")
+        self.mail_connect_terminal_lines.append("RETR - Checking for new mail...")
+        self.mail_connect_terminal_lines.append(
+            f"New mail found: {new_count} message(s)." if new_count > 0 else "No new mail."
+        )
+        self.mail_connect_terminal_lines.append("Transfer complete.")
+
+    def _draw_mail_reading(self, content_rect: pygame.Rect):
+        """Draw the email reading view."""
+        if not self.mail_reading_email:
+            self.mail_view = "inbox"
+            return
+
+        gap = int(10 * self.scale)
+        font = self._mail_body_font
+        small_font = self._mail_small_font
+        x = content_rect.x + int(8 * self.scale)
+        y = content_rect.y + int(8 * self.scale)
+        max_w = content_rect.width - int(16 * self.scale)
+
+        email = self.mail_reading_email
+
+        # Header: FROM / TO / SUBJECT / DATE
+        from_surf = font.render(f"FROM:  {email.get('sender', 'unknown')}", True, COLOR_CYAN)
+        self.screen.blit(from_surf, (x, y))
+        y += font.get_height() + int(2 * self.scale)
+
+        to_surf = font.render(f"TO:  {email.get('recipient', 'you')}", True, COLOR_CYAN)
+        self.screen.blit(to_surf, (x, y))
+        y += font.get_height() + int(2 * self.scale)
+
+        subj_surf = font.render(f"SUBJ:  {email.get('subject', '(no subject)')}", True, COLOR_WHITE)
+        self.screen.blit(subj_surf, (x, y))
+        y += font.get_height() + int(2 * self.scale)
+
+        date_surf = small_font.render(f"DATE:  {email.get('timestamp', '')}", True, COLOR_GREY)
+        self.screen.blit(date_surf, (x, y))
+        y += small_font.get_height() + int(6 * self.scale)
+
+        # Separator
+        pygame.draw.line(self.screen, COLOR_CYAN, (x, y), (content_rect.right - int(8 * self.scale), y), 1)
+        y += int(6 * self.scale)
+
+        # Body text with word wrapping
+        body = email.get("body", "")
+        body_lines = self._mail_wrap_text(body, font, max_w)
+        line_h = font.get_height()
+
+        # Apply scroll offset for reading
+        visible_lines = (content_rect.bottom - y - int(30 * self.scale)) // line_h
+        total_lines = len(body_lines)
+        self.mail_scroll_offset = max(0, min(self.mail_scroll_offset, max(0, total_lines - visible_lines)))
+
+        for li in range(self.mail_scroll_offset, min(total_lines, self.mail_scroll_offset + visible_lines)):
+            line_y = y + (li - self.mail_scroll_offset) * line_h
+            if line_y + line_h > content_rect.bottom - int(30 * self.scale):
+                break
+            line_surf = font.render(body_lines[li], True, COLOR_WHITE)
+            self.screen.blit(line_surf, (x, line_y))
+
+        # Bottom buttons: BACK, DELETE, REPLY
+        btn_w = int(80 * self.scale)
+        btn_h = int(22 * self.scale)
+        btn_y = content_rect.bottom - btn_h - int(4 * self.scale)
+
+        # BACK button
+        back_rect = pygame.Rect(x, btn_y, btn_w, btn_h)
+        is_hover = self.hovered_button == ("mail", "back")
+        pygame.draw.rect(self.screen, (60, 60, 100) if is_hover else (40, 40, 70), back_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, back_rect, 2 if is_hover else 1)
+        back_surf = self._mail_menu_font.render("BACK", True, COLOR_CYAN)
+        self.screen.blit(back_surf, back_surf.get_rect(center=back_rect.center))
+        self._mail_back_btn_rect = back_rect
+
+        # DELETE button
+        del_rect = pygame.Rect(x + btn_w + int(8 * self.scale), btn_y, btn_w, btn_h)
+        is_hover = self.hovered_button == ("mail", "delete")
+        pygame.draw.rect(self.screen, (60, 40, 40) if is_hover else (40, 30, 30), del_rect)
+        pygame.draw.rect(self.screen, COLOR_RED, del_rect, 2 if is_hover else 1)
+        del_surf = self._mail_menu_font.render("DELETE", True, COLOR_RED)
+        self.screen.blit(del_surf, del_surf.get_rect(center=del_rect.center))
+        self._mail_delete_btn_rect = del_rect
+
+        # REPLY button
+        reply_rect = pygame.Rect(x + 2 * (btn_w + int(8 * self.scale)), btn_y, btn_w, btn_h)
+        is_hover = self.hovered_button == ("mail", "reply")
+        pygame.draw.rect(self.screen, (60, 60, 100) if is_hover else (40, 40, 70), reply_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, reply_rect, 2 if is_hover else 1)
+        reply_surf = self._mail_menu_font.render("REPLY", True, COLOR_CYAN)
+        self.screen.blit(reply_surf, reply_surf.get_rect(center=reply_rect.center))
+        self._mail_reply_btn_rect = reply_rect
+
+    def _mail_wrap_text(self, text: str, font, max_width: int) -> List[str]:
+        """Word-wrap text to fit within max_width pixels."""
+        lines = []
+        for paragraph in text.split("\n"):
+            if not paragraph:
+                lines.append("")
+                continue
+            words = paragraph.split(" ")
+            current_line = ""
+            for word in words:
+                test_line = f"{current_line} {word}".strip() if current_line else word
+                if font.size(test_line)[0] <= max_width:
+                    current_line = test_line
+                else:
+                    if current_line:
+                        lines.append(current_line)
+                    # Handle very long words
+                    if font.size(word)[0] > max_width:
+                        while word:
+                            for c in range(len(word), 0, -1):
+                                if font.size(word[:c])[0] <= max_width:
+                                    lines.append(word[:c])
+                                    word = word[c:]
+                                    break
+                            else:
+                                lines.append(word[:1])
+                                word = word[1:]
+                        current_line = ""
+                    else:
+                        current_line = word
+            if current_line:
+                lines.append(current_line)
+        return lines if lines else [""]
+
+    def _handle_mail_modal_click(self, mouse_x: int, mouse_y: int) -> bool:
+        """Handle clicks within the BRADSONIC-MAIL modal."""
+        modal_w, modal_h = self._get_modal_size("mail")
+        modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
+        modal_x, modal_y = self.modal_positions.get("mail", (0, 0))
+        modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
+
+        if not modal_rect.collidepoint(mouse_x, mouse_y):
+            return False
+
+        # Close button
+        close_btn_size = int(20 * self.scale)
+        close_btn_x = modal_x + modal_w - close_btn_size - int(5 * self.scale)
+        close_btn_y = modal_y + int(5 * self.scale)
+        if pygame.Rect(close_btn_x, close_btn_y, close_btn_size, close_btn_size).collidepoint(mouse_x, mouse_y):
+            self._close_modal("mail")
+            return True
+
+        # Menu bar clicks
+        for btn_rect, view_name in getattr(self, "_mail_menu_hitboxes", []):
+            if btn_rect.collidepoint(mouse_x, mouse_y):
+                if view_name == "compose" and self.mail_view != "compose":
+                    self.mail_compose_to = ""
+                    self.mail_compose_subject = ""
+                    self.mail_compose_body = ""
+                    self.mail_compose_active_field = "to"
+                    self.mail_compose_cursor = 0
+                if view_name == "connect" and self.mail_view != "connect":
+                    self._mail_connect_steps = []
+                    self.mail_connect_terminal_lines = []
+                    self.mail_connect_terminal_line_index = 0
+                self.mail_view = view_name
+                self.mail_selected_index = -1
+                self.mail_reading_email = None
+                self.mail_scroll_offset = 0
+                return True
+
+        # CONNECT view: SEND/RX and DIAL buttons
+        if self.mail_view == "connect":
+            if getattr(self, "_mail_sendrx_btn_rect", None) and self._mail_sendrx_btn_rect.collidepoint(mouse_x, mouse_y):
+                if self.mail_server_connected:
+                    self._mail_do_send_rx()
+                return True
+            if getattr(self, "_mail_dial_btn_rect", None) and self._mail_dial_btn_rect.collidepoint(mouse_x, mouse_y):
+                in_progress = self.mail_connect_terminal_line_index > 0 and not self.mail_connect_terminal_complete
+                if not in_progress:
+                    self._start_mail_connect_sequence()
+                return True
+
+        if self.mail_view in ("inbox", "outbox", "trash"):
+            for row_rect, idx in getattr(self, "_mail_list_hitboxes", []):
+                if row_rect.collidepoint(mouse_x, mouse_y):
+                    if self.mail_view == "inbox":
+                        emails = self.mail_local_inbox
+                    elif self.mail_view == "outbox":
+                        emails = self.get_mail_outbox()
+                    else:
+                        emails = self.get_mail_trash()
+
+                    if 0 <= idx < len(emails):
+                        self.mail_selected_index = idx
+                        email = emails[idx]
+                        # Mark as read if inbox
+                        if self.mail_view == "inbox" and not email.get("read", False):
+                            email["read"] = True
+                        self.mail_reading_email = dict(email)
+                        self.mail_view = "reading"
+                        self.mail_scroll_offset = 0
+                    return True
+
+        elif self.mail_view == "compose":
+            # Field clicks
+            if getattr(self, "_mail_compose_to_rect", None) and self._mail_compose_to_rect.collidepoint(mouse_x, mouse_y):
+                self.mail_compose_active_field = "to"
+                self.mail_compose_cursor = len(self.mail_compose_to)
+                return True
+            if getattr(self, "_mail_compose_subj_rect", None) and self._mail_compose_subj_rect.collidepoint(mouse_x, mouse_y):
+                self.mail_compose_active_field = "subject"
+                self.mail_compose_cursor = len(self.mail_compose_subject)
+                return True
+            if getattr(self, "_mail_compose_body_rect", None) and self._mail_compose_body_rect.collidepoint(mouse_x, mouse_y):
+                self.mail_compose_active_field = "body"
+                self.mail_compose_cursor = len(self.mail_compose_body)
+                return True
+            # SEND button
+            if getattr(self, "_mail_send_btn_rect", None) and self._mail_send_btn_rect.collidepoint(mouse_x, mouse_y):
+                self._mail_send_composed()
+                return True
+            # CLEAR button
+            if getattr(self, "_mail_clear_btn_rect", None) and self._mail_clear_btn_rect.collidepoint(mouse_x, mouse_y):
+                self.mail_compose_to = ""
+                self.mail_compose_subject = ""
+                self.mail_compose_body = ""
+                self.mail_compose_active_field = "to"
+                self.mail_compose_cursor = 0
+                return True
+
+        elif self.mail_view == "reading":
+            # BACK button
+            if getattr(self, "_mail_back_btn_rect", None) and self._mail_back_btn_rect.collidepoint(mouse_x, mouse_y):
+                self.mail_view = "inbox"
+                self.mail_reading_email = None
+                self.mail_scroll_offset = 0
+                return True
+            # DELETE button
+            if getattr(self, "_mail_delete_btn_rect", None) and self._mail_delete_btn_rect.collidepoint(mouse_x, mouse_y):
+                if self.mail_reading_email:
+                    self._mail_move_to_trash(self.mail_reading_email)
+                self.mail_view = "inbox"
+                self.mail_reading_email = None
+                self.mail_scroll_offset = 0
+                return True
+            # REPLY button
+            if getattr(self, "_mail_reply_btn_rect", None) and self._mail_reply_btn_rect.collidepoint(mouse_x, mouse_y):
+                if self.mail_reading_email:
+                    self.mail_compose_to = self.mail_reading_email.get("sender", "")
+                    self.mail_compose_subject = "RE: " + self.mail_reading_email.get("subject", "")
+                    self.mail_compose_body = ""
+                    self.mail_compose_active_field = "body"
+                    self.mail_compose_cursor = 0
+                    self.mail_view = "compose"
+                return True
+
+        elif self.mail_view == "settings":
+            if self._handle_mail_settings_click(mouse_x, mouse_y):
+                return True
+
+        return True  # Consumed click within modal
+
+    def _mail_send_composed(self):
+        """Send the composed email."""
+        to = self.mail_compose_to.strip()
+        subject = self.mail_compose_subject.strip()
+        body = self.mail_compose_body.strip()
+
+        if not to:
+            self.mail_status_message = "Error: Recipient address required."
+            self.mail_status_timer = 3.0
+            return
+        if not subject:
+            self.mail_status_message = "Error: Subject required."
+            self.mail_status_timer = 3.0
+            return
+
+        # Get sender from settings
+        sender = self.mail_settings.get("mail_from", "user@bradsonic.net")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        sent_email = {
+            "id": f"sent_{int(time.time())}",
+            "sender": sender,
+            "recipient": to,
+            "subject": subject,
+            "body": body,
+            "timestamp": timestamp,
+            "read": True,
+        }
+
+        # Add to outbox only; actual send happens when user connects via CONNECT TO MAIL SERVER
+        outbox = self.get_mail_outbox()
+        outbox.insert(0, sent_email)
+        self.save_mail_outbox(outbox)
+
+        # Clear compose form and show status
+        self.mail_compose_to = ""
+        self.mail_compose_subject = ""
+        self.mail_compose_body = ""
+        self.mail_compose_active_field = "to"
+        self.mail_compose_cursor = 0
+        self.mail_status_message = "Message queued for send."
+        self.mail_status_timer = 3.0
+        self.mail_view = "outbox"
+
+    def _mail_move_to_trash(self, email: Dict):
+        """Move an email to trash."""
+        trash = self.get_mail_trash()
+        trash.insert(0, dict(email))
+        self.save_mail_trash(trash)
+
+        # Remove from local inbox
+        self.mail_local_inbox = [e for e in self.mail_local_inbox if e.get("id") != email.get("id")]
+
+        self.mail_status_message = "Message moved to trash."
+        self.mail_status_timer = 3.0
+
+    def _mail_handle_keydown(self, event) -> bool:
+        """Handle keyboard input in compose or settings mode."""
+        if self.mail_view == "settings":
+            return self._mail_settings_handle_keydown(event)
+        if self.mail_view != "compose":
+            return False
+
+        field = self.mail_compose_active_field
+        if field == "to":
+            text = self.mail_compose_to
+        elif field == "subject":
+            text = self.mail_compose_subject
+        else:
+            text = self.mail_compose_body
+
+        cursor = min(self.mail_compose_cursor, len(text))
+
+        if event.key == pygame.K_BACKSPACE:
+            if cursor > 0:
+                text = text[:cursor - 1] + text[cursor:]
+                cursor -= 1
+        elif event.key == pygame.K_DELETE:
+            if cursor < len(text):
+                text = text[:cursor] + text[cursor + 1:]
+        elif event.key == pygame.K_LEFT:
+            cursor = max(0, cursor - 1)
+        elif event.key == pygame.K_RIGHT:
+            cursor = min(len(text), cursor + 1)
+        elif event.key == pygame.K_HOME:
+            cursor = 0
+        elif event.key == pygame.K_END:
+            cursor = len(text)
+        elif event.key == pygame.K_RETURN:
+            if field == "body":
+                text = text[:cursor] + "\n" + text[cursor:]
+                cursor += 1
+            elif field == "to":
+                self.mail_compose_active_field = "subject"
+                self.mail_compose_cursor = len(self.mail_compose_subject)
+                self.mail_compose_to = text
+                return True
+            elif field == "subject":
+                self.mail_compose_active_field = "body"
+                self.mail_compose_cursor = len(self.mail_compose_body)
+                self.mail_compose_subject = text
+                return True
+        elif event.key == pygame.K_TAB:
+            # Cycle fields: to -> subject -> body -> to
+            if field == "to":
+                self.mail_compose_active_field = "subject"
+                self.mail_compose_cursor = len(self.mail_compose_subject)
+            elif field == "subject":
+                self.mail_compose_active_field = "body"
+                self.mail_compose_cursor = len(self.mail_compose_body)
+            else:
+                self.mail_compose_active_field = "to"
+                self.mail_compose_cursor = len(self.mail_compose_to)
+            if field == "to":
+                self.mail_compose_to = text
+            elif field == "subject":
+                self.mail_compose_subject = text
+            else:
+                self.mail_compose_body = text
+            return True
+        elif event.key == pygame.K_v and (event.mod & pygame.KMOD_CTRL):
+            # Paste from clipboard
+            try:
+                import subprocess
+                clip_text = subprocess.check_output(['powershell', '-command', 'Get-Clipboard'], text=True).strip()
+                text = text[:cursor] + clip_text + text[cursor:]
+                cursor += len(clip_text)
+            except Exception:
+                pass
+        else:
+            return False  # Let TEXTINPUT handle character input
+
+        # Save back
+        if field == "to":
+            self.mail_compose_to = text
+        elif field == "subject":
+            self.mail_compose_subject = text
+        else:
+            self.mail_compose_body = text
+        self.mail_compose_cursor = cursor
+        return True
+
+    def _mail_handle_textinput(self, text: str) -> bool:
+        """Handle text input for compose or settings fields."""
+        if self.mail_view == "settings":
+            return self._mail_settings_handle_textinput(text)
+        if self.mail_view != "compose":
+            return False
+
+        field = self.mail_compose_active_field
+        if field == "to":
+            current = self.mail_compose_to
+        elif field == "subject":
+            current = self.mail_compose_subject
+        else:
+            current = self.mail_compose_body
+
+        cursor = min(self.mail_compose_cursor, len(current))
+        current = current[:cursor] + text + current[cursor:]
+        cursor += len(text)
+
+        if field == "to":
+            self.mail_compose_to = current
+        elif field == "subject":
+            self.mail_compose_subject = current
+        else:
+            self.mail_compose_body = current
+        self.mail_compose_cursor = cursor
+        return True
+
+    # -------------------------------------------------------------------------
+    # BRADSONIC-MAIL Settings Page
+    # -------------------------------------------------------------------------
+
+    # Settings layout definition: list of (key, label, type)
+    # type: "text" = editable text field, "radio" = radio button group, "check" = checkbox
+    _MAIL_SETTINGS_LAYOUT = [
+        ("_header_account", "── ACCOUNT SETTINGS ──", "header"),
+        ("mail_from", "Mail From Address:", "text"),
+        ("display_name", "Display Name:", "text"),
+        ("reply_to", "Reply-To Address:", "text"),
+        ("signature", "X-Signature Footer:", "text"),
+        ("_header_server", "── SERVER CONFIGURATION ──", "header"),
+        ("smtp_server", "SMTP Relay Host:", "text"),
+        ("smtp_port", "SMTP Port:", "text"),
+        ("pop3_server", "POP3/IMAP Server:", "text"),
+        ("pop3_port", "POP3/IMAP Port:", "text"),
+        ("protocol", "Mail Protocol:", "radio", ["POP3", "IMAP"]),
+        ("auth_method", "Auth Method:", "radio", ["LOGIN", "PLAIN", "CRAM-MD5"]),
+        ("encryption", "Connection Security:", "radio", ["None", "SSL", "TLS"]),
+        ("_header_advanced", "── ADVANCED / MIME ──", "header"),
+        ("mime_encoding", "MIME Transfer-Encoding:", "radio", ["quoted-printable", "base64", "7bit"]),
+        ("charset", "Character Set:", "radio", ["US-ASCII", "ISO-8859-1", "UTF-8"]),
+        ("max_msg_size", "Max Message Size (KB):", "text"),
+        ("line_wrap", "Line Wrap Column:", "text"),
+        ("check_interval", "Check Interval (min):", "text"),
+        ("_header_options", "── OPTIONS ──", "header"),
+        ("leave_on_server", "Leave Messages on Server", "check"),
+        ("auto_bcc", "Auto-BCC to Self", "check"),
+        ("x_mailer_header", "Include X-Mailer Header", "check"),
+        ("delivery_receipt", "Request Delivery Receipt", "check"),
+        ("read_receipt", "Request Read Receipt", "check"),
+    ]
+
+    def _draw_mail_settings(self, content_rect: pygame.Rect):
+        """Draw the 1989-style email settings page with scrolling."""
+        font = self._mail_settings_font
+        x = content_rect.x + int(8 * self.scale)
+        y_start = content_rect.y + int(6 * self.scale)
+        field_w = content_rect.width - int(16 * self.scale)
+        row_h = int(22 * self.scale)
+        text_field_h = int(18 * self.scale)
+        radio_size = int(12 * self.scale)
+        check_size = int(12 * self.scale)
+        label_w = int(180 * self.scale)
+
+        # Cursor blink for active text field
+        self.mail_cursor_blink_timer += 0.05
+        show_cursor = (self.mail_cursor_blink_timer % 1.0) < 0.5
+
+        # Calculate total height
+        total_rows = len(self._MAIL_SETTINGS_LAYOUT)
+        total_h = total_rows * row_h + int(10 * self.scale)
+        visible_h = content_rect.height
+        max_scroll = max(0, total_h - visible_h)
+        self.mail_settings_scroll = max(0, min(self.mail_settings_scroll, max_scroll))
+
+        self._mail_settings_hitboxes = []
+        y = y_start - self.mail_settings_scroll
+
+        for entry in self._MAIL_SETTINGS_LAYOUT:
+            key = entry[0]
+            label = entry[1]
+            etype = entry[2]
+
+            row_top = y
+            if y + row_h < content_rect.y or y > content_rect.bottom:
+                y += row_h
+                continue  # Off-screen, skip drawing but advance
+
+            if etype == "header":
+                # Section header
+                header_surf = font.render(label, True, COLOR_AMBER)
+                self.screen.blit(header_surf, (x, y + int(4 * self.scale)))
+                y += row_h
+                continue
+
+            # Draw label
+            label_surf = font.render(label, True, COLOR_CYAN)
+            self.screen.blit(label_surf, (x, y + int(3 * self.scale)))
+
+            control_x = x + label_w
+
+            if etype == "text":
+                # Text entry field
+                value = str(self.mail_settings.get(key, ""))
+                is_active = self.mail_settings_active_field == key
+                field_rect = pygame.Rect(control_x, y + int(1 * self.scale), field_w - label_w, text_field_h)
+                bg = (30, 30, 55) if is_active else (15, 15, 30)
+                pygame.draw.rect(self.screen, bg, field_rect)
+                border = COLOR_CYAN if is_active else COLOR_GREY
+                pygame.draw.rect(self.screen, border, field_rect, 1)
+
+                # Render text (clip to field)
+                text_surf = font.render(value, True, COLOR_WHITE)
+                text_clip = field_rect.inflate(-int(4 * self.scale), 0)
+                old_clip = self.screen.get_clip()
+                self.screen.set_clip(text_clip)
+                self.screen.blit(text_surf, (field_rect.x + int(3 * self.scale), field_rect.y + int(2 * self.scale)))
+                if show_cursor and is_active:
+                    cx = field_rect.x + int(3 * self.scale) + font.size(value[:self.mail_settings_cursor])[0]
+                    pygame.draw.line(self.screen, COLOR_WHITE, (cx, field_rect.y + int(2 * self.scale)), (cx, field_rect.bottom - int(2 * self.scale)), 1)
+                self.screen.set_clip(old_clip)
+
+                self._mail_settings_hitboxes.append((field_rect, key, "text"))
+
+            elif etype == "radio":
+                options = entry[3]
+                current_val = self.mail_settings.get(key, options[0])
+                rx = control_x
+                for opt in options:
+                    # Radio circle
+                    cy = y + row_h // 2
+                    pygame.draw.circle(self.screen, COLOR_CYAN, (rx + radio_size // 2, cy), radio_size // 2, 1)
+                    if current_val == opt:
+                        pygame.draw.circle(self.screen, COLOR_CYAN, (rx + radio_size // 2, cy), radio_size // 2 - int(3 * self.scale))
+                    opt_surf = font.render(opt, True, COLOR_WHITE)
+                    self.screen.blit(opt_surf, (rx + radio_size + int(3 * self.scale), y + int(3 * self.scale)))
+                    opt_w = radio_size + int(3 * self.scale) + opt_surf.get_width() + int(10 * self.scale)
+                    hit_rect = pygame.Rect(rx, y, opt_w, row_h)
+                    self._mail_settings_hitboxes.append((hit_rect, key, "radio", opt))
+                    rx += opt_w
+
+            elif etype == "check":
+                current_val = bool(self.mail_settings.get(key, False))
+                cy = y + row_h // 2
+                check_rect = pygame.Rect(control_x, cy - check_size // 2, check_size, check_size)
+                pygame.draw.rect(self.screen, COLOR_CYAN, check_rect, 1)
+                if current_val:
+                    # Draw check mark
+                    inner = check_rect.inflate(-int(4 * self.scale), -int(4 * self.scale))
+                    pygame.draw.rect(self.screen, COLOR_CYAN, inner)
+                self._mail_settings_hitboxes.append((check_rect.inflate(int(8 * self.scale), int(4 * self.scale)), key, "check"))
+
+            y += row_h
+
+        # Scroll bar
+        if total_h > visible_h:
+            sb_x = content_rect.right - int(8 * self.scale)
+            sb_w = int(6 * self.scale)
+            sb_track = pygame.Rect(sb_x, content_rect.y, sb_w, content_rect.height)
+            pygame.draw.rect(self.screen, (30, 30, 50), sb_track)
+            thumb_h = max(int(20 * self.scale), int(content_rect.height * visible_h / total_h))
+            thumb_y = content_rect.y + int((content_rect.height - thumb_h) * self.mail_settings_scroll / max_scroll) if max_scroll > 0 else content_rect.y
+            thumb_rect = pygame.Rect(sb_x, thumb_y, sb_w, thumb_h)
+            pygame.draw.rect(self.screen, COLOR_CYAN, thumb_rect)
+
+    def _handle_mail_settings_click(self, mouse_x: int, mouse_y: int) -> bool:
+        """Handle clicks on the settings page."""
+        for entry in getattr(self, "_mail_settings_hitboxes", []):
+            rect = entry[0]
+            key = entry[1]
+            etype = entry[2]
+            if rect.collidepoint(mouse_x, mouse_y):
+                if etype == "text":
+                    self.mail_settings_active_field = key
+                    self.mail_settings_cursor = len(str(self.mail_settings.get(key, "")))
+                    return True
+                elif etype == "radio":
+                    opt = entry[3]
+                    self.mail_settings[key] = opt
+                    self.mail_settings_active_field = None
+                    return True
+                elif etype == "check":
+                    self.mail_settings[key] = not bool(self.mail_settings.get(key, False))
+                    self.mail_settings_active_field = None
+                    return True
+        # Clicked on empty area - deselect text field
+        self.mail_settings_active_field = None
+        return True
+
+    def _mail_settings_handle_keydown(self, event) -> bool:
+        """Handle keyboard input for settings text fields."""
+        key = self.mail_settings_active_field
+        if not key:
+            return False
+
+        text = str(self.mail_settings.get(key, ""))
+        cursor = min(self.mail_settings_cursor, len(text))
+
+        if event.key == pygame.K_BACKSPACE:
+            if cursor > 0:
+                text = text[:cursor - 1] + text[cursor:]
+                cursor -= 1
+        elif event.key == pygame.K_DELETE:
+            if cursor < len(text):
+                text = text[:cursor] + text[cursor + 1:]
+        elif event.key == pygame.K_LEFT:
+            cursor = max(0, cursor - 1)
+        elif event.key == pygame.K_RIGHT:
+            cursor = min(len(text), cursor + 1)
+        elif event.key == pygame.K_HOME:
+            cursor = 0
+        elif event.key == pygame.K_END:
+            cursor = len(text)
+        elif event.key == pygame.K_RETURN or event.key == pygame.K_TAB:
+            self.mail_settings_active_field = None
+            return True
+        elif event.key == pygame.K_ESCAPE:
+            self.mail_settings_active_field = None
+            return True
+        else:
+            return False
+
+        self.mail_settings[key] = text
+        self.mail_settings_cursor = cursor
+        return True
+
+    def _mail_settings_handle_textinput(self, text: str) -> bool:
+        """Handle text character input for settings text fields."""
+        key = self.mail_settings_active_field
+        if not key:
+            return False
+
+        current = str(self.mail_settings.get(key, ""))
+        cursor = min(self.mail_settings_cursor, len(current))
+        current = current[:cursor] + text + current[cursor:]
+        cursor += len(text)
+
+        self.mail_settings[key] = current
+        self.mail_settings_cursor = cursor
+        return True
+
     def _get_icon_positions_file_path(self) -> str:
         """Get the path to the icon positions JSON file."""
         # Save in OS folder alongside OS_Mode.py
@@ -3542,7 +5561,8 @@ class OSMode:
         return os.path.join(os_folder, "icon_positions.json")
 
     def _align_icons_to_tape_center(self):
-        """Align every icon horizontally to the tape icon's center."""
+        """Align every icon horizontally to the tape icon's center. Skip mail icon so it stays next to tape.
+        Position dotSONIC under mail icon when mail exists."""
         if not self.icons or not self.desktop_rect:
             return
         tape_icon = next((icon for icon in self.icons if icon["name"] == "tape-icon.png"), None)
@@ -3550,14 +5570,55 @@ class OSMode:
             return
         tape_center = tape_icon["x"] + tape_icon["width"] / 2
         for icon in self.icons:
+            if icon["name"] == "mail-icon.png":
+                continue  # Keep mail icon in its position next to tape, do not align to center
+            if icon["name"] == "sonic-icon.png":
+                mail_icon = next((i for i in self.icons if i["name"] == "mail-icon.png"), None)
+                if mail_icon and not icon.get("from_saved"):
+                    self._position_sonic_icon_under_mail()
+                else:
+                    # No mail or user saved position: align to tape center like other icons
+                    aligned_x = int(tape_center - icon["width"] / 2)
+                    aligned_x = max(self.desktop_rect.left, min(aligned_x, self.desktop_rect.right - icon["width"]))
+                    icon["x"] = aligned_x
+                continue
             aligned_x = int(tape_center - icon["width"] / 2)
             aligned_x = max(self.desktop_rect.left, min(aligned_x, self.desktop_rect.right - icon["width"]))
             icon["x"] = aligned_x
 
+    def _apply_desktop_icon_vertical_offsets(self):
+        """Apply vertical offsets to desktop icons to reduce overlap (percent of desktop height). Only applied when using default positions, not saved."""
+        if not self.icons or not self.desktop_rect or not self.desktop_size[1]:
+            return
+        dh = self.desktop_size[1]
+        # DATASETTE up 2%, NOTES down 7%, GAMES down 4.3%, MODEM down 2%, HDD unchanged
+        offsets = {
+            "tape-icon.png": -0.02 * dh,      # DATASETTE up 2%
+            "notes-icon.png": 0.07 * dh,      # NOTES down 7%
+            "games-folder.png": 0.043 * dh,   # GAMES down 4.3%
+            "modem-iconpng.png": 0.02 * dh,   # MODEM down 2%
+            "hard-drive-icon.png": 0,         # HDD keep where it is
+        }
+        top = self.desktop_rect.top
+        bottom = self.desktop_rect.bottom
+        for icon in self.icons:
+            if icon.get("from_saved"):
+                continue
+            delta = offsets.get(icon["name"], 0)
+            icon["y"] = int(icon["y"] + delta)
+            icon["y"] = max(top, min(icon["y"], bottom - icon["height"]))
+
     def _load_games_icons(self, normalized_positions: Optional[Dict[str, Tuple[float, float]]] = None) -> None:
-        """Load or reload the games modal icons with proper scaling."""
+        """Load or reload the games modal icons with proper scaling.
+        Civitas Nihilium is hidden unless region is US Mainland (os_locale == 1).
+        Snooker is hidden unless region is Europe (os_locale == 2)."""
         icons: List[Dict[str, object]] = []
         for definition in self.games_icon_defs:
+            # Region-based visibility: Civitas only on US Mainland, Snooker only on Europe
+            if definition["name"] == "civitas_nihilium" and self.os_locale != 1:
+                continue
+            if definition["name"] == "snooker" and self.os_locale != 2:
+                continue
             try:
                 normal_path = get_data_path("OS", definition["file"])
                 selected_path = get_data_path("OS", definition["selected_file"])
@@ -3608,6 +5669,295 @@ class OSMode:
         # Fix any overlapping icons (only if using default positions, not user-saved positions)
         if not normalized_positions:
             self._fix_overlapping_games_icons()
+
+    def _load_hard_drive_icon(self) -> None:
+        """Load the system-folder icon and (when US MAINLAND) file-system-folder icon for the hard drive modal."""
+        try:
+            normal_path = get_data_path("OS", "system-folder.png")
+            selected_path = get_data_path("OS", "S-system-folder.png")
+            normal_image = pygame.image.load(normal_path).convert_alpha()
+            original_size = normal_image.get_size()
+            icon_size = (
+                int(original_size[0] * self.scale),
+                int(original_size[1] * self.scale)
+            )
+            normal_image = pygame.transform.scale(normal_image, icon_size)
+            try:
+                selected_image = pygame.image.load(selected_path).convert_alpha()
+                selected_image = pygame.transform.scale(selected_image, icon_size)
+            except Exception:
+                selected_image = normal_image
+            
+            self.hard_drive_modal_icon = {
+                "image": normal_image,
+                "s_image": selected_image,
+                "width": icon_size[0],
+                "height": icon_size[1],
+                "rel_x": 0,  # Position relative to content rect (top-left)
+                "rel_y": 0,
+                "selected": False,
+                "rect": None,
+                "name": "SYSTEM"
+            }
+        except Exception as e:
+            print(f"Warning: Failed to load system-folder icon: {e}")
+            self.hard_drive_modal_icon = None
+
+        # Load File System icon (file-system-folder.png) for HDD modal; shown when os_locale == US MAINLAND
+        try:
+            fs_normal_path = get_data_path("OS", "file-system-folder.png")
+            fs_selected_path = get_data_path("OS", "S-file-system-folder.png")
+            fs_normal = pygame.image.load(fs_normal_path).convert_alpha()
+            fs_orig = fs_normal.get_size()
+            fs_size = (int(fs_orig[0] * self.scale), int(fs_orig[1] * self.scale))
+            fs_normal = pygame.transform.scale(fs_normal, fs_size)
+            try:
+                fs_selected = pygame.image.load(fs_selected_path).convert_alpha()
+                fs_selected = pygame.transform.scale(fs_selected, fs_size)
+            except Exception:
+                fs_selected = fs_normal
+            gap = int(10 * self.scale)
+            default_rel_x = (self.hard_drive_modal_icon["width"] + gap) if self.hard_drive_modal_icon else gap
+            self.hard_drive_modal_file_system_icon = {
+                "image": fs_normal,
+                "s_image": fs_selected,
+                "width": fs_size[0],
+                "height": fs_size[1],
+                "rel_x": default_rel_x,
+                "rel_y": 0,
+                "selected": False,
+                "rect": None,
+                "name": "File System"
+            }
+        except Exception as e:
+            print(f"Warning: Failed to load file-system-folder icon: {e}")
+            self.hard_drive_modal_file_system_icon = None
+
+    def _load_system_folder_icon(self) -> None:
+        """Load the terminal-icon for the system folder modal."""
+        try:
+            normal_path = get_data_path("OS", "terminal-icon.png")
+            selected_path = get_data_path("OS", "S-terminal-icon.png")
+            normal_image = pygame.image.load(normal_path).convert_alpha()
+            original_size = normal_image.get_size()
+            icon_size = (
+                int(original_size[0] * self.scale),
+                int(original_size[1] * self.scale)
+            )
+            normal_image = pygame.transform.scale(normal_image, icon_size)
+            try:
+                selected_image = pygame.image.load(selected_path).convert_alpha()
+                selected_image = pygame.transform.scale(selected_image, icon_size)
+            except Exception:
+                selected_image = normal_image
+            
+            self.system_folder_modal_icon = {
+                "image": normal_image,
+                "s_image": selected_image,
+                "width": icon_size[0],
+                "height": icon_size[1],
+                "rel_x": 0,  # Position relative to content rect (top-left)
+                "rel_y": 0,
+                "selected": False,
+                "rect": None  # Will be set when drawing
+            }
+        except Exception as e:
+            print(f"Warning: Failed to load terminal-icon: {e}")
+            self.system_folder_modal_icon = None
+
+    def _load_file_system_browser_assets(self) -> None:
+        """Load folder.png, S-folder.png, brad-file.png, S-brad-file.png, and Pixellari.ttf for file system browser."""
+        try:
+            folder_path = get_data_path("OS", "folder.png")
+            s_folder_path = get_data_path("OS", "S-folder.png")
+            folder_img = pygame.image.load(folder_path).convert_alpha()
+            fw, fh = folder_img.get_size()
+            fs = (int(fw * self.scale), int(fh * self.scale))
+            folder_img = pygame.transform.scale(folder_img, fs)
+            try:
+                s_folder_img = pygame.image.load(s_folder_path).convert_alpha()
+                s_folder_img = pygame.transform.scale(s_folder_img, fs)
+            except Exception:
+                s_folder_img = folder_img
+            self.file_system_browser_folder_icon = {
+                "image": folder_img, "s_image": s_folder_img, "width": fs[0], "height": fs[1]
+            }
+        except Exception as e:
+            print(f"Warning: Failed to load folder icon: {e}")
+            self.file_system_browser_folder_icon = None
+        try:
+            brad_path = get_data_path("OS", "brad-file.png")
+            s_brad_path = get_data_path("OS", "S-brad-file.png")
+            brad_img = pygame.image.load(brad_path).convert_alpha()
+            bw, bh = brad_img.get_size()
+            bs = (int(bw * self.scale), int(bh * self.scale))
+            brad_img = pygame.transform.scale(brad_img, bs)
+            try:
+                s_brad_img = pygame.image.load(s_brad_path).convert_alpha()
+                s_brad_img = pygame.transform.scale(s_brad_img, bs)
+            except Exception:
+                s_brad_img = brad_img
+            self.file_system_browser_brad_icon = {
+                "image": brad_img, "s_image": s_brad_img, "width": bs[0], "height": bs[1]
+            }
+        except Exception as e:
+            print(f"Warning: Failed to load brad-file icon: {e}")
+            self.file_system_browser_brad_icon = None
+        try:
+            sonic_path = get_data_path("OS", "sonic-file.png")
+            s_sonic_path = get_data_path("OS", "S-sonic-file.png")
+            if os.path.exists(sonic_path):
+                sonic_img = pygame.image.load(sonic_path).convert_alpha()
+                sw, sh = sonic_img.get_size()
+                ss = (int(sw * self.scale), int(sh * self.scale))
+                sonic_img = pygame.transform.scale(sonic_img, ss)
+                try:
+                    s_sonic_img = pygame.image.load(s_sonic_path).convert_alpha() if os.path.exists(s_sonic_path) else sonic_img
+                    s_sonic_img = pygame.transform.scale(s_sonic_img, ss)
+                except Exception:
+                    s_sonic_img = sonic_img
+                self.file_system_browser_sonic_icon = {
+                    "image": sonic_img, "s_image": s_sonic_img, "width": ss[0], "height": ss[1]
+                }
+            else:
+                self.file_system_browser_sonic_icon = self.file_system_browser_brad_icon
+        except Exception as e:
+            print(f"Warning: Failed to load sonic-file icon: {e}")
+            self.file_system_browser_sonic_icon = self.file_system_browser_brad_icon
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            data_dir = os.path.dirname(script_dir)
+            project_root = os.path.dirname(data_dir)
+            pixellari_path = os.path.join(project_root, "Pixellari.ttf")
+            font_size = max(int(16 * self.scale), 12)
+            self.file_system_browser_font = pygame.font.Font(pixellari_path, font_size)
+        except Exception as e:
+            print(f"Warning: Failed to load Pixellari.ttf: {e}")
+            self.file_system_browser_font = None
+
+    def _add_mail_icon_to_desktop(self) -> None:
+        """Add the mail icon to the desktop when Mainland America region is selected."""
+        # Check if mail icon already exists
+        for icon in self.icons:
+            if icon["name"] == "mail-icon.png":
+                return  # Already added
+        
+        try:
+            icon_path = get_data_path("OS", "mail-icon.png")
+            s_icon_path = get_data_path("OS", "S-mail-icon.png")
+            
+            # Load normal icon
+            icon_image = pygame.image.load(icon_path).convert_alpha()
+            original_icon_size = icon_image.get_size()
+            icon_size = (
+                int(original_icon_size[0] * self.scale),
+                int(original_icon_size[1] * self.scale)
+            )
+            icon_image = pygame.transform.scale(icon_image, icon_size)
+            
+            # Load selected "S" version icon
+            s_icon_image = None
+            try:
+                s_icon_image = pygame.image.load(s_icon_path).convert_alpha()
+                s_icon_image = pygame.transform.scale(s_icon_image, icon_size)
+            except Exception as e:
+                print(f"Warning: Failed to load S-mail-icon.png: {e}")
+                s_icon_image = icon_image
+            
+            # Position the mail icon next to the datasette (tape) icon - same row, no overlap
+            tape_icon = next((icon for icon in self.icons if icon["name"] == "tape-icon.png"), None)
+            spacing = int(10 * self.scale)
+            
+            # Check saved positions first
+            saved_positions = self._load_icon_positions()
+            if "mail-icon.png" in saved_positions:
+                icon_x = saved_positions["mail-icon.png"]["x"]
+                icon_y = saved_positions["mail-icon.png"]["y"]
+            elif tape_icon:
+                # Place to the right of the tape icon, same y (no overlapping)
+                icon_x = tape_icon["x"] + tape_icon["width"] + spacing
+                icon_y = tape_icon["y"]
+                # Keep within desktop bounds
+                icon_x = min(icon_x, self.desktop_rect.right - icon_size[0] - int(10 * self.scale)) if self.desktop_rect else icon_x
+            else:
+                # Fallback: below existing icons if tape icon not found
+                lowest_y = self.desktop_y + int(70 * self.scale)
+                for icon in self.icons:
+                    icon_bottom = icon["y"] + icon["height"]
+                    if icon_bottom > lowest_y:
+                        lowest_y = icon_bottom
+                icon_x = self.desktop_x + int(10 * self.scale)
+                icon_y = lowest_y + spacing
+            
+            icon_data = {
+                "image": icon_image,
+                "s_image": s_icon_image,
+                "x": icon_x,
+                "y": icon_y,
+                "width": icon_size[0],
+                "height": icon_size[1],
+                "name": "mail-icon.png",
+                "label": "MAIL",
+                "selected": False,
+                "dragging": False,
+                "drag_offset_x": 0,
+                "drag_offset_y": 0,
+                "from_saved": "mail-icon.png" in saved_positions,
+            }
+            self.icons.append(icon_data)
+            self.mail_icon_visible = True
+            # Position dotSONIC icon under mail icon with same spacing as other icons
+            self._position_sonic_icon_under_mail()
+            print("Mail icon added to desktop (Mainland America region selected)")
+            
+        except Exception as e:
+            print(f"Warning: Failed to load mail-icon.png: {e}")
+
+    def _position_sonic_icon_under_mail(self) -> None:
+        """Position dotSONIC icon under the mail icon with same spacing (10px) as other desktop icons."""
+        mail_icon = next((icon for icon in self.icons if icon["name"] == "mail-icon.png"), None)
+        sonic_icon = next((icon for icon in self.icons if icon["name"] == "sonic-icon.png"), None)
+        if not mail_icon or not sonic_icon or sonic_icon.get("from_saved") or not self.desktop_rect:
+            return
+        spacing = int(10 * self.scale)
+        sonic_icon["x"] = mail_icon["x"]
+        sonic_icon["y"] = mail_icon["y"] + mail_icon["height"] + spacing
+        sonic_icon["y"] = max(self.desktop_rect.top, min(sonic_icon["y"], self.desktop_rect.bottom - sonic_icon["height"]))
+    
+    def _remove_mail_icon_from_desktop(self) -> None:
+        """Remove the mail icon from the desktop when switching to Europe or Pacifica.
+        Mail is only available in US Mainland (os_locale == 1)."""
+        self.icons[:] = [icon for icon in self.icons if icon["name"] != "mail-icon.png"]
+        self.mail_icon_visible = False
+
+    def _switch_os_region(self, region_num: int) -> None:
+        """Switch OS locale to region (1=US Mainland, 2=Europe, 3=Pacifica)."""
+        self.os_locale = region_num
+        if region_num == 1:
+            self._add_mail_icon_to_desktop()
+            if self.grant_token:
+                self.grant_token("SCHOOL_HACK2", reason="region set to American Mainland / US MAINLAND")
+        else:
+            self._remove_mail_icon_from_desktop()
+            if "mail" in self.active_modals:
+                self._close_modal("mail")
+        if region_num == 3 and "dot_sonic" in self.active_modals:
+            self._close_modal("dot_sonic")
+        self._load_games_icons()
+
+    def _load_terminal_font(self) -> None:
+        """Load VT323-Regular.ttf from the OS folder for the terminal."""
+        try:
+            font_path = get_data_path("OS", "VT323-Regular.ttf")
+            font_size = max(int(21 * self.scale), 16)
+            self.terminal_font = pygame.font.Font(font_path, font_size)
+        except Exception as e:
+            print(f"Warning: Failed to load terminal font (VT323-Regular.ttf): {e}")
+            # Fallback to default font
+            try:
+                self.terminal_font = pygame.font.Font(None, max(int(21 * self.scale), 16))
+            except Exception:
+                self.terminal_font = None
 
     def _fix_overlapping_games_icons(self) -> None:
         """Check for overlapping icons and automatically arrange them to prevent overlaps."""
@@ -3701,6 +6051,1823 @@ class OSMode:
         )
         return True
 
+    def _draw_hard_drive_modal(self) -> None:
+        """Draw the hard drive modal with system-folder icon."""
+        modal_w, modal_h = self._get_modal_size("hard_drive")
+        modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
+        modal_x, modal_y = self.modal_positions.get("hard_drive", self._get_modal_position(modal_w, modal_h, "hard_drive"))
+        if "hard_drive" not in self.modal_positions:
+            self.modal_positions["hard_drive"] = (modal_x, modal_y)
+
+        modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
+        pygame.draw.rect(self.screen, COLOR_BG_DARK, modal_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, modal_rect, 2)
+
+        title_bar_rect = pygame.Rect(modal_x, modal_y, modal_w, self.modal_title_bar_height)
+        pygame.draw.rect(self.screen, COLOR_BG_TITLE, title_bar_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, title_bar_rect, 1)
+
+        try:
+            title_font = pygame.font.Font(None, max(int(16 * self.scale), 12))
+            title_surface = title_font.render("HARD DRIVE", True, COLOR_WHITE)
+            self.screen.blit(title_surface, (modal_x + int(10 * self.scale), modal_y + int(8 * self.scale)))
+        except Exception:
+            pass
+
+        close_btn_size = int(20 * self.scale)
+        close_btn_x = modal_x + modal_w - close_btn_size - int(5 * self.scale)
+        close_btn_y = modal_y + int(5 * self.scale)
+        close_btn_rect = pygame.Rect(close_btn_x, close_btn_y, close_btn_size, close_btn_size)
+        is_hovered = self.hovered_button == ("hard_drive", "title_close")
+        close_color = COLOR_RED if is_hovered else COLOR_RED_DARK
+        pygame.draw.rect(self.screen, close_color, close_btn_rect)
+        pygame.draw.rect(self.screen, COLOR_RED, close_btn_rect, 2 if is_hovered else 1)
+        try:
+            close_font = pygame.font.Font(None, max(int(14 * self.scale), 10))
+            close_text = close_font.render("X", True, COLOR_WHITE)
+            self.screen.blit(close_text, close_text.get_rect(center=close_btn_rect.center))
+        except Exception:
+            pass
+
+        # Draw content area (matching games modal style)
+        gap = int(20 * self.scale)
+        content_rect = pygame.Rect(
+            modal_x + gap,
+            modal_y + self.modal_title_bar_height + gap,
+            modal_w - 2 * gap,
+            modal_h - self.modal_title_bar_height - 2 * gap
+        )
+        pygame.draw.rect(self.screen, COLOR_BG_TITLE, content_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, content_rect, 1)
+        inner_rect = content_rect.inflate(-int(10 * self.scale), -int(10 * self.scale))
+        pygame.draw.rect(self.screen, COLOR_BG_DARK, inner_rect)
+        self.hard_drive_modal_content_rect = inner_rect
+
+        # Draw SYSTEM icon (positioned in top-left, draggable)
+        if self.hard_drive_modal_icon:
+            icon = self.hard_drive_modal_icon
+            icon["rel_x"] = max(0, min(icon["rel_x"], max(0, inner_rect.width - icon["width"])))
+            icon["rel_y"] = max(0, min(icon["rel_y"], max(0, inner_rect.height - icon["height"])))
+            draw_x = inner_rect.x + icon["rel_x"]
+            draw_y = inner_rect.y + icon["rel_y"]
+            image = icon["s_image"] if icon["selected"] else icon["image"]
+            self.screen.blit(image, (draw_x, draw_y))
+            icon["rect"] = pygame.Rect(draw_x, draw_y, icon["width"], icon["height"])
+            self._draw_label_under_icon(draw_x, draw_y, icon["width"], icon["height"], "SYSTEM")
+
+        # Draw File System icon next to SYSTEM when region is US MAINLAND or EUROPE (os_locale 1 or 2)
+        if self.os_locale in (1, 2) and self.hard_drive_modal_file_system_icon:
+            icon = self.hard_drive_modal_file_system_icon
+            gap = int(10 * self.scale)
+            max_rel_x = max(0, inner_rect.width - icon["width"])
+            icon["rel_x"] = max(0, min(icon["rel_x"], max_rel_x))
+            icon["rel_y"] = max(0, min(icon["rel_y"], max(0, inner_rect.height - icon["height"])))
+            draw_x = inner_rect.x + icon["rel_x"]
+            draw_y = inner_rect.y + icon["rel_y"]
+            image = icon["s_image"] if icon["selected"] else icon["image"]
+            self.screen.blit(image, (draw_x, draw_y))
+            icon["rect"] = pygame.Rect(draw_x, draw_y, icon["width"], icon["height"])
+            self._draw_label_under_icon(draw_x, draw_y, icon["width"], icon["height"], "FILE SYSTEM")
+
+    def _handle_hard_drive_modal_click(self, mouse_x: int, mouse_y: int) -> bool:
+        """Handle clicks within the hard drive modal."""
+        modal_w, modal_h = self._get_modal_size("hard_drive")
+        modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
+        modal_x, modal_y = self.modal_positions.get("hard_drive", (0, 0))
+
+        close_btn_size = int(20 * self.scale)
+        close_btn_rect = pygame.Rect(
+            modal_x + modal_w - close_btn_size - int(5 * self.scale),
+            modal_y + int(5 * self.scale),
+            close_btn_size,
+            close_btn_size
+        )
+        if close_btn_rect.collidepoint(mouse_x, mouse_y):
+            self._close_modal("hard_drive")
+            return True
+
+        modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
+        if not modal_rect.collidepoint(mouse_x, mouse_y):
+            return False
+
+        gap = int(20 * self.scale)
+        content_rect = pygame.Rect(
+            modal_x + gap,
+            modal_y + self.modal_title_bar_height + gap,
+            modal_w - 2 * gap,
+            modal_h - self.modal_title_bar_height - 2 * gap
+        ).inflate(-int(10 * self.scale), -int(10 * self.scale))
+        self.hard_drive_modal_content_rect = content_rect
+
+        # When US MAINLAND or EUROPE: click/double-click File System icon
+        if self.os_locale in (1, 2) and self.hard_drive_modal_file_system_icon:
+            fs_rect = self.hard_drive_modal_file_system_icon.get("rect")
+            if fs_rect and fs_rect.collidepoint(mouse_x, mouse_y):
+                # Single click: select icon and deselect others
+                self.hard_drive_modal_file_system_icon["selected"] = True
+                if self.hard_drive_modal_icon:
+                    self.hard_drive_modal_icon["selected"] = False
+                self.hard_drive_modal_dragging_icon = self.hard_drive_modal_file_system_icon
+                self.hard_drive_modal_drag_offset = (
+                    mouse_x - fs_rect.x,
+                    mouse_y - fs_rect.y
+                )
+                current_time = time.time()
+                is_double = (self.hard_drive_modal_last_clicked_icon == "file_system" and
+                             self.hard_drive_modal_last_click_time > 0 and
+                             (current_time - self.hard_drive_modal_last_click_time) < self.double_click_threshold)
+                self.hard_drive_modal_last_clicked_icon = "file_system"
+                if is_double:
+                    self.hard_drive_modal_last_click_time = 0.0
+                    self.hard_drive_modal_file_system_icon["selected"] = False
+                    self.file_system_browser_path = []
+                    self.file_system_browser_items = self._list_file_system_browser_directory()
+                    self.file_system_browser_selected_index = -1
+                    self._open_modal("file_system_browser")
+                else:
+                    self.hard_drive_modal_last_click_time = current_time
+                return True
+
+        # Check if clicking on SYSTEM (system-folder) icon
+        if self.hard_drive_modal_icon:
+            icon_rect = self.hard_drive_modal_icon.get("rect")
+            if icon_rect and icon_rect.collidepoint(mouse_x, mouse_y):
+                self.hard_drive_modal_icon["selected"] = True
+                if self.hard_drive_modal_file_system_icon:
+                    self.hard_drive_modal_file_system_icon["selected"] = False
+                self.hard_drive_modal_dragging_icon = self.hard_drive_modal_icon
+                self.hard_drive_modal_drag_offset = (
+                    mouse_x - icon_rect.x,
+                    mouse_y - icon_rect.y
+                )
+                current_time = time.time()
+                self.hard_drive_modal_last_clicked_icon = "system"
+                if (self.hard_drive_modal_last_click_time > 0 and
+                        (current_time - self.hard_drive_modal_last_click_time) < self.double_click_threshold):
+                    self.hard_drive_modal_last_click_time = 0.0
+                    self.hard_drive_modal_icon["selected"] = False
+                    self._open_modal("system_folder")
+                else:
+                    self.hard_drive_modal_last_click_time = current_time
+                return True
+
+        if content_rect.collidepoint(mouse_x, mouse_y):
+            if self.hard_drive_modal_icon:
+                self.hard_drive_modal_icon["selected"] = False
+            if self.hard_drive_modal_file_system_icon:
+                self.hard_drive_modal_file_system_icon["selected"] = False
+            self.hard_drive_modal_dragging_icon = None
+            return True
+
+        return False
+
+    def _draw_system_folder_modal(self) -> None:
+        """Draw the system folder modal with terminal-icon."""
+        modal_w, modal_h = self._get_modal_size("system_folder")
+        modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
+        modal_x, modal_y = self.modal_positions.get("system_folder", self._get_modal_position(modal_w, modal_h, "system_folder"))
+        if "system_folder" not in self.modal_positions:
+            self.modal_positions["system_folder"] = (modal_x, modal_y)
+
+        modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
+        pygame.draw.rect(self.screen, COLOR_BG_DARK, modal_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, modal_rect, 2)
+
+        title_bar_rect = pygame.Rect(modal_x, modal_y, modal_w, self.modal_title_bar_height)
+        pygame.draw.rect(self.screen, COLOR_BG_TITLE, title_bar_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, title_bar_rect, 1)
+
+        try:
+            title_font = pygame.font.Font(None, max(int(16 * self.scale), 12))
+            title_surface = title_font.render("SYSTEM FOLDER", True, COLOR_WHITE)
+            self.screen.blit(title_surface, (modal_x + int(10 * self.scale), modal_y + int(8 * self.scale)))
+        except Exception:
+            pass
+
+        close_btn_size = int(20 * self.scale)
+        close_btn_x = modal_x + modal_w - close_btn_size - int(5 * self.scale)
+        close_btn_y = modal_y + int(5 * self.scale)
+        close_btn_rect = pygame.Rect(close_btn_x, close_btn_y, close_btn_size, close_btn_size)
+        is_hovered = self.hovered_button == ("system_folder", "title_close")
+        close_color = COLOR_RED if is_hovered else COLOR_RED_DARK
+        pygame.draw.rect(self.screen, close_color, close_btn_rect)
+        pygame.draw.rect(self.screen, COLOR_RED, close_btn_rect, 2 if is_hovered else 1)
+        try:
+            close_font = pygame.font.Font(None, max(int(14 * self.scale), 10))
+            close_text = close_font.render("X", True, COLOR_WHITE)
+            self.screen.blit(close_text, close_text.get_rect(center=close_btn_rect.center))
+        except Exception:
+            pass
+
+        # Draw content area (matching games modal style)
+        gap = int(20 * self.scale)
+        content_rect = pygame.Rect(
+            modal_x + gap,
+            modal_y + self.modal_title_bar_height + gap,
+            modal_w - 2 * gap,
+            modal_h - self.modal_title_bar_height - 2 * gap
+        )
+        pygame.draw.rect(self.screen, COLOR_BG_TITLE, content_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, content_rect, 1)
+        inner_rect = content_rect.inflate(-int(10 * self.scale), -int(10 * self.scale))
+        pygame.draw.rect(self.screen, COLOR_BG_DARK, inner_rect)
+        self.system_folder_modal_content_rect = inner_rect
+
+        # Draw terminal-icon (positioned in top-left, draggable)
+        if self.system_folder_modal_icon:
+            icon = self.system_folder_modal_icon
+            icon["rel_x"] = max(0, min(icon["rel_x"], max(0, inner_rect.width - icon["width"])))
+            icon["rel_y"] = max(0, min(icon["rel_y"], max(0, inner_rect.height - icon["height"])))
+            draw_x = inner_rect.x + icon["rel_x"]
+            draw_y = inner_rect.y + icon["rel_y"]
+            image = icon["s_image"] if icon["selected"] else icon["image"]
+            self.screen.blit(image, (draw_x, draw_y))
+            icon["rect"] = pygame.Rect(draw_x, draw_y, icon["width"], icon["height"])
+            self._draw_label_under_icon(draw_x, draw_y, icon["width"], icon["height"], ".TERMINAL")
+
+    def _handle_system_folder_modal_click(self, mouse_x: int, mouse_y: int) -> bool:
+        """Handle clicks within the system folder modal."""
+        modal_w, modal_h = self._get_modal_size("system_folder")
+        modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
+        modal_x, modal_y = self.modal_positions.get("system_folder", (0, 0))
+
+        close_btn_size = int(20 * self.scale)
+        close_btn_rect = pygame.Rect(
+            modal_x + modal_w - close_btn_size - int(5 * self.scale),
+            modal_y + int(5 * self.scale),
+            close_btn_size,
+            close_btn_size
+        )
+        if close_btn_rect.collidepoint(mouse_x, mouse_y):
+            self._close_modal("system_folder")
+            return True
+
+        modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
+        if not modal_rect.collidepoint(mouse_x, mouse_y):
+            return False
+
+        gap = int(20 * self.scale)
+        content_rect = pygame.Rect(
+            modal_x + gap,
+            modal_y + self.modal_title_bar_height + gap,
+            modal_w - 2 * gap,
+            modal_h - self.modal_title_bar_height - 2 * gap
+        ).inflate(-int(10 * self.scale), -int(10 * self.scale))
+        self.system_folder_modal_content_rect = content_rect
+
+        # Check if clicking on terminal-icon
+        if self.system_folder_modal_icon:
+            icon_rect = self.system_folder_modal_icon.get("rect")
+            if icon_rect and icon_rect.collidepoint(mouse_x, mouse_y):
+                self.system_folder_modal_icon["selected"] = True
+                self.system_folder_modal_dragging_icon = self.system_folder_modal_icon
+                self.system_folder_modal_drag_offset = (
+                    mouse_x - icon_rect.x,
+                    mouse_y - icon_rect.y
+                )
+                current_time = time.time()
+                # Check for double-click
+                if (self.system_folder_modal_last_click_time > 0 and
+                        (current_time - self.system_folder_modal_last_click_time) < self.double_click_threshold):
+                    # Double-click - launch terminal or bring existing one to front
+                    self.system_folder_modal_icon["selected"] = False
+                    if self.terminal_active:
+                        self._open_modal("terminal")
+                    else:
+                        self.terminal_active = True
+                        self.terminal_text = ""
+                        self.terminal_input_buffer = ""
+                        self.terminal_cursor_blink_timer = 0.0
+                        self.terminal_cursor_visible = True
+                        self.terminal_position = None  # Will be centered on first draw
+                        self.terminal_mode = "command"
+                        self.terminal_admin_menu_selection = 1
+                        self.terminal_region_selection = 1
+                        self.terminal_message = ""
+                        self.terminal_file_system_mode = False
+                        self.terminal_file_system_path = []
+                        self.terminal_file_content = []
+                        self.terminal_file_view_filename = ""
+                        self.terminal_file_scroll_index = 0
+                        self.terminal_history_index = -1
+                        self.terminal_current_input_line = ""
+                        self.terminal_cursor_index = 0
+                        self._open_modal("terminal")
+                    self.system_folder_modal_last_click_time = 0.0
+                else:
+                    self.system_folder_modal_last_click_time = current_time
+                return True
+
+        if content_rect.collidepoint(mouse_x, mouse_y):
+            # Deselect icon when clicking on empty area
+            if self.system_folder_modal_icon:
+                self.system_folder_modal_icon["selected"] = False
+            self.system_folder_modal_dragging_icon = None
+            return True
+
+        return False
+
+    def _draw_file_system_browser_modal(self) -> None:
+        """Draw the file system browser modal: folders (folder.png) and .brad files (brad-file.png) with Pixellari cyan labels."""
+        modal_w, modal_h = self._get_modal_size("file_system_browser")
+        modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
+        modal_x, modal_y = self.modal_positions.get("file_system_browser", self._get_modal_position(modal_w, modal_h, "file_system_browser"))
+        if "file_system_browser" not in self.modal_positions:
+            self.modal_positions["file_system_browser"] = (modal_x, modal_y)
+
+        modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
+        pygame.draw.rect(self.screen, COLOR_BG_DARK, modal_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, modal_rect, 2)
+        title_bar_rect = pygame.Rect(modal_x, modal_y, modal_w, self.modal_title_bar_height)
+        pygame.draw.rect(self.screen, COLOR_BG_TITLE, title_bar_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, title_bar_rect, 1)
+
+        title_text = "FILE-SYSTEM" + ("\\" + "\\".join(self.file_system_browser_path) if self.file_system_browser_path else "")
+        try:
+            title_font = pygame.font.Font(None, max(int(16 * self.scale), 12))
+            title_surface = title_font.render(title_text[:50], True, COLOR_WHITE)
+            self.screen.blit(title_surface, (modal_x + int(10 * self.scale), modal_y + int(8 * self.scale)))
+        except Exception:
+            pass
+
+        close_btn_size = int(20 * self.scale)
+        close_btn_x = modal_x + modal_w - close_btn_size - int(5 * self.scale)
+        close_btn_y = modal_y + int(5 * self.scale)
+        close_btn_rect = pygame.Rect(close_btn_x, close_btn_y, close_btn_size, close_btn_size)
+        is_hovered = self.hovered_button == ("file_system_browser", "title_close")
+        close_color = COLOR_RED if is_hovered else COLOR_RED_DARK
+        pygame.draw.rect(self.screen, close_color, close_btn_rect)
+        pygame.draw.rect(self.screen, COLOR_RED, close_btn_rect, 2 if is_hovered else 1)
+        try:
+            close_font = pygame.font.Font(None, max(int(14 * self.scale), 10))
+            close_text = close_font.render("X", True, COLOR_WHITE)
+            self.screen.blit(close_text, close_text.get_rect(center=close_btn_rect.center))
+        except Exception:
+            pass
+
+        gap = int(20 * self.scale)
+        content_rect = pygame.Rect(
+            modal_x + gap,
+            modal_y + self.modal_title_bar_height + gap,
+            modal_w - 2 * gap,
+            modal_h - self.modal_title_bar_height - 2 * gap
+        )
+        pygame.draw.rect(self.screen, COLOR_BG_TITLE, content_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, content_rect, 1)
+        inner = content_rect.inflate(-int(10 * self.scale), -int(10 * self.scale))
+        pygame.draw.rect(self.screen, COLOR_BG_DARK, inner)
+
+        folder_icon = self.file_system_browser_folder_icon
+        brad_icon = self.file_system_browser_brad_icon
+        font = self.file_system_browser_font
+        if not font:
+            font = pygame.font.Font(None, max(int(14 * self.scale), 12))
+
+        icon_gap = int(12 * self.scale)
+        label_gap = int(8 * self.scale)  # Space between icon and text (match _draw_label_under_icon)
+        padding_below_label = int(8 * self.scale)  # Padding just below the bottom of each label text
+        cols = max(1, (inner.width + icon_gap) // (max(folder_icon["width"] if folder_icon else 64, brad_icon["width"] if brad_icon else 64) + icon_gap))
+        row_height = (folder_icon["height"] if folder_icon else 48) + label_gap + (font.get_height() if font else 16) + padding_below_label
+
+        sonic_icon = getattr(self, "file_system_browser_sonic_icon", None) or brad_icon
+        for i, item in enumerate(self.file_system_browser_items):
+            col = i % cols
+            row = i // cols
+            ix = inner.x + icon_gap + col * (inner.width // cols)
+            iy = inner.y + icon_gap + row * row_height
+            is_folder = item["type"] == "folder"
+            is_sonic = item.get("file_type") == "sonic"
+            icon_src = folder_icon if is_folder else (sonic_icon if is_sonic else brad_icon)
+            icon_w = icon_src["width"] if icon_src else 48
+            icon_h = icon_src["height"] if icon_src else 48
+            if icon_src:
+                selected = (i == self.file_system_browser_selected_index)
+                img = icon_src["s_image"] if selected else icon_src["image"]
+                self.screen.blit(img, (ix, iy))
+            label = item["display_name"]
+            display_label = self._truncate_icon_label(label) if label else ""
+            label_surf = font.render(display_label, True, COLOR_CYAN) if font and display_label else None
+            if label_surf:
+                # Center-align label under icon (same as desktop and HDD icons)
+                label_x = ix + (icon_w - label_surf.get_width()) // 2
+                self.screen.blit(label_surf, (label_x, iy + icon_h + label_gap))
+            w = max(icon_w, label_surf.get_width() if label_surf else 0)
+            item["rect"] = pygame.Rect(ix, iy, w, row_height - icon_gap)
+
+        # Draw ghost icon when dragging a file
+        if self.file_system_browser_dragging_item:
+            drag_item, ox, oy = self.file_system_browser_dragging_item
+            is_sonic_drag = drag_item.get("file_type") == "sonic"
+            icon_src = sonic_icon if is_sonic_drag else brad_icon
+            if icon_src:
+                mx, my = pygame.mouse.get_pos()
+                ghost_x = mx - ox
+                ghost_y = my - oy
+                ghost_img = icon_src["s_image"].copy()
+                ghost_img.set_alpha(180)
+                self.screen.blit(ghost_img, (ghost_x, ghost_y))
+
+    def _handle_file_system_browser_modal_click(self, mouse_x: int, mouse_y: int) -> bool:
+        """Handle clicks in file system browser: single click select, double-click folder navigate, double-click .brad open in terminal window."""
+        modal_w, modal_h = self._get_modal_size("file_system_browser")
+        modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
+        modal_x, modal_y = self.modal_positions.get("file_system_browser", (0, 0))
+        close_btn_size = int(20 * self.scale)
+        close_btn_rect = pygame.Rect(
+            modal_x + modal_w - close_btn_size - int(5 * self.scale),
+            modal_y + int(5 * self.scale), close_btn_size, close_btn_size
+        )
+        if close_btn_rect.collidepoint(mouse_x, mouse_y):
+            self._close_modal("file_system_browser")
+            return True
+
+        modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
+        if not modal_rect.collidepoint(mouse_x, mouse_y):
+            return False
+
+        current_time = time.time()
+        for i, item in enumerate(self.file_system_browser_items):
+            r = item.get("rect")
+            if r and r.collidepoint(mouse_x, mouse_y):
+                key = f"{item['type']}:{item['display_name']}"
+                is_double = (self.file_system_browser_last_clicked_key == key and
+                             (current_time - self.file_system_browser_last_click_time) < self.double_click_threshold)
+                self.file_system_browser_last_click_time = current_time
+                self.file_system_browser_last_clicked_key = key
+
+                if is_double:
+                    self.file_system_browser_dragging_item = None
+                    if item["type"] == "folder":
+                        if item["real_name"] == "..":
+                            if self.file_system_browser_path:
+                                self.file_system_browser_path.pop()
+                                self.file_system_browser_items = self._list_file_system_browser_directory()
+                        else:
+                            self.file_system_browser_path.append(item["real_name"])
+                            self.file_system_browser_items = self._list_file_system_browser_directory()
+                    elif item["type"] == "file":
+                        # .sonic files: when opened from dotSONIC LOAD, add to playlist; else show info
+                        if item.get("file_type") == "sonic":
+                            if self.file_system_browser_opened_from_dot_sonic and self.dot_sonic_app:
+                                self.dot_sonic_app.add_track_to_playlist(
+                                    item["display_name"],
+                                    item["real_name"],
+                                    file_type="sonic",
+                                    file_path=item.get("file_path")
+                                )
+                                # Keep browser open for adding more tracks
+                            else:
+                                title = item["display_name"]
+                                lines = [
+                                    f"  {title}",
+                                    "",
+                                    "  This is a .sonic audio file.",
+                                    "  Play it from the Datasette."
+                                ]
+                                tw = int(500 * self.scale)
+                                th = int(320 * self.scale)
+                                tx = self.desktop_x + (self.desktop_size[0] - tw) // 2 + (len(self.terminal_file_windows) % 3) * int(30 * self.scale)
+                                ty = self.desktop_y + (self.desktop_size[1] - th) // 2 + (len(self.terminal_file_windows) % 3) * int(25 * self.scale)
+                                self.terminal_file_windows.append({
+                                    "content": lines, "title": item["display_name"],
+                                    "position": (tx, ty), "scroll": 0, "rect": None,
+                                    "dragging": False, "drag_offset": (0, 0)
+                                })
+                        elif self.file_system_browser_opened_from_dot_sonic and self.dot_sonic_app:
+                            # Physical .wav/.mp3 in DOWNLOADS - add to playlist
+                            real_name = item.get("real_name", "")
+                            if real_name.lower().endswith((".wav", ".mp3")):
+                                browser_path = self._get_file_system_browser_path()
+                                file_path = os.path.join(browser_path, real_name)
+                                if os.path.isfile(file_path):
+                                    self.dot_sonic_app.add_track_to_playlist(
+                                        item["display_name"],
+                                        real_name,
+                                        file_type=None,
+                                        file_path=file_path
+                                    )
+                        else:
+                            # Double-click .brad: open file in new terminal file window
+                            browser_path = self._get_file_system_browser_path()
+                            file_path = os.path.join(browser_path, item["real_name"])
+                            if os.path.isfile(file_path):
+                                try:
+                                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                                        lines = f.readlines()
+                                    while lines and lines[-1].strip() == "":
+                                        lines.pop()
+                                    tw = int(500 * self.scale)
+                                    th = int(320 * self.scale)
+                                    tx = self.desktop_x + (self.desktop_size[0] - tw) // 2 + (len(self.terminal_file_windows) % 3) * int(30 * self.scale)
+                                    ty = self.desktop_y + (self.desktop_size[1] - th) // 2 + (len(self.terminal_file_windows) % 3) * int(25 * self.scale)
+                                    self.terminal_file_windows.append({
+                                        "content": lines, "title": item["display_name"],
+                                        "position": (tx, ty), "scroll": 0, "rect": None,
+                                        "dragging": False, "drag_offset": (0, 0)
+                                    })
+                                except Exception as e:
+                                    print(f"Error opening .brad file: {e}")
+                else:
+                    # Single click: select or deselect (toggle if already selected)
+                    if self.file_system_browser_selected_index == i:
+                        self.file_system_browser_selected_index = -1
+                        self.file_system_browser_dragging_item = None
+                    else:
+                        self.file_system_browser_selected_index = i
+                        if item["type"] == "file":
+                            self.file_system_browser_dragging_item = (
+                                item, mouse_x - r.x, mouse_y - r.y
+                            )
+                        else:
+                            self.file_system_browser_dragging_item = None
+                return True
+
+        self.file_system_browser_selected_index = -1
+        self.file_system_browser_dragging_item = None
+        return True
+
+    def _draw_terminal_file_window(self, win: Dict[str, Any]) -> None:
+        """Draw a single terminal-style file viewer window (for .brad file content)."""
+        # Cache title/close fonts by scale so many windows don't cause lag
+        if getattr(self, "_terminal_file_window_scale", None) != self.scale:
+            self._terminal_file_window_title_font = pygame.font.Font(None, max(int(14 * self.scale), 12))
+            self._terminal_file_window_close_font = pygame.font.Font(None, max(int(12 * self.scale), 10))
+            self._terminal_file_window_scale = self.scale
+        tw = int(500 * self.scale)
+        th = int(320 * self.scale)
+        tx, ty = win["position"]
+        tx = max(self.desktop_x, min(tx, self.desktop_x + self.desktop_size[0] - tw))
+        ty = max(self.desktop_y, min(ty, self.desktop_y + self.desktop_size[1] - th))
+        win["position"] = (tx, ty)
+        win["rect"] = pygame.Rect(tx, ty, tw, th)
+        pygame.draw.rect(self.screen, COLOR_BLACK, win["rect"])
+        pygame.draw.rect(self.screen, COLOR_CYAN, win["rect"], 2)
+        title_h = int(30 * self.scale)
+        title_rect = pygame.Rect(tx, ty, tw, title_h)
+        pygame.draw.rect(self.screen, COLOR_BG_TITLE, title_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, title_rect, 1)
+        try:
+            title_surf = self._terminal_file_window_title_font.render(win["title"][:40], True, COLOR_WHITE)
+            self.screen.blit(title_surf, (tx + int(8 * self.scale), ty + int(6 * self.scale)))
+        except Exception:
+            pass
+        close_sz = int(20 * self.scale)
+        close_rect = pygame.Rect(tx + tw - close_sz - int(5 * self.scale), ty + int(5 * self.scale), close_sz, close_sz)
+        pygame.draw.rect(self.screen, COLOR_RED, close_rect)
+        pygame.draw.rect(self.screen, COLOR_WHITE, close_rect, 1)
+        try:
+            close_text = self._terminal_file_window_close_font.render("X", True, COLOR_WHITE)
+            self.screen.blit(close_text, close_text.get_rect(center=close_rect.center))
+        except Exception:
+            pass
+        win["close_rect"] = close_rect
+        win["title_rect"] = title_rect
+        content_x = tx + int(10 * self.scale)
+        content_y = ty + title_h + int(10 * self.scale)
+        content_w = tw - 2 * int(10 * self.scale)
+        content_h = th - title_h - 2 * int(10 * self.scale)
+        if not self.terminal_font:
+            self._load_terminal_font()
+        font = self.terminal_font or pygame.font.Font(None, max(int(18 * self.scale), 14))
+        line_h = font.get_height()
+        max_lines = content_h // line_h
+        start = win["scroll"]
+        end = min(start + max_lines, len(win["content"]))
+        is_locale_protocols = "LocaleProtocols" in (win.get("title") or "")
+        file_window_cyan = (0, 255, 255)
+        file_window_light = (200, 255, 255)  # lighter cyan for pulse
+        for i in range(start, end):
+            line = win["content"][i].rstrip("\n\r")
+            wrapped = self._wrap_terminal_text(line, font, content_w)
+            for wline in wrapped:
+                if content_y + line_h > ty + th - int(10 * self.scale):
+                    break
+                if is_locale_protocols:
+                    segments = self._segment_line_for_locale_pulse(wline)
+                    x_off = content_x
+                    for seg_text, highlight in segments:
+                        if seg_text:
+                            color = self._get_terminal_pulse_color(file_window_cyan, file_window_light, speed=1.5) if highlight else file_window_cyan
+                            surf = font.render(seg_text, True, color)
+                            self.screen.blit(surf, (x_off, content_y))
+                            x_off += surf.get_width()
+                else:
+                    surf = font.render(wline, True, file_window_cyan)
+                    self.screen.blit(surf, (content_x, content_y))
+                content_y += line_h
+
+    def _handle_terminal_file_windows_click(self, mouse_x: int, mouse_y: int) -> bool:
+        """Handle click on one of the terminal file windows. Returns True if a window was hit."""
+        for win in reversed(self.terminal_file_windows):
+            r = win.get("rect")
+            if not r or not r.collidepoint(mouse_x, mouse_y):
+                continue
+            close_r = win.get("close_rect")
+            if close_r and close_r.collidepoint(mouse_x, mouse_y):
+                self.terminal_file_windows.remove(win)
+                return True
+            title_r = win.get("title_rect")
+            if title_r and title_r.collidepoint(mouse_x, mouse_y):
+                win["dragging"] = True
+                win["drag_offset"] = (mouse_x - win["position"][0], mouse_y - win["position"][1])
+                return True
+            return True
+        return False
+
+    def _update_hard_drive_icon_drag(self, mouse_x: int, mouse_y: int) -> bool:
+        """Update hard drive modal icon position while dragging."""
+        if not self.hard_drive_modal_dragging_icon or not self.hard_drive_modal_content_rect:
+            return False
+        icon = self.hard_drive_modal_dragging_icon
+        offset_x, offset_y = self.hard_drive_modal_drag_offset
+        content_rect = self.hard_drive_modal_content_rect
+        new_rel_x = mouse_x - content_rect.x - offset_x
+        new_rel_y = mouse_y - content_rect.y - offset_y
+        max_x = max(0, content_rect.width - icon["width"])
+        max_y = max(0, content_rect.height - icon["height"])
+        icon["rel_x"] = max(0, min(new_rel_x, max_x))
+        icon["rel_y"] = max(0, min(new_rel_y, max_y))
+        icon["rect"] = pygame.Rect(
+            content_rect.x + icon["rel_x"],
+            content_rect.y + icon["rel_y"],
+            icon["width"],
+            icon["height"]
+        )
+        return True
+
+    def _update_system_folder_icon_drag(self, mouse_x: int, mouse_y: int) -> bool:
+        """Update system folder modal icon position while dragging."""
+        if not self.system_folder_modal_dragging_icon or not self.system_folder_modal_content_rect:
+            return False
+        icon = self.system_folder_modal_dragging_icon
+        offset_x, offset_y = self.system_folder_modal_drag_offset
+        content_rect = self.system_folder_modal_content_rect
+        new_rel_x = mouse_x - content_rect.x - offset_x
+        new_rel_y = mouse_y - content_rect.y - offset_y
+        max_x = max(0, content_rect.width - icon["width"])
+        max_y = max(0, content_rect.height - icon["height"])
+        icon["rel_x"] = max(0, min(new_rel_x, max_x))
+        icon["rel_y"] = max(0, min(new_rel_y, max_y))
+        icon["rect"] = pygame.Rect(
+            content_rect.x + icon["rel_x"],
+            content_rect.y + icon["rel_y"],
+            icon["width"],
+            icon["height"]
+        )
+        return True
+
+    def _get_prompt_text(self) -> str:
+        """Get the current prompt text based on mode."""
+        if self.terminal_file_system_mode:
+            # Show file system path
+            if self.terminal_file_system_path:
+                return ".\\file-system\\" + "\\".join(self.terminal_file_system_path) + "\\"
+            else:
+                return ".\\file-system\\"
+        else:
+            return "."
+
+    def _get_file_system_path(self) -> str:
+        """Get the full file system path based on current navigation."""
+        return os.path.join(self.terminal_file_system_base_path, *self.terminal_file_system_path)
+
+    def _get_file_system_browser_path(self) -> str:
+        """Get the full path for the file system browser modal."""
+        return os.path.join(self.terminal_file_system_base_path, *self.file_system_browser_path)
+
+    def _list_file_system_browser_directory(self) -> List[Dict[str, Any]]:
+        """List items in current browser path. Returns list of { type, display_name, real_name, file_type? }.
+        DOWNLOADS folder and .sonic files only visible when os_locale is US Mainland (1) or Europe (2)."""
+        current_path = self._get_file_system_browser_path()
+        items = []
+        downloads_visible = self.os_locale in (1, 2)
+
+        if self.file_system_browser_path:
+            items.append({"type": "folder", "display_name": "..", "real_name": ".."})
+            # Inside DOWNLOADS (match case-insensitively: downloads, DOWNLOADS, etc.)
+            if len(self.file_system_browser_path) == 1 and self.file_system_browser_path[0].upper() == "DOWNLOADS":
+                base_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "FILE-SYSTEM")
+                # Virtual .sonic files from BBS downloads (when region allows)
+                if downloads_visible:
+                    for title in self.get_downloaded_fugamatchi_tracks():
+                        items.append({
+                            "type": "file",
+                            "display_name": title + ".sonic",
+                            "real_name": f"__sonic__{title}",
+                            "file_type": "sonic",
+                        })
+                # Physical files from disk (if folder exists as downloads/DOWNLOADS etc.)
+                for disk_item in (os.listdir(base_path) if os.path.isdir(base_path) else []):
+                    if disk_item.upper() == "DOWNLOADS":
+                        phys_path = os.path.join(base_path, disk_item)
+                        if os.path.isdir(phys_path):
+                            for f in sorted(os.listdir(phys_path)):
+                                fp = os.path.join(phys_path, f)
+                                if os.path.isfile(fp):
+                                    if f.lower().endswith(".txt"):
+                                        items.append({"type": "file", "display_name": f[:-4] + ".brad", "real_name": f, "file_type": "brad"})
+                                    elif f.lower().endswith((".mp3", ".wav")):
+                                        items.append({"type": "file", "display_name": os.path.splitext(f)[0] + ".sonic", "real_name": f, "file_type": "sonic", "file_path": fp})
+                                    else:
+                                        items.append({"type": "file", "display_name": f, "real_name": f})
+                                elif os.path.isdir(fp):
+                                    items.append({"type": "folder", "display_name": f, "real_name": f})
+                        break
+                return items
+        if not os.path.exists(current_path):
+            return items
+        try:
+            dir_items = sorted(os.listdir(current_path))
+            has_downloads_on_disk = any(x.upper() == "DOWNLOADS" for x in dir_items)
+            # Add virtual "DOWNLOADS" folder at root when region allows (US Mainland/Europe)
+            # DOWNLOADS folder may not exist on disk - it shows .sonic tracks from user state
+            # Use case-insensitive check to avoid duplicate when physical DOWNLOADS/downloads exists
+            if not self.file_system_browser_path and downloads_visible and not has_downloads_on_disk:
+                items.append({"type": "folder", "display_name": "DOWNLOADS", "real_name": "DOWNLOADS"})
+            for item in dir_items:
+                if item.upper() == "DOWNLOADS":
+                    if downloads_visible:
+                        items.append({"type": "folder", "display_name": "DOWNLOADS", "real_name": "DOWNLOADS"})
+                    continue
+                item_path = os.path.join(current_path, item)
+                if os.path.isdir(item_path):
+                    items.append({"type": "folder", "display_name": item, "real_name": item})
+                elif os.path.isfile(item_path):
+                    if item.lower().endswith(".txt"):
+                        items.append({"type": "file", "display_name": item[:-4] + ".brad", "real_name": item, "file_type": "brad"})
+                    elif item.lower().endswith((".mp3", ".wav")):
+                        items.append({"type": "file", "display_name": os.path.splitext(item)[0] + ".sonic", "real_name": item, "file_type": "sonic", "file_path": item_path})
+                    else:
+                        items.append({"type": "file", "display_name": item, "real_name": item})
+        except Exception as e:
+            print(f"Error listing file system browser: {e}")
+        return items
+    
+    def _list_file_system_directory(self) -> Tuple[List[str], List[str]]:
+        """List files and folders in current directory. Returns (folders, files).
+        DOWNLOADS folder and .sonic files only visible when os_locale is US Mainland (1) or Europe (2)."""
+        folders = []
+        files = []
+        downloads_visible = self.os_locale in (1, 2)
+
+        # Special case: inside virtual DOWNLOADS folder (shows .sonic files from user state)
+        if len(self.terminal_file_system_path) == 1 and self.terminal_file_system_path[0].upper() == "DOWNLOADS":
+            if downloads_visible:
+                for title in self.get_downloaded_fugamatchi_tracks():
+                    files.append(title + ".sonic")
+            # Also list physical files from disk if DOWNLOADS folder exists
+            base_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "FILE-SYSTEM")
+            if os.path.isdir(base_path):
+                for disk_item in os.listdir(base_path):
+                    if disk_item.upper() == "DOWNLOADS":
+                        phys_path = os.path.join(base_path, disk_item)
+                        if os.path.isdir(phys_path):
+                            for f in sorted(os.listdir(phys_path)):
+                                fp = os.path.join(phys_path, f)
+                                if os.path.isfile(fp):
+                                    if f.lower().endswith(".txt"):
+                                        files.append(f[:-4] + ".brad")
+                                    elif f.lower().endswith((".mp3", ".wav")):
+                                        files.append(os.path.splitext(f)[0] + ".sonic")
+                                    else:
+                                        files.append(f)
+                                elif os.path.isdir(fp):
+                                    folders.append(f)
+                        break
+            return sorted(folders), sorted(files)
+
+        current_path = self._get_file_system_path()
+        if not os.path.exists(current_path):
+            # At root: add virtual DOWNLOADS folder when region allows
+            if not self.terminal_file_system_path and downloads_visible:
+                folders.append("DOWNLOADS")
+            return sorted(folders), sorted(files)
+
+        try:
+            dir_items = sorted(os.listdir(current_path))
+            has_downloads_on_disk = any(x.upper() == "DOWNLOADS" for x in dir_items)
+            # Add virtual DOWNLOADS folder at root when region allows and not on disk
+            if not self.terminal_file_system_path and downloads_visible and not has_downloads_on_disk:
+                folders.append("DOWNLOADS")
+            for item in dir_items:
+                if item.upper() == "DOWNLOADS":
+                    if downloads_visible:
+                        folders.append(item if item == "DOWNLOADS" else "DOWNLOADS")
+                    continue
+                item_path = os.path.join(current_path, item)
+                if os.path.isdir(item_path):
+                    folders.append(item)
+                elif os.path.isfile(item_path):
+                    if item.lower().endswith('.txt'):
+                        files.append(item[:-4] + '.brad')
+                    elif item.lower().endswith(('.mp3', '.wav')):
+                        files.append(os.path.splitext(item)[0] + '.sonic')
+                    else:
+                        files.append(item)
+        except Exception as e:
+            print(f"Error listing directory: {e}")
+
+        return sorted(folders), sorted(files)
+    
+    def _get_school_op_note_content(self, with_credentials: bool = False) -> str:
+        """Return School Op note content. with_credentials=False: placeholders (ghost). with_credentials=True: filled in (after observing LocaleProtocols)."""
+        lines = SCHOOL_HACK_NOTE_LINES_WITH_CREDS if with_credentials else SCHOOL_HACK_NOTE_LINES_NO_CREDS
+        return "\n".join(lines)
+
+    def _replace_school_op_note_content(self) -> bool:
+        """Replace the School Op - Steps note with the version that has credentials (admin-subset, username, password).
+        Called when player observes LocaleProtocols.brad - marks progress."""
+        notes = self._load_user_notes()
+        for n in notes:
+            if n.get("title") == SCHOOL_OP_NOTE_TITLE:
+                new_content = self._get_school_op_note_content(with_credentials=True)
+                if n.get("content") != new_content:
+                    n["content"] = new_content
+                    self._save_user_notes(notes)
+                return True
+        return False
+
+    def _open_file_in_terminal(self, filename: str) -> bool:
+        """Open a file in the terminal. Returns True if successful."""
+        original_filename = filename  # Keep for display/pulse (e.g. LocaleProtocols.brad)
+        # Virtual .sonic files in DOWNLOADS (when in terminal file-system and path is DOWNLOADS)
+        if (self.terminal_file_system_mode and len(self.terminal_file_system_path) == 1 and
+                self.terminal_file_system_path[0].upper() == "DOWNLOADS" and self.os_locale in (1, 2)):
+            if filename.endswith('.sonic'):
+                title = filename[:-6]  # strip .sonic
+                if title in self.get_downloaded_fugamatchi_tracks():
+                    lines = [
+                        f"  {filename}",
+                        "",
+                        "  This is a .sonic audio file.",
+                        "  Play it from the Datasette."
+                    ]
+                    self.terminal_file_content = lines
+                    self.terminal_file_view_filename = filename
+                    self.terminal_file_scroll_index = 0
+                    self.terminal_mode = "file_view"
+                    return True
+        # Convert .brad to .txt for actual file lookup
+        if filename.endswith('.brad'):
+            filename = filename[:-5] + '.txt'
+        # .sonic can be backed by .mp3 or .wav on disk
+        sonic_base = None
+        if filename.endswith('.sonic'):
+            sonic_base = filename[:-6]
+        current_path = self._get_file_system_path()
+        # Resolve DOWNLOADS to physical folder name if it exists on disk
+        if (len(self.terminal_file_system_path) == 1 and self.terminal_file_system_path[0].upper() == "DOWNLOADS"):
+            base_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "FILE-SYSTEM")
+            if os.path.isdir(base_path):
+                for disk_item in os.listdir(base_path):
+                    if disk_item.upper() == "DOWNLOADS":
+                        current_path = os.path.join(base_path, disk_item)
+                        break
+        file_path = os.path.join(current_path, filename)
+        if not os.path.exists(file_path) or not os.path.isfile(file_path):
+            if sonic_base:
+                for ext in ('.mp3', '.wav'):
+                    alt_path = os.path.join(current_path, sonic_base + ext)
+                    if os.path.isfile(alt_path):
+                        file_path = alt_path
+                        break
+                else:
+                    return False
+            else:
+                return False
+        if file_path.lower().endswith(('.mp3', '.wav')):
+            self.terminal_file_content = [
+                f"  {original_filename}",
+                "",
+                "  This is a .sonic audio file.",
+                "  Play it from the Datasette."
+            ]
+            self.terminal_file_view_filename = original_filename
+            self.terminal_file_scroll_index = 0
+            self.terminal_mode = "file_view"
+            return True
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                self.terminal_file_content = f.readlines()
+            # Remove trailing newlines and empty lines at end
+            while self.terminal_file_content and self.terminal_file_content[-1].strip() == '':
+                self.terminal_file_content.pop()
+            self.terminal_file_view_filename = original_filename
+            self.terminal_file_scroll_index = 0
+            self.terminal_mode = "file_view"
+            # When player observes LocaleProtocols file, replace School Op note with full list (admin-subset, username, password)
+            if "LocaleProtocols" in original_filename:
+                self._replace_school_op_note_content()
+            return True
+        except Exception as e:
+            print(f"Error opening file: {e}")
+            return False
+
+    def _wrap_terminal_text(self, text: str, font: pygame.font.Font, max_width: int) -> List[str]:
+        """Wrap text to fit within terminal width."""
+        words = text.split(' ')
+        lines = []
+        current_line = ""
+        
+        for word in words:
+            test_line = current_line + (" " if current_line else "") + word
+            test_surface = font.render(test_line, True, COLOR_GREEN)
+            if test_surface.get_width() <= max_width:
+                current_line = test_line
+            else:
+                if current_line:
+                    lines.append(current_line)
+                # If single word is too long, break it
+                if font.render(word, True, COLOR_GREEN).get_width() > max_width:
+                    # Word is too long, break it character by character
+                    for char in word:
+                        test_char = current_line + char
+                        if font.render(test_char, True, COLOR_GREEN).get_width() <= max_width:
+                            current_line = test_char
+                        else:
+                            if current_line:
+                                lines.append(current_line)
+                            current_line = char
+                else:
+                    current_line = word
+        
+        if current_line:
+            lines.append(current_line)
+        
+        return lines if lines else [""]
+
+    # Keywords to pulse when viewing LocaleProtocols.brad (admin string hints)
+    # "general" is case-sensitive (only lowercase) so "General" elsewhere in text does not pulse
+    _LOCALE_PULSE_KEYWORDS_CI = ["admin-subset", "louis-sonic"]  # case-insensitive
+    _LOCALE_PULSE_KEYWORD_GENERAL = "general"  # case-sensitive: only pulse lowercase "general"
+
+    def _segment_line_for_locale_pulse(self, line: str) -> List[Tuple[str, bool]]:
+        """Split a line into (text, is_highlight) segments for admin-subset/general/louis-sonic."""
+        line_lower = line.lower()
+        ranges = []  # (start, end)
+        for kw in self._LOCALE_PULSE_KEYWORDS_CI:
+            start = 0
+            while True:
+                i = line_lower.find(kw.lower(), start)
+                if i == -1:
+                    break
+                ranges.append((i, i + len(kw)))
+                start = i + 1
+        # Only pulse lowercase "general", not "General"
+        start = 0
+        while True:
+            i = line.find(self._LOCALE_PULSE_KEYWORD_GENERAL, start)
+            if i == -1:
+                break
+            ranges.append((i, i + len(self._LOCALE_PULSE_KEYWORD_GENERAL)))
+            start = i + 1
+        ranges.sort()
+        merged = []
+        for s, e in ranges:
+            if merged and s <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+            else:
+                merged.append((s, e))
+        segments = []
+        pos = 0
+        for s, e in merged:
+            if pos < s:
+                segments.append((line[pos:s], False))
+            segments.append((line[s:e], True))
+            pos = e
+        if pos < len(line):
+            segments.append((line[pos:], False))
+        return segments if segments else [(line, False)]
+
+    def _get_terminal_pulse_color(self, base_rgb: Tuple[int, int, int], light_rgb: Tuple[int, int, int], speed: float = 1.5) -> Tuple[int, int, int]:
+        """Pulse between base and light color for terminal highlight."""
+        t = time.time() * speed
+        pulse = (math.sin(t) + 1) / 2
+        return (
+            int(base_rgb[0] + (light_rgb[0] - base_rgb[0]) * pulse),
+            int(base_rgb[1] + (light_rgb[1] - base_rgb[1]) * pulse),
+            int(base_rgb[2] + (light_rgb[2] - base_rgb[2]) * pulse),
+        )
+
+    def _draw_terminal(self) -> None:
+        """Draw the terminal application window."""
+        # Terminal window size - width increased by 33% (665x375)
+        terminal_w = int(665 * self.scale)  # 33% larger: 500 * 1.33 = 665
+        terminal_h = int(375 * self.scale)  # 25% larger: 300 * 1.25 = 375
+        
+        # Use stored position if available, otherwise center on desktop
+        if self.terminal_position:
+            terminal_x, terminal_y = self.terminal_position
+        else:
+            terminal_x = self.desktop_x + (self.desktop_size[0] - terminal_w) // 2
+            terminal_y = self.desktop_y + (self.desktop_size[1] - terminal_h) // 2
+        
+        # Ensure terminal doesn't exceed desktop boundaries
+        terminal_x = max(self.desktop_x, min(terminal_x, self.desktop_x + self.desktop_size[0] - terminal_w))
+        terminal_y = max(self.desktop_y, min(terminal_y, self.desktop_y + self.desktop_size[1] - terminal_h))
+        
+        # Update stored position
+        self.terminal_position = (terminal_x, terminal_y)
+        
+        # Draw terminal window background (black)
+        terminal_rect = pygame.Rect(terminal_x, terminal_y, terminal_w, terminal_h)
+        pygame.draw.rect(self.screen, COLOR_BLACK, terminal_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, terminal_rect, 2)  # Cyan border to match OS look
+        
+        # Draw title bar
+        title_bar_height = int(30 * self.scale)
+        title_bar_rect = pygame.Rect(terminal_x, terminal_y, terminal_w, title_bar_height)
+        pygame.draw.rect(self.screen, COLOR_BG_TITLE, title_bar_rect)
+        pygame.draw.rect(self.screen, COLOR_CYAN, title_bar_rect, 1)
+        
+        try:
+            title_font = pygame.font.Font(None, max(int(16 * self.scale), 12))
+            title_surface = title_font.render("TERMINAL", True, COLOR_WHITE)
+            self.screen.blit(title_surface, (terminal_x + int(10 * self.scale), terminal_y + int(8 * self.scale)))
+        except Exception:
+            pass
+        
+        # Close button
+        close_btn_size = int(20 * self.scale)
+        close_btn_x = terminal_x + terminal_w - close_btn_size - int(5 * self.scale)
+        close_btn_y = terminal_y + int(5 * self.scale)
+        close_btn_rect = pygame.Rect(close_btn_x, close_btn_y, close_btn_size, close_btn_size)
+        pygame.draw.rect(self.screen, COLOR_RED, close_btn_rect)
+        pygame.draw.rect(self.screen, COLOR_WHITE, close_btn_rect, 1)
+        try:
+            close_font = pygame.font.Font(None, max(int(14 * self.scale), 10))
+            close_text = close_font.render("X", True, COLOR_WHITE)
+            self.screen.blit(close_text, close_text.get_rect(center=close_btn_rect.center))
+        except Exception:
+            pass
+        
+        # Draw terminal content area
+        content_x = terminal_x + int(10 * self.scale)
+        content_y = terminal_y + title_bar_height + int(10 * self.scale)
+        content_w = terminal_w - 2 * int(10 * self.scale)
+        content_h = terminal_h - title_bar_height - 2 * int(10 * self.scale)
+        
+        # Draw text with Paper Crane BBS font (reduced by 20% from previous)
+        if not self.terminal_font:
+            self._load_terminal_font()
+        
+        if self.terminal_font:
+            line_height = self.terminal_font.get_height()
+            
+            # Handle different terminal modes
+            if self.terminal_mode == "message":
+                # Display message (with wrapping)
+                message_lines = self._wrap_terminal_text(self.terminal_message, self.terminal_font, content_w)
+                message_start_y = content_y + (content_h - len(message_lines) * line_height) // 2
+                for i, line in enumerate(message_lines):
+                    message_surface = self.terminal_font.render(line, True, COLOR_GREEN)
+                    self.screen.blit(message_surface, (content_x, message_start_y + i * line_height))
+                
+            elif self.terminal_mode == "region_select":
+                # Draw region selection menu
+                title_y = content_y + int(10 * self.scale)
+                title_surface = self.terminal_font.render("REGION DETECTION", True, COLOR_WHITE)
+                self.screen.blit(title_surface, (content_x, title_y))
+                
+                regions = [
+                    "01 American Mainland",
+                    "02 Europe",
+                    "03 American Pacific Isles (restricted cap)"
+                ]
+                
+                menu_start_y = title_y + line_height + int(20 * self.scale)
+                for i, region in enumerate(regions, 1):
+                    region_y = menu_start_y + (i - 1) * (line_height + int(5 * self.scale))
+                    color = COLOR_GREEN if i == self.terminal_region_selection else COLOR_CYAN
+                    region_text = f"{region}"
+                    region_surface = self.terminal_font.render(region_text, True, color)
+                    self.screen.blit(region_surface, (content_x + int(20 * self.scale), region_y))
+                
+            elif self.terminal_mode == "admin_menu":
+                # Draw admin menu
+                title_y = content_y + int(10 * self.scale)
+                title_surface = self.terminal_font.render("Bradsonic 69000 Admin Security", True, COLOR_WHITE)
+                self.screen.blit(title_surface, (content_x, title_y))
+                
+                menu_items = [
+                    "1. Perform Factory Reset",
+                    "2. Region Detection",
+                    "3. Handshake Connected Node",
+                    "4. Shutdown System"
+                ]
+                
+                menu_start_y = title_y + line_height + int(20 * self.scale)
+                for i, item in enumerate(menu_items, 1):
+                    item_y = menu_start_y + (i - 1) * (line_height + int(5 * self.scale))
+                    color = COLOR_GREEN if i == self.terminal_admin_menu_selection else COLOR_CYAN
+                    item_surface = self.terminal_font.render(item, True, color)
+                    self.screen.blit(item_surface, (content_x + int(20 * self.scale), item_y))
+            
+            elif self.terminal_mode == "admin_login_username":
+                # Draw username prompt
+                prompt_text = "."
+                prompt_surface = self.terminal_font.render(prompt_text, True, COLOR_GREEN)
+                self.screen.blit(prompt_surface, (content_x, content_y + content_h - line_height))
+                
+                username_prompt = "username:"
+                prompt_y = content_y + content_h - 2 * line_height
+                username_surface = self.terminal_font.render(username_prompt, True, COLOR_CYAN)
+                self.screen.blit(username_surface, (content_x, prompt_y))
+                
+                # Draw current input
+                input_text = prompt_text + self.terminal_input_buffer
+                input_surface = self.terminal_font.render(input_text, True, COLOR_GREEN)
+                input_y = content_y + content_h - line_height
+                self.screen.blit(input_surface, (content_x, input_y))
+                
+                # Draw blinking cursor
+                if self.terminal_cursor_visible:
+                    cursor_x = content_x + input_surface.get_width()
+                    cursor_y = input_y
+                    cursor_rect = pygame.Rect(cursor_x, cursor_y, int(2 * self.scale), line_height)
+                    pygame.draw.rect(self.screen, COLOR_GREEN, cursor_rect)
+            
+            elif self.terminal_mode == "admin_login_password":
+                # Draw password prompt
+                prompt_text = "."
+                prompt_surface = self.terminal_font.render(prompt_text, True, COLOR_GREEN)
+                self.screen.blit(prompt_surface, (content_x, content_y + content_h - line_height))
+                
+                password_prompt = "password:"
+                prompt_y = content_y + content_h - 2 * line_height
+                password_surface = self.terminal_font.render(password_prompt, True, COLOR_CYAN)
+                self.screen.blit(password_surface, (content_x, prompt_y))
+                
+                # Draw current input (masked as asterisks)
+                masked_input = "*" * len(self.terminal_input_buffer)
+                input_text = prompt_text + masked_input
+                input_surface = self.terminal_font.render(input_text, True, COLOR_GREEN)
+                input_y = content_y + content_h - line_height
+                self.screen.blit(input_surface, (content_x, input_y))
+                
+                # Draw blinking cursor
+                if self.terminal_cursor_visible:
+                    cursor_x = content_x + input_surface.get_width()
+                    cursor_y = input_y
+                    cursor_rect = pygame.Rect(cursor_x, cursor_y, int(2 * self.scale), line_height)
+                    pygame.draw.rect(self.screen, COLOR_GREEN, cursor_rect)
+                
+            elif self.terminal_mode == "file_view":
+                # Draw file content with scrolling
+                if self.terminal_file_content:
+                    # Calculate how many lines can fit
+                    max_lines = content_h // line_height
+                    start_index = self.terminal_file_scroll_index
+                    end_index = min(start_index + max_lines, len(self.terminal_file_content))
+                    is_locale_protocols = "LocaleProtocols" in (self.terminal_file_view_filename or "")
+                    pulse_color = self._get_terminal_pulse_color(COLOR_GREEN, COLOR_NEON_GREEN, speed=1.5) if is_locale_protocols else COLOR_GREEN
+                    
+                    y_offset = content_y
+                    for i in range(start_index, end_index):
+                        if y_offset + line_height > content_y + content_h:
+                            break
+                        line = self.terminal_file_content[i].rstrip('\n\r')
+                        # Wrap long lines
+                        wrapped = self._wrap_terminal_text(line, self.terminal_font, content_w)
+                        for wrapped_line in wrapped:
+                            if y_offset + line_height > content_y + content_h:
+                                break
+                            if is_locale_protocols:
+                                segments = self._segment_line_for_locale_pulse(wrapped_line)
+                                x_off = content_x
+                                for seg_text, highlight in segments:
+                                    if seg_text:
+                                        color = self._get_terminal_pulse_color(COLOR_GREEN, COLOR_NEON_GREEN, speed=1.5) if highlight else COLOR_GREEN
+                                        surf = self.terminal_font.render(seg_text, True, color)
+                                        self.screen.blit(surf, (x_off, y_offset))
+                                        x_off += surf.get_width()
+                            else:
+                                text_surface = self.terminal_font.render(wrapped_line, True, COLOR_GREEN)
+                                self.screen.blit(text_surface, (content_x, y_offset))
+                            y_offset += line_height
+                else:
+                    # No file content
+                    no_content = self.terminal_font.render("No file content", True, COLOR_GREEN)
+                    self.screen.blit(no_content, (content_x, content_y))
+            
+            else:
+                # Command mode - draw prompt and text with wrapping
+                prompt_text = self._get_prompt_text()
+                
+                # Get current input line (last line after last newline)
+                lines = self.terminal_text.split('\n')
+                current_input = lines[-1] if lines else ""
+                previous_lines = '\n'.join(lines[:-1]) if len(lines) > 1 else ""
+                
+                # Display all previous lines plus current line with prompt
+                if previous_lines:
+                    text_to_display = previous_lines + "\n" + prompt_text + current_input
+                else:
+                    text_to_display = prompt_text + current_input
+                
+                # Wrap text to fit terminal width
+                wrapped_lines = []
+                for line in text_to_display.split('\n'):
+                    if line.strip():
+                        wrapped = self._wrap_terminal_text(line, self.terminal_font, content_w)
+                        wrapped_lines.extend(wrapped)
+                    else:
+                        wrapped_lines.append("")
+                
+                # Calculate text position (start from bottom, scroll up if needed)
+                max_lines = content_h // line_height
+                display_lines = wrapped_lines[-max_lines:] if len(wrapped_lines) > max_lines else wrapped_lines
+                
+                # Start from bottom
+                y_offset = content_y + content_h - line_height
+                
+                for line in reversed(display_lines):
+                    if y_offset < content_y:
+                        break
+                    text_surface = self.terminal_font.render(line, True, COLOR_GREEN)
+                    self.screen.blit(text_surface, (content_x, y_offset))
+                    y_offset -= line_height
+                
+                # Draw blinking cursor at cursor position on current line
+                if self.terminal_cursor_visible:
+                    cursor_pos = min(self.terminal_cursor_index, len(current_input))
+                    input_before_cursor = prompt_text + current_input[:cursor_pos]
+                    cursor_surface = self.terminal_font.render(input_before_cursor, True, COLOR_GREEN)
+                    cursor_x = content_x + cursor_surface.get_width()
+                    cursor_y = content_y + content_h - line_height
+                    cursor_rect = pygame.Rect(cursor_x, cursor_y, int(2 * self.scale), line_height)
+                    pygame.draw.rect(self.screen, COLOR_GREEN, cursor_rect)
+
+    def _handle_terminal_click(self, mouse_x: int, mouse_y: int) -> bool:
+        """Handle clicks within the terminal window."""
+        terminal_w = int(665 * self.scale)  # 33% larger: 500 * 1.33 = 665
+        terminal_h = int(375 * self.scale)  # 25% larger: 300 * 1.25 = 375
+        
+        # Use stored position if available, otherwise center on desktop
+        if self.terminal_position:
+            terminal_x, terminal_y = self.terminal_position
+        else:
+            terminal_x = self.desktop_x + (self.desktop_size[0] - terminal_w) // 2
+            terminal_y = self.desktop_y + (self.desktop_size[1] - terminal_h) // 2
+        
+        # Ensure terminal doesn't exceed desktop boundaries
+        terminal_x = max(self.desktop_x, min(terminal_x, self.desktop_x + self.desktop_size[0] - terminal_w))
+        terminal_y = max(self.desktop_y, min(terminal_y, self.desktop_y + self.desktop_size[1] - terminal_h))
+        
+        # Check close button first
+        close_btn_size = int(20 * self.scale)
+        close_btn_rect = pygame.Rect(
+            terminal_x + terminal_w - close_btn_size - int(5 * self.scale),
+            terminal_y + int(5 * self.scale),
+            close_btn_size,
+            close_btn_size
+        )
+        if close_btn_rect.collidepoint(mouse_x, mouse_y):
+            self.terminal_active = False
+            if "terminal" in self.active_modals:
+                self.active_modals.remove("terminal")
+            self.terminal_position = None
+            self.terminal_dragging = False
+            self.terminal_mode = "command"
+            self.terminal_text = ""
+            self.terminal_cursor_index = 0
+            self.terminal_message = ""
+            self.terminal_admin_menu_selection = 1
+            self.terminal_region_selection = 1
+            return True
+        
+        # Check if clicking on title bar for dragging
+        title_bar_height = int(30 * self.scale)
+        title_bar_rect = pygame.Rect(
+            terminal_x,
+            terminal_y,
+            terminal_w,
+            title_bar_height
+        )
+        if title_bar_rect.collidepoint(mouse_x, mouse_y):
+            # Start dragging the terminal
+            self.terminal_dragging = True
+            self.terminal_drag_offset = (mouse_x - terminal_x, mouse_y - terminal_y)
+            return True
+        
+        # Clicking anywhere in terminal gives it focus (handled by keyboard input)
+        terminal_rect = pygame.Rect(terminal_x, terminal_y, terminal_w, terminal_h)
+        return terminal_rect.collidepoint(mouse_x, mouse_y)
+
+    def _get_terminal_rect(self) -> pygame.Rect:
+        """Return the terminal window rect (same position/size as drawn). Used for z-order hit-testing."""
+        terminal_w = int(665 * self.scale)
+        terminal_h = int(375 * self.scale)
+        if self.terminal_position:
+            terminal_x, terminal_y = self.terminal_position
+        else:
+            terminal_x = self.desktop_x + (self.desktop_size[0] - terminal_w) // 2
+            terminal_y = self.desktop_y + (self.desktop_size[1] - terminal_h) // 2
+        terminal_x = max(self.desktop_x, min(terminal_x, self.desktop_x + self.desktop_size[0] - terminal_w))
+        terminal_y = max(self.desktop_y, min(terminal_y, self.desktop_y + self.desktop_size[1] - terminal_h))
+        return pygame.Rect(terminal_x, terminal_y, terminal_w, terminal_h)
+
+    def _handle_terminal_keydown(self, event: pygame.event.Event) -> bool:
+        """Handle keyboard input for the terminal."""
+        if not self.terminal_active:
+            return False
+        
+        # Handle message mode (just wait for any key to return to command)
+        if self.terminal_mode == "message":
+            if event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER or event.key == pygame.K_ESCAPE:
+                self.terminal_mode = "command"
+                self.terminal_text = ""
+                self.terminal_message = ""
+                return True
+            return True
+        
+        # Handle region select mode
+        if self.terminal_mode == "region_select":
+            if event.key == pygame.K_UP:
+                self.terminal_region_selection = max(1, self.terminal_region_selection - 1)
+                return True
+            elif event.key == pygame.K_DOWN:
+                self.terminal_region_selection = min(3, self.terminal_region_selection + 1)
+                return True
+            elif event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
+                # Region selected - save until game restart
+                self._switch_os_region(self.terminal_region_selection)
+                self.terminal_mode = "message"
+                self.terminal_message = "SYSTEM SET TO NEW REGION"
+                self.terminal_message_timer = 0.0
+                return True
+            elif event.key == pygame.K_ESCAPE:
+                # Return to admin menu
+                self.terminal_mode = "admin_menu"
+                return True
+            return True
+        
+        # Handle admin menu mode
+        if self.terminal_mode == "admin_menu":
+            if event.key == pygame.K_UP:
+                self.terminal_admin_menu_selection = max(1, self.terminal_admin_menu_selection - 1)
+                return True
+            elif event.key == pygame.K_DOWN:
+                self.terminal_admin_menu_selection = min(4, self.terminal_admin_menu_selection + 1)
+                return True
+            elif event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
+                # Menu item selected
+                if self.terminal_admin_menu_selection == 1:
+                    # Perform Factory Reset - exit game immediately
+                    self.exit_game()
+                    return True
+                elif self.terminal_admin_menu_selection == 2:
+                    # Region Detection - show current saved locale as selected
+                    self.terminal_mode = "region_select"
+                    self.terminal_region_selection = self.os_locale
+                    return True
+                elif self.terminal_admin_menu_selection == 3:
+                    # Handshake Connected Node
+                    self.terminal_mode = "message"
+                    self.terminal_message = "no node connected"
+                    self.terminal_message_timer = 0.0
+                    return True
+                elif self.terminal_admin_menu_selection == 4:
+                    # Shutdown System - show quit screen
+                    self.set_quit_state()
+                    return True
+            elif event.key == pygame.K_ESCAPE:
+                # Return to command mode
+                self.terminal_mode = "command"
+                self.terminal_text = ""
+                self.terminal_input_buffer = ""
+                return True
+            return True
+        
+        # Handle admin login stages
+        if self.terminal_mode == "admin_login_username":
+            if event.key == pygame.K_BACKSPACE:
+                if self.terminal_input_buffer:
+                    self.terminal_input_buffer = self.terminal_input_buffer[:-1]
+                    self.terminal_cursor_blink_timer = 0.0
+                    self.terminal_cursor_visible = True
+                return True
+            elif event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
+                if self.terminal_input_buffer.strip().lower() == "general":
+                    # Correct username, move to password prompt
+                    self.terminal_text += "\nusername: " + self.terminal_input_buffer
+                    self.terminal_mode = "admin_login_password"
+                    self.terminal_input_buffer = ""
+                else:
+                    # Wrong username, return to command mode
+                    self.terminal_text += "\nusername: " + self.terminal_input_buffer
+                    self.terminal_text += "\nAccess denied."
+                    self.terminal_mode = "command"
+                    self.terminal_input_buffer = ""
+                self.terminal_cursor_blink_timer = 0.0
+                self.terminal_cursor_visible = True
+                return True
+            elif event.key == pygame.K_ESCAPE:
+                # Cancel login, return to command
+                self.terminal_mode = "command"
+                self.terminal_input_buffer = ""
+                return True
+            elif event.unicode and event.unicode.isprintable():
+                self.terminal_input_buffer += event.unicode
+                self.terminal_cursor_blink_timer = 0.0
+                self.terminal_cursor_visible = True
+                return True
+            return True
+        
+        if self.terminal_mode == "admin_login_password":
+            if event.key == pygame.K_BACKSPACE:
+                if self.terminal_input_buffer:
+                    self.terminal_input_buffer = self.terminal_input_buffer[:-1]
+                    self.terminal_cursor_blink_timer = 0.0
+                    self.terminal_cursor_visible = True
+                return True
+            elif event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
+                if self.terminal_input_buffer.strip().lower() == "louis-sonic":
+                    # Correct password, enter admin menu
+                    self.terminal_text += "\npassword: " + ("*" * len(self.terminal_input_buffer))
+                    self.terminal_text += "\nAccess granted."
+                    self.terminal_mode = "admin_menu"
+                    self.terminal_admin_menu_selection = 1
+                    self.terminal_input_buffer = ""
+                else:
+                    # Wrong password, return to command mode
+                    self.terminal_text += "\npassword: " + ("*" * len(self.terminal_input_buffer))
+                    self.terminal_text += "\nAccess denied."
+                    self.terminal_mode = "command"
+                    self.terminal_input_buffer = ""
+                self.terminal_cursor_blink_timer = 0.0
+                self.terminal_cursor_visible = True
+                return True
+            elif event.key == pygame.K_ESCAPE:
+                # Cancel login, return to command
+                self.terminal_mode = "command"
+                self.terminal_input_buffer = ""
+                return True
+            elif event.unicode and event.unicode.isprintable():
+                self.terminal_input_buffer += event.unicode
+                self.terminal_cursor_blink_timer = 0.0
+                self.terminal_cursor_visible = True
+                return True
+            return True
+        
+        # Handle file view mode (scrolling through file content)
+        if self.terminal_mode == "file_view":
+            if event.key == pygame.K_UP:
+                if self.terminal_file_scroll_index > 0:
+                    self.terminal_file_scroll_index -= 1
+                return True
+            elif event.key == pygame.K_DOWN:
+                max_scroll = max(0, len(self.terminal_file_content) - 1)
+                if self.terminal_file_scroll_index < max_scroll:
+                    self.terminal_file_scroll_index += 1
+                return True
+            elif event.key == pygame.K_ESCAPE:
+                # Exit file view, return to file system mode
+                self.terminal_mode = "command"
+                self.terminal_file_content = []
+                self.terminal_file_view_filename = ""
+                self.terminal_file_scroll_index = 0
+                return True
+            return True
+        
+        # Command mode - normal text input (single line; left/right move cursor on current line only)
+        lines = self.terminal_text.split('\n')
+        current_line = lines[-1] if lines else ""
+        if event.key == pygame.K_LEFT:
+            if self.terminal_cursor_index > 0:
+                self.terminal_cursor_index -= 1
+                self.terminal_cursor_blink_timer = 0.0
+                self.terminal_cursor_visible = True
+            return True
+        elif event.key == pygame.K_RIGHT:
+            if self.terminal_cursor_index < len(current_line):
+                self.terminal_cursor_index += 1
+                self.terminal_cursor_blink_timer = 0.0
+                self.terminal_cursor_visible = True
+            return True
+        elif event.key == pygame.K_UP:
+            # MS-DOS style: show previous command from history (stays on main line)
+            if self.terminal_command_history:
+                if self.terminal_history_index == -1:
+                    # First time pressing up - save current input and go to most recent
+                    lines = self.terminal_text.split('\n')
+                    current_line = lines[-1] if lines else ""
+                    # Strip prompt to get actual command
+                    if self.terminal_file_system_mode:
+                        if self.terminal_file_system_path:
+                            path_str = ".\\file-system\\" + "\\".join(self.terminal_file_system_path) + "\\"
+                        else:
+                            path_str = ".\\file-system\\"
+                        if current_line.startswith(path_str):
+                            self.terminal_current_input_line = current_line[len(path_str):]
+                        else:
+                            self.terminal_current_input_line = current_line
+                    else:
+                        if current_line.startswith("."):
+                            self.terminal_current_input_line = current_line[1:]
+                        else:
+                            self.terminal_current_input_line = current_line
+                    self.terminal_history_index = 0
+                else:
+                    # Move to older command
+                    if self.terminal_history_index < len(self.terminal_command_history) - 1:
+                        self.terminal_history_index += 1
+                
+                # Replace current line with history command (cursor at end of line)
+                lines = self.terminal_text.split('\n')
+                if len(lines) > 0:
+                    new_line = self._get_prompt_text() + self.terminal_command_history[self.terminal_history_index]
+                    lines[-1] = new_line
+                    self.terminal_text = '\n'.join(lines)
+                    self.terminal_cursor_index = len(new_line)
+                self.terminal_cursor_blink_timer = 0.0
+                self.terminal_cursor_visible = True
+            return True
+        elif event.key == pygame.K_DOWN:
+            # MS-DOS style: show next command from history (or clear if at end)
+            if self.terminal_history_index != -1:
+                if self.terminal_history_index > 0:
+                    # Move to newer command
+                    self.terminal_history_index -= 1
+                    lines = self.terminal_text.split('\n')
+                    if len(lines) > 0:
+                        new_line = self._get_prompt_text() + self.terminal_command_history[self.terminal_history_index]
+                        lines[-1] = new_line
+                        self.terminal_text = '\n'.join(lines)
+                        self.terminal_cursor_index = len(new_line)
+                else:
+                    # At the most recent, restore original input (cursor at end)
+                    self.terminal_history_index = -1
+                    lines = self.terminal_text.split('\n')
+                    if len(lines) > 0:
+                        new_line = self._get_prompt_text() + self.terminal_current_input_line
+                        lines[-1] = new_line
+                        self.terminal_text = '\n'.join(lines)
+                        self.terminal_cursor_index = len(new_line)
+                    self.terminal_current_input_line = ""
+                self.terminal_cursor_blink_timer = 0.0
+                self.terminal_cursor_visible = True
+            return True
+        elif event.key == pygame.K_BACKSPACE:
+            # Delete char before cursor on current line only (no moving to previous rows)
+            if self.terminal_history_index != -1:
+                self.terminal_history_index = -1
+                self.terminal_current_input_line = ""
+            lines = self.terminal_text.split('\n')
+            current = lines[-1] if lines else ""
+            if self.terminal_cursor_index > 0:
+                current = current[:self.terminal_cursor_index - 1] + current[self.terminal_cursor_index:]
+                self.terminal_cursor_index -= 1
+                self.terminal_text = '\n'.join(lines[:-1] + [current]) if len(lines) > 1 else current
+                self.terminal_cursor_blink_timer = 0.0
+                self.terminal_cursor_visible = True
+            return True
+        elif event.key == pygame.K_DELETE:
+            # Delete char after cursor on current line only
+            if self.terminal_history_index != -1:
+                self.terminal_history_index = -1
+                self.terminal_current_input_line = ""
+            lines = self.terminal_text.split('\n')
+            current = lines[-1] if lines else ""
+            if self.terminal_cursor_index < len(current):
+                current = current[:self.terminal_cursor_index] + current[self.terminal_cursor_index + 1:]
+                self.terminal_text = '\n'.join(lines[:-1] + [current]) if len(lines) > 1 else current
+                self.terminal_cursor_blink_timer = 0.0
+                self.terminal_cursor_visible = True
+            return True
+        elif event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
+            # Get the current line (last line of terminal_text)
+            lines = self.terminal_text.split('\n')
+            current_line = lines[-1] if lines else ""
+            
+            # Strip prompt from current line if in file system mode
+            if self.terminal_file_system_mode:
+                if self.terminal_file_system_path:
+                    path_str = ".\\file-system\\" + "\\".join(self.terminal_file_system_path) + "\\"
+                else:
+                    path_str = ".\\file-system\\"
+                if current_line.startswith(path_str):
+                    command = current_line[len(path_str):].strip()
+                else:
+                    command = current_line.strip()
+            else:
+                # Remove "." prompt if present
+                if current_line.startswith("."):
+                    command = current_line[1:].strip()
+                else:
+                    command = current_line.strip()
+            
+            # Add command to history (if not empty and not already the last command)
+            if command and (not self.terminal_command_history or self.terminal_command_history[0] != command):
+                self.terminal_command_history.insert(0, command)
+                # Limit history size (keep last 50 commands)
+                if len(self.terminal_command_history) > 50:
+                    self.terminal_command_history.pop()
+            
+            # Reset history browsing
+            self.terminal_history_index = -1
+            self.terminal_current_input_line = ""
+            
+            # Handle file system commands
+            if self.terminal_file_system_mode:
+                # Add the command to terminal_text first
+                self.terminal_text += "\n"
+                
+                command_lower = command.lower()
+                command_parts = command.split()
+                cmd = command_parts[0].lower() if command_parts else ""
+                
+                if cmd == "dir" or cmd == "ls" or cmd == "":
+                    # List directory contents (ls is Unix alias for dir)
+                    folders, files = self._list_file_system_directory()
+                    for folder in folders:
+                        self.terminal_text += f"<DIR> {folder}\n"
+                    for file in files:
+                        self.terminal_text += f"      {file}\n"
+                elif cmd == "cd":
+                    # Change directory
+                    if len(command_parts) > 1:
+                        target = command_parts[1]
+                    else:
+                        target = ""
+                    if target == "\\":
+                        # Go back to root
+                        self.terminal_file_system_path = []
+                    elif target == "..":
+                        # Go up one directory
+                        if self.terminal_file_system_path:
+                            self.terminal_file_system_path.pop()
+                    elif target:
+                        # Try to navigate to folder (support virtual DOWNLOADS, case-insensitive)
+                        current_path = self._get_file_system_path()
+                        target_path = os.path.join(current_path, target)
+                        if os.path.exists(target_path) and os.path.isdir(target_path):
+                            # Normalize to DOWNLOADS for display consistency
+                            self.terminal_file_system_path.append("DOWNLOADS" if target.upper() == "DOWNLOADS" else target)
+                        elif target.upper() == "DOWNLOADS" and self.os_locale in (1, 2):
+                            # Virtual DOWNLOADS folder (US Mainland/Europe)
+                            self.terminal_file_system_path.append("DOWNLOADS")
+                        else:
+                            # Case-insensitive match for physical folders (e.g. DOWNLOADS vs downloads)
+                            if os.path.isdir(current_path):
+                                matched = next((x for x in os.listdir(current_path) if x.upper() == target.upper()), None)
+                                if matched:
+                                    self.terminal_file_system_path.append(matched)
+                                else:
+                                    self.terminal_text += f"Directory not found: {target}\n"
+                            else:
+                                self.terminal_text += f"Directory not found: {target}\n"
+                elif cmd == "cls" or cmd == "clear":
+                    # Clear screen
+                    self.terminal_text = ""
+                elif cmd == "help":
+                    # Show help
+                    self.terminal_text += "MS-DOS Commands:\n"
+                    self.terminal_text += "  DIR / LS     - List directory contents\n"
+                    self.terminal_text += "  CD [dir]     - Change directory (CD \\ to root)\n"
+                    self.terminal_text += "  TYPE [file]  - Display file contents\n"
+                    self.terminal_text += "  CLS          - Clear screen\n"
+                    self.terminal_text += "  VER          - Display version\n"
+                    self.terminal_text += "  DATE         - Display date\n"
+                    self.terminal_text += "  TIME         - Display time\n"
+                    self.terminal_text += "  ECHO [text]  - Display text\n"
+                    self.terminal_text += "  EXIT         - Exit file system mode\n"
+                    self.terminal_text += "  COMMAND-SYSTEM-START - Exit file system mode\n"
+                    self.terminal_text += "  HELP         - Display this help\n"
+                elif cmd == "ver":
+                    # Show version
+                    self.terminal_text += "Bradsonic 69000 Terminal v1.0\n"
+                    self.terminal_text += "Copyright (C) 2024 Bradsonic Systems\n"
+                elif cmd == "date":
+                    # Show date (game year is always 1989)
+                    now = datetime.now()
+                    game_date = now.replace(year=1989)
+                    self.terminal_text += f"Current date: {game_date.strftime('%a %m/%d/%Y')}\n"
+                elif cmd == "time":
+                    # Show time
+                    now = datetime.now()
+                    self.terminal_text += f"Current time: {now.strftime('%H:%M:%S')}\n"
+                elif cmd == "echo":
+                    # Echo text
+                    if len(command_parts) > 1:
+                        echo_text = " ".join(command_parts[1:])
+                        self.terminal_text += f"{echo_text}\n"
+                    else:
+                        self.terminal_text += "\n"
+                elif cmd == "type":
+                    # Display file contents (support filenames with spaces e.g. "Pacifica Sunrise.sonic")
+                    if len(command_parts) > 1:
+                        filename = " ".join(command_parts[1:])
+                        if self._open_file_in_terminal(filename):
+                            self.terminal_text += f"Contents of {filename}:\n"
+                            # File will be displayed in file_view mode
+                        else:
+                            self.terminal_text += f"File not found: {filename}\n"
+                    else:
+                        self.terminal_text += "Required parameter missing.\n"
+                elif cmd == "command-system-start" or cmd == "exit":
+                    # Exit file system mode, return to command mode
+                    self.terminal_file_system_mode = False
+                    self.terminal_file_system_path = []
+                    self.terminal_text += "Exiting file system mode...\n"
+                elif cmd == "md" or cmd == "mkdir":
+                    # Make directory (read-only file system)
+                    self.terminal_text += "File system is read-only. Cannot create directory.\n"
+                elif cmd == "rd" or cmd == "rmdir":
+                    # Remove directory (read-only file system)
+                    self.terminal_text += "File system is read-only. Cannot remove directory.\n"
+                elif cmd == "del" or cmd == "erase":
+                    # Delete file (read-only file system)
+                    self.terminal_text += "File system is read-only. Cannot delete file.\n"
+                elif cmd == "copy":
+                    # Copy file (read-only file system)
+                    self.terminal_text += "File system is read-only. Cannot copy file.\n"
+                elif cmd == "ren" or cmd == "rename":
+                    # Rename file (read-only file system)
+                    self.terminal_text += "File system is read-only. Cannot rename file.\n"
+                elif command:
+                    # Try to open as file or folder (case-insensitive for folders, e.g. DOWNLOADS)
+                    folders, files = self._list_file_system_directory()
+                    folder_match = next((f for f in folders if f.upper() == command.upper()), None)
+                    if folder_match:
+                        # It's a folder, navigate into it (use canonical name DOWNLOADS)
+                        self.terminal_file_system_path.append("DOWNLOADS" if folder_match.upper() == "DOWNLOADS" else folder_match)
+                    elif command in files or (files and next((f for f in files if f.upper() == command.upper()), None)):
+                        # It's a file, open it (support case-insensitive match)
+                        file_to_open = next((f for f in files if f.upper() == command.upper()), command) if command not in files else command
+                        if self._open_file_in_terminal(file_to_open):
+                            self.terminal_text += f"Opening {file_to_open}...\n"
+                        else:
+                            self.terminal_text += f"Error opening file: {file_to_open}\n"
+                    else:
+                        # Unknown command
+                        self.terminal_text += f"Bad command or file name: {command}\n"
+            else:
+                # Not in file system mode - check for commands
+                command_lower = command.lower()
+                if command_lower == "admin-subset":
+                    # Start admin login sequence
+                    self.terminal_text += "\n"
+                    self.terminal_mode = "admin_login_username"
+                    self.terminal_input_buffer = ""
+                elif command_lower == "file-system-start":
+                    # Enter file system mode
+                    self.terminal_file_system_mode = True
+                    self.terminal_file_system_path = []
+                    self.terminal_text += "\n"
+                else:
+                    self.terminal_text += "\n"
+            
+            self.terminal_cursor_index = 0  # New line: cursor at start
+            self.terminal_cursor_blink_timer = 0.0
+            self.terminal_cursor_visible = True
+            return True
+        elif event.key == pygame.K_ESCAPE:
+            # ESC in command mode: if in file-system go back to "."; otherwise close terminal (never exit OS/BBS)
+            if self.terminal_file_system_mode:
+                self.terminal_file_system_mode = False
+                self.terminal_file_system_path = []
+                self.terminal_file_content = []
+                self.terminal_file_view_filename = ""
+                self.terminal_file_scroll_index = 0
+                self.terminal_text += "\n."
+                self.terminal_input_buffer = ""
+                self.terminal_cursor_index = 0
+                return True
+            # At "." (terminal start): close terminal window only, stay in OS mode
+            self.terminal_active = False
+            if "terminal" in self.active_modals:
+                self.active_modals.remove("terminal")
+            self.terminal_position = None
+            self.terminal_dragging = False
+            self.terminal_mode = "command"
+            self.terminal_text = ""
+            self.terminal_input_buffer = ""
+            self.terminal_cursor_index = 0
+            self.terminal_message = ""
+            self.terminal_admin_menu_selection = 1
+            self.terminal_region_selection = 1
+            self.terminal_file_system_mode = False
+            self.terminal_file_system_path = []
+            self.terminal_file_content = []
+            self.terminal_file_view_filename = ""
+            self.terminal_file_scroll_index = 0
+            return True
+        elif event.unicode and event.unicode.isprintable():
+            # Insert character at cursor on current line only
+            if self.terminal_history_index != -1:
+                self.terminal_history_index = -1
+                self.terminal_current_input_line = ""
+            lines = self.terminal_text.split('\n')
+            current = lines[-1] if lines else ""
+            current = current[:self.terminal_cursor_index] + event.unicode + current[self.terminal_cursor_index:]
+            self.terminal_cursor_index += 1
+            self.terminal_text = '\n'.join(lines[:-1] + [current]) if len(lines) > 1 else current
+            self.terminal_cursor_blink_timer = 0.0
+            self.terminal_cursor_visible = True
+            return True
+        
+        return False
 
     def _get_note_button_rects(self, content_rect: pygame.Rect) -> Tuple[pygame.Rect, pygame.Rect, pygame.Rect]:
         """Helper to calculate edit/delete button rects anchored to bottom-left of content area."""
@@ -3793,6 +7960,11 @@ class OSMode:
         if self.has_token("ECHOCHAMBER"):
             content += f"\n\nECHO CHAMBER BBS\n"
             content += f"Dial-in: (07) 57 42 19 89"
+        
+        # Add NEVER AGAIN BBS info if player has NEVERAGAINBBS token
+        if self.has_token("NEVERAGAINBBS"):
+            content += f"\n\nNEVER AGAIN BBS\n"
+            content += f"Dial-in: (034) 089 98 91"
         
         return content
     
@@ -4077,7 +8249,7 @@ class OSMode:
         self.notes_modal_edit_mode = True
         self.notes_modal_edit_index = note_index
         self.notes_modal_edit_field = "title" if is_new else "content"
-        self.notes_modal_edit_title_text = note.get("title", "Untitled").strip() or "Untitled"
+        self.notes_modal_edit_title_text = (note.get("title", "Untitled").strip() or "Untitled")[:NOTESTAB_TITLE_MAX_LEN]
         self.notes_modal_edit_content_text = note.get("content", "")
         self.notes_modal_title_cursor = len(self.notes_modal_edit_title_text)
         self.notes_modal_content_cursor = len(self.notes_modal_edit_content_text)
@@ -4098,7 +8270,7 @@ class OSMode:
             if self.notes_modal_edit_index < len(notes):
                 note = notes[self.notes_modal_edit_index]
                 if not note.get("is_locked", False):
-                    note["title"] = self.notes_modal_edit_title_text.strip() or "Untitled"
+                    note["title"] = (self.notes_modal_edit_title_text.strip() or "Untitled")[:NOTESTAB_TITLE_MAX_LEN]
                     note["content"] = self.notes_modal_edit_content_text
                     self._save_user_notes(notes)
         self.notes_modal_edit_mode = False
@@ -4561,9 +8733,16 @@ class OSMode:
         text, cursor, _ = self._notes_active_text()
         if self._notes_delete_selection():
             text, cursor, _ = self._notes_active_text()
-        text = text[:cursor] + text_input + text[cursor:]
-        cursor += len(text_input)
-        self._notes_set_active_text(text, cursor)
+        if self.notes_modal_edit_field == "title":
+            # Tab title 20-char limit
+            new_text = text[:cursor] + text_input + text[cursor:]
+            new_text = new_text[:NOTESTAB_TITLE_MAX_LEN]
+            cursor = min(cursor + len(text_input), len(new_text))
+            self._notes_set_active_text(new_text, cursor)
+        else:
+            text = text[:cursor] + text_input + text[cursor:]
+            cursor += len(text_input)
+            self._notes_set_active_text(text, cursor)
         return True
 
     def _notes_apply_format_action(self, action: str) -> None:
@@ -5064,18 +9243,26 @@ class OSMode:
         gap = int(10 * self.scale)
         label_color = COLOR_CYAN
 
-        title_font_size = max(int(20 * self.scale), 14)
-        body_font_size = max(int(16 * self.scale), 12)
-
-        try:
-            title_font = pygame.font.SysFont("Segoe Script", title_font_size)
-        except Exception:
-            title_font = pygame.font.Font(None, title_font_size)
-
-        try:
-            body_font = pygame.font.SysFont("Segoe Script", body_font_size)
-        except Exception:
-            body_font = pygame.font.Font(None, body_font_size)
+        # Cache fonts by scale to avoid recreating every frame (major FPS fix when notes modal is open)
+        if getattr(self, "_notes_editor_font_scale", None) != self.scale:
+            title_font_size = max(int(20 * self.scale), 14)
+            body_font_size = max(int(16 * self.scale), 12)
+            try:
+                self._notes_editor_title_font = pygame.font.SysFont("Segoe Script", title_font_size)
+            except Exception:
+                self._notes_editor_title_font = pygame.font.Font(None, title_font_size)
+            try:
+                self._notes_editor_body_font = pygame.font.SysFont("Segoe Script", body_font_size)
+            except Exception:
+                self._notes_editor_body_font = pygame.font.Font(None, body_font_size)
+            try:
+                self._notes_editor_fmt_font = pygame.font.Font(None, max(int(18 * self.scale), 12))
+            except Exception:
+                self._notes_editor_fmt_font = pygame.font.Font(None, 18)
+            self._notes_editor_font_scale = self.scale
+        title_font = self._notes_editor_title_font
+        body_font = self._notes_editor_body_font
+        fmt_font = self._notes_editor_fmt_font
 
         # Title field
         title_label = title_font.render("Title", True, label_color)
@@ -5139,10 +9326,6 @@ class OSMode:
         format_toolbar_x = content_area_rect.x + gap
         format_actions = [("B", "bold"), ("HL", "highlight"), ("S", "strike"), ("1.", "numbered")]
         self.notes_modal_hitboxes["format_buttons"] = []
-        try:
-            fmt_font = pygame.font.Font(None, max(int(18 * self.scale), 12))
-        except Exception:
-            fmt_font = pygame.font.Font(None, 18)
 
         for idx, (label, action) in enumerate(format_actions):
             rect = pygame.Rect(
@@ -5363,6 +9546,10 @@ class OSMode:
         if modal_name not in self.active_modals:
             return
         
+        if modal_name == "file_system_browser":
+            self.file_system_browser_opened_from_dot_sonic = False
+            self.file_system_browser_dragging_item = None
+        
         # Remove modal from active list
         self.active_modals = [name for name in self.active_modals if name != modal_name]
         
@@ -5389,6 +9576,19 @@ class OSMode:
             # Exit edit mode if active
             if self.notes_modal_edit_mode:
                 self._exit_notes_edit_mode(save_changes=False)
+        elif modal_name == "mail":
+            # Reset compose state when closing
+            if self.mail_view == "compose":
+                self.mail_compose_to = ""
+                self.mail_compose_subject = ""
+                self.mail_compose_body = ""
+                self.mail_compose_active_field = "to"
+            self.mail_view = "inbox"
+            self.mail_reading_email = None
+            self.mail_settings_active_field = None
+        elif modal_name == "dot_sonic":
+            if self.dot_sonic_app and self.dot_sonic_app.active:
+                self.dot_sonic_app.close()
         # Other modals don't need special cleanup
     
     def _reset_os_mode(self):
@@ -5425,6 +9625,23 @@ class OSMode:
         # Preserve network state unless explicitly disconnected
         self.network_connected = OSMode.persisted_network_connected
         self.modem_modal_error_message = ""
+        
+        # Reset BRADSONIC-MAIL state
+        self.mail_view = "inbox"
+        self.mail_selected_index = -1
+        self.mail_reading_email = None
+        self.mail_compose_to = ""
+        self.mail_compose_subject = ""
+        self.mail_compose_body = ""
+        self.mail_compose_active_field = "to"
+        self.mail_compose_cursor = 0
+        self.mail_scroll_offset = 0
+        self.mail_status_message = ""
+        self.mail_status_timer = 0.0
+        self.mail_settings_active_field = None
+        self.mail_settings_cursor = 0
+        self.mail_settings_scroll = 0
+        self.mail_local_inbox = []
         self.modem_modal_error_timer = 0.0
         self._stop_modem_dial_sound()
         
@@ -5435,7 +9652,8 @@ class OSMode:
         
         for icon in self.icons:
             # Restore from saved position if available, otherwise use default stacked position
-            if icon["name"] in saved_positions:
+            icon["from_saved"] = icon["name"] in saved_positions
+            if icon["from_saved"]:
                 # Use saved position (already scaled)
                 icon["x"] = saved_positions[icon["name"]]["x"]
                 icon["y"] = saved_positions[icon["name"]]["y"]
@@ -5457,6 +9675,7 @@ class OSMode:
         self.games_modal_content_rect = None
         
         self._align_icons_to_tape_center()
+        self._apply_desktop_icon_vertical_offsets()
         
         # Reset hover states
         self.hovered_icon = None
@@ -5729,6 +9948,12 @@ class OSMode:
                     self.civitas_game._load_assets()
                 except Exception as e:
                     print(f"Warning: Failed to reload civitas assets: {e}")
+        
+        # Update dotSONIC Media Player
+        if self.dot_sonic_app:
+            health_monitor_y = self.bbs_y + int(10 * self.scale) if self.bbs_y else self.desktop_y + int(10 * self.scale)
+            self.dot_sonic_app.update_desktop(self.desktop_x, self.desktop_y, self.desktop_size, health_monitor_y)
+            self.dot_sonic_app.scale = self.scale
     
     def _update_hover_states(self, mouse_x: int, mouse_y: int):
         """Update hover states for icons and buttons based on mouse position."""
@@ -5739,6 +9964,10 @@ class OSMode:
         # Check icon hovers (only if not dragging)
         if not self.mouse_pressed:
             for icon in self.icons:
+                if icon["name"] == "mail-icon.png" and self.os_locale != 1:
+                    continue
+                if icon["name"] == "sonic-icon.png" and self.os_locale == 3:
+                    continue
                 icon_rect = pygame.Rect(icon["x"], icon["y"], icon["width"], icon["height"])
                 if icon_rect.collidepoint(mouse_x, mouse_y):
                     self.hovered_icon = icon
@@ -5746,6 +9975,8 @@ class OSMode:
         
         # Check button hovers in modals (check top-most first)
         for modal_name in reversed(self.active_modals.copy()):
+            if modal_name == "dot_sonic":
+                continue  # dotSONIC has its own UI/hover handling
             modal_x, modal_y = self.modal_positions.get(modal_name, (0, 0))
             modal_w, modal_h = self._get_modal_size(modal_name)
             # Apply clamping to match the actual drawn modal size
@@ -5857,6 +10088,49 @@ class OSMode:
                 if delete_rect and delete_rect.collidepoint(mouse_x, mouse_y):
                     self.hovered_button = ("notes", "delete")
                     return
+            elif modal_name == "mail":
+                # Title bar close button
+                close_btn_size = int(20 * self.scale)
+                close_btn_x = modal_x + modal_w - close_btn_size - int(5 * self.scale)
+                close_btn_y = modal_y + int(5 * self.scale)
+                close_btn_rect = pygame.Rect(close_btn_x, close_btn_y, close_btn_size, close_btn_size)
+                if close_btn_rect.collidepoint(mouse_x, mouse_y):
+                    self.hovered_button = ("mail", "title_close")
+                    return
+                # Menu bar buttons
+                for btn_rect, view_name in getattr(self, "_mail_menu_hitboxes", []):
+                    if btn_rect.collidepoint(mouse_x, mouse_y):
+                        label = [k for k, v in {"COMPOSE": "compose", "INBOX": "inbox", "OUTBOX": "outbox", "TRASH": "trash", "CONNECT": "connect", "SETTINGS": "settings"}.items() if v == view_name]
+                        if label:
+                            self.hovered_button = ("mail", f"menu_{label[0]}")
+                        return
+                # CONNECT view: SEND/RX and DIAL buttons
+                if self.mail_view == "connect":
+                    if getattr(self, "_mail_sendrx_btn_rect", None) and self._mail_sendrx_btn_rect.collidepoint(mouse_x, mouse_y):
+                        self.hovered_button = ("mail", "sendrx")
+                        return
+                    if getattr(self, "_mail_dial_btn_rect", None) and self._mail_dial_btn_rect.collidepoint(mouse_x, mouse_y):
+                        self.hovered_button = ("mail", "dial")
+                        return
+                # Compose view buttons
+                if self.mail_view == "compose":
+                    if getattr(self, "_mail_send_btn_rect", None) and self._mail_send_btn_rect.collidepoint(mouse_x, mouse_y):
+                        self.hovered_button = ("mail", "send")
+                        return
+                    if getattr(self, "_mail_clear_btn_rect", None) and self._mail_clear_btn_rect.collidepoint(mouse_x, mouse_y):
+                        self.hovered_button = ("mail", "clear")
+                        return
+                # Reading view buttons
+                if self.mail_view == "reading":
+                    if getattr(self, "_mail_back_btn_rect", None) and self._mail_back_btn_rect.collidepoint(mouse_x, mouse_y):
+                        self.hovered_button = ("mail", "back")
+                        return
+                    if getattr(self, "_mail_delete_btn_rect", None) and self._mail_delete_btn_rect.collidepoint(mouse_x, mouse_y):
+                        self.hovered_button = ("mail", "delete")
+                        return
+                    if getattr(self, "_mail_reply_btn_rect", None) and self._mail_reply_btn_rect.collidepoint(mouse_x, mouse_y):
+                        self.hovered_button = ("mail", "reply")
+                        return
             elif modal_name == "games":
                 close_btn_size = int(20 * self.scale)
                 close_btn_x = modal_x + modal_w - close_btn_size - int(5 * self.scale)
@@ -5865,9 +10139,57 @@ class OSMode:
                 if close_btn_rect.collidepoint(mouse_x, mouse_y):
                     self.hovered_button = ("games", "title_close")
                     return
+            elif modal_name == "hard_drive":
+                close_btn_size = int(20 * self.scale)
+                close_btn_x = modal_x + modal_w - close_btn_size - int(5 * self.scale)
+                close_btn_y = modal_y + int(5 * self.scale)
+                close_btn_rect = pygame.Rect(close_btn_x, close_btn_y, close_btn_size, close_btn_size)
+                if close_btn_rect.collidepoint(mouse_x, mouse_y):
+                    self.hovered_button = ("hard_drive", "title_close")
+                    return
+            elif modal_name == "system_folder":
+                close_btn_size = int(20 * self.scale)
+                close_btn_x = modal_x + modal_w - close_btn_size - int(5 * self.scale)
+                close_btn_y = modal_y + int(5 * self.scale)
+                close_btn_rect = pygame.Rect(close_btn_x, close_btn_y, close_btn_size, close_btn_size)
+                if close_btn_rect.collidepoint(mouse_x, mouse_y):
+                    self.hovered_button = ("system_folder", "title_close")
+                    return
+            elif modal_name == "file_system_browser":
+                close_btn_size = int(20 * self.scale)
+                close_btn_x = modal_x + modal_w - close_btn_size - int(5 * self.scale)
+                close_btn_y = modal_y + int(5 * self.scale)
+                close_btn_rect = pygame.Rect(close_btn_x, close_btn_y, close_btn_size, close_btn_size)
+                if close_btn_rect.collidepoint(mouse_x, mouse_y):
+                    self.hovered_button = ("file_system_browser", "title_close")
+                    return
     
+    def _truncate_icon_label(self, text: str, max_len: int = 9) -> str:
+        """Truncate label text for icons: if exceeds max_len chars, cut and add '...'."""
+        if not text or len(text) <= max_len:
+            return text or ""
+        return text[:max_len] + "..."
+
+    def _draw_label_under_icon(self, icon_x: int, icon_y: int, icon_w: int, icon_h: int, label_text: str) -> None:
+        """Draw a label below an icon (same font, colour, size and gap as file system icons; center-aligned).
+        Labels exceeding 9 characters are truncated with '...'."""
+        if not label_text:
+            return
+        font = self.file_system_browser_font
+        if not font:
+            font = pygame.font.Font(None, max(int(16 * self.scale), 12))
+        label_gap = int(8 * self.scale)  # Space between icon and text
+        try:
+            display_text = self._truncate_icon_label(label_text)
+            text_surface = font.render(display_text, True, COLOR_CYAN)
+            label_x = icon_x + (icon_w - text_surface.get_width()) // 2
+            label_y = icon_y + icon_h + label_gap
+            self.screen.blit(text_surface, (label_x, label_y))
+        except Exception:
+            pass
+
     def _draw_icon_label(self, icon_x: int, icon_y: int, icon_w: int, icon_h: int, label_text: str):
-        """Draw a label below an icon with fade animation."""
+        """Draw a label below an icon with fade animation. Labels >9 chars truncated with '...'."""
         icon_id = None
         for icon in self.icons:
             if icon["x"] == icon_x and icon["y"] == icon_y:
@@ -5884,9 +10206,9 @@ class OSMode:
         try:
             font_size = max(int(12 * self.scale), 10)
             label_font = pygame.font.Font(None, font_size)
-            
+            display_text = self._truncate_icon_label(label_text)
             # Create text surface with alpha
-            text_surface = label_font.render(label_text, True, COLOR_CYAN)
+            text_surface = label_font.render(display_text, True, COLOR_CYAN)
             text_surface.set_alpha(alpha)
             
             # Position label below icon
@@ -5993,4 +10315,68 @@ class OSMode:
         
         # Close the modal after a short delay (handled in update)
         # We'll close it in the ghost user sequence after the animation starts
+
+    # -------------------------------------------------------------------------
+    # Ghost User Methods (School Hack logout sequence - Notes typing)
+    # -------------------------------------------------------------------------
+
+    def _ghost_open_notes_for_school_hack(self) -> bool:
+        """Create a new note 'School Op - Steps', open Notes modal, select it, enter edit mode on content.
+        Returns True if the school op note was created and is ready for typing."""
+        notes = self._load_user_notes()
+        # Avoid duplicate school op note - if exists, open it (don't overwrite - player may have credentials)
+        for n in notes:
+            if n.get("title") == SCHOOL_OP_NOTE_TITLE:
+                self._open_modal("notes")
+                idx = next((i for i, n2 in enumerate(notes) if n2.get("title") == SCHOOL_OP_NOTE_TITLE), 0)
+                self.notes_modal_current_tab = idx
+                self._enter_notes_edit_mode(idx, is_new=False)
+                self.notes_modal_edit_field = "content"
+                return True
+        new_note = {"title": SCHOOL_OP_NOTE_TITLE, "content": "", "is_locked": False}
+        notes.append(new_note)
+        self._save_user_notes(notes)
+        self._open_modal("notes")
+        self.notes_modal_current_tab = len(notes) - 1
+        self._enter_notes_edit_mode(len(notes) - 1, is_new=True)
+        self.notes_modal_edit_field = "content"
+        self.notes_modal_content_cursor = len(self.notes_modal_edit_content_text)
+        self.notes_modal_content_selection = (self.notes_modal_content_cursor, self.notes_modal_content_cursor)
+        return True
+
+    def _ghost_append_school_op_line(self, line_index: int) -> bool:
+        """Set or replace the school op note with the no-credentials version (placeholders).
+        If note already has credentials (player found them), don't overwrite - preserve progress."""
+        if line_index < 0 or line_index >= len(SCHOOL_HACK_NOTE_LINES_NO_CREDS):
+            return False
+        # Don't overwrite if player already found credentials
+        content = self.notes_modal_edit_content_text or ""
+        if "admin-subset" in content and "general" in content and "louis-sonic" in content:
+            return True  # Consume beat, preserve player progress
+        # Replace with no-creds version (never append to avoid duplicates)
+        self.notes_modal_edit_content_text = self._get_school_op_note_content(with_credentials=False)
+        self.notes_modal_content_cursor = len(self.notes_modal_edit_content_text)
+        self.notes_modal_content_selection = (self.notes_modal_content_cursor, self.notes_modal_content_cursor)
+        return True
+
+    def _ghost_finish_school_op_note(self) -> None:
+        """Save the school op note and exit edit mode. Notes modal stays open."""
+        self._exit_notes_edit_mode(save_changes=True)
+
+    def get_school_hack_note_line_count(self) -> int:
+        """Return number of bullet lines for the school op ghost sequence."""
+        return len(SCHOOL_HACK_NOTE_LINES_NO_CREDS)
+
+    def is_school_op_note_visible(self) -> bool:
+        """True if the Notes modal is open and the current note is the School Op - Steps note."""
+        if "notes" not in self.active_modals:
+            return False
+        notes = self._load_user_notes()
+        if not notes or self.notes_modal_current_tab < 0 or self.notes_modal_current_tab >= len(notes):
+            return False
+        return (notes[self.notes_modal_current_tab].get("title") or "").strip() == SCHOOL_OP_NOTE_TITLE
+
+    def is_terminal_open(self) -> bool:
+        """True if the OS terminal (file-system / admin) is open."""
+        return getattr(self, "terminal_active", False)
 

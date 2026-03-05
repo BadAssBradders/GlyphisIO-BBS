@@ -82,6 +82,18 @@
       "required_tokens": ["MODEM1ST"],
       "forbidden_tokens": [],
       "exclusive_tokens": []
+    },
+    {
+      "id": "mtf_sysop_school_grades",
+      "header": "[SYSOP] glyphis  |  03.08.89  |  REQUEST: SCHOOL GRADE ASSISTANCE",
+      "bodylines": 4,
+      "body1": "Assistance requested. Certain operators require grade changes at their school to retain access to their stations.",
+      "body2": "\nIf you are interested in helping, contact Rain. Social engineering. Investigation. Server access. Subject database.",
+      "body3": "\nLet Rain know.",
+      "body4": "\n-Glyphis",
+      "required_tokens": ["JEWEL_VOICE"],
+      "forbidden_tokens": [],
+      "exclusive_tokens": []
     }
   ]
 }
