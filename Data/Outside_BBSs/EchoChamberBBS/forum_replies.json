@@ -1,0 +1,20 @@
+[
+  {
+    "type": "player",
+    "thread_idx": 1,
+    "text": "Yeah funny, I had no idea it was done like this, I have blown up my kitchen a few times now. I guess it's time to buy a garage!",
+    "date": "2026.03.13"
+  },
+  {
+    "type": "npc",
+    "thread_idx": 1,
+    "npc_name": "retro_repair",
+    "lines": [
+      "Good to have another builder in this thread.",
+      "CRT sync is a dying art. Keep at it.",
+      "If the crystal swap doesn't hold, come back.",
+      "I have the full sync circuit schematics."
+    ],
+    "date": "2026.03.13"
+  }
+]

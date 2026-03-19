@@ -1,0 +1,893 @@
+{
+  "version": 3,
+  "students": [
+    {
+      "id": "TMH-89-A3419",
+      "mug_filename": "10f_BRADSONIC_mosaic_reveal.gif",
+      "name": "Penelope Pierce",
+      "gender": "f",
+      "elective": "PEACE STUDIES",
+      "grades": {
+        "ENGLISH": "A",
+        "U.S.HISTORY": "B",
+        "AMERICAN PACIFICA POLITIC": "C",
+        "MATHMATICS": "C",
+        "SCIENCE": "B",
+        "PHYSICAL EDUCATION": "C",
+        "COMPUTER SCIENCE": "A",
+        "ART": "A"
+      },
+      "attendance": 93,
+      "clubs": [
+        "Library Volunteers",
+        "Music Club"
+      ],
+      "disciplinary": [
+        "MISSING HOMEWORK X3"
+      ],
+      "counselor_notes": [
+        "Performing within expected parameters."
+      ]
+    },
+    {
+      "id": "TMH-89-B3477",
+      "mug_filename": "10m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Owen Locke",
+      "gender": "m",
+      "elective": "MUSIC",
+      "grades": {
+        "ENGLISH": "C",
+        "U.S.HISTORY": "A",
+        "AMERICAN PACIFICA POLITIC": "C",
+        "MATHMATICS": "C",
+        "SCIENCE": "B",
+        "PHYSICAL EDUCATION": "A",
+        "COMPUTER SCIENCE": "A",
+        "ART": "C"
+      },
+      "attendance": 86,
+      "clubs": [
+        "Computer Club"
+      ],
+      "disciplinary": [],
+      "counselor_notes": [
+        "Performing within expected parameters."
+      ]
+    },
+    {
+      "id": "TMH-89-A3495",
+      "mug_filename": "11f_BRADSONIC_mosaic_reveal.gif",
+      "name": "Sabrina Bishop",
+      "gender": "f",
+      "elective": "DRAMA",
+      "grades": {
+        "ENGLISH": "A",
+        "U.S.HISTORY": "A",
+        "AMERICAN PACIFICA POLITIC": "C",
+        "MATHMATICS": "A",
+        "SCIENCE": "A",
+        "PHYSICAL EDUCATION": "B",
+        "COMPUTER SCIENCE": "C",
+        "ART": "A"
+      },
+      "attendance": 95,
+      "clubs": [
+        "Amateur Radio Club",
+        "Peace Committee"
+      ],
+      "disciplinary": [
+        "CHEWING GUM IN CLASS"
+      ],
+      "counselor_notes": [
+        "No concerns at this time."
+      ]
+    },
+    {
+      "id": "TMH-89-B3553",
+      "mug_filename": "11m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Quentin Wren",
+      "gender": "m",
+      "elective": "CONSUMER STUDIES",
+      "grades": {
+        "ENGLISH": "A",
+        "U.S.HISTORY": "A",
+        "AMERICAN PACIFICA POLITIC": "A",
+        "MATHMATICS": "B",
+        "SCIENCE": "A",
+        "PHYSICAL EDUCATION": "C",
+        "COMPUTER SCIENCE": "A",
+        "ART": "A"
+      },
+      "attendance": 94,
+      "clubs": [
+        "Chess Club"
+      ],
+      "disciplinary": [],
+      "counselor_notes": [
+        "No concerns at this time."
+      ]
+    },
+    {
+      "id": "TMH-89-A3571",
+      "mug_filename": "12f_BRADSONIC_mosaic_reveal.gif",
+      "name": "Valerie Pembroke",
+      "gender": "f",
+      "elective": "PEACE STUDIES",
+      "grades": {
+        "ENGLISH": "C",
+        "U.S.HISTORY": "B",
+        "AMERICAN PACIFICA POLITIC": "C",
+        "MATHMATICS": "C",
+        "SCIENCE": "A",
+        "PHYSICAL EDUCATION": "B",
+        "COMPUTER SCIENCE": "B",
+        "ART": "B"
+      },
+      "attendance": 84,
+      "clubs": [
+        "Art Club",
+        "Computer Club"
+      ],
+      "disciplinary": [
+        "DISRUPTIVE BEHAVIOR IN ASSEMBLY"
+      ],
+      "counselor_notes": [
+        "Recommend continued attendance monitoring."
+      ]
+    },
+    {
+      "id": "TMH-89-B3629",
+      "mug_filename": "12m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Spencer Sloane",
+      "gender": "m",
+      "elective": "MUSIC",
+      "grades": {
+        "ENGLISH": "B",
+        "U.S.HISTORY": "B",
+        "AMERICAN PACIFICA POLITIC": "C",
+        "MATHMATICS": "B",
+        "SCIENCE": "C",
+        "PHYSICAL EDUCATION": "B",
+        "COMPUTER SCIENCE": "A",
+        "ART": "B"
+      },
+      "attendance": 97,
+      "clubs": [
+        "Drama Society"
+      ],
+      "disciplinary": [],
+      "counselor_notes": [
+        "Recommend continued attendance monitoring."
+      ]
+    },
+    {
+      "id": "TMH-89-A3647",
+      "mug_filename": "13f_BRADSONIC_mosaic_reveal.gif",
+      "name": "Yvonne Thatcher",
+      "gender": "f",
+      "elective": "DRAMA",
+      "grades": {
+        "ENGLISH": "C",
+        "U.S.HISTORY": "A",
+        "AMERICAN PACIFICA POLITIC": "C",
+        "MATHMATICS": "B",
+        "SCIENCE": "C",
+        "PHYSICAL EDUCATION": "B",
+        "COMPUTER SCIENCE": "A",
+        "ART": "B"
+      },
+      "attendance": 98,
+      "clubs": [
+        "Science Olympiad",
+        "Chess Club"
+      ],
+      "disciplinary": [
+        "UNIFORM VIOLATION"
+      ],
+      "counselor_notes": [
+        "Performing within expected parameters."
+      ]
+    },
+    {
+      "id": "TMH-89-B3705",
+      "mug_filename": "13m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Vincent Vale",
+      "gender": "m",
+      "elective": "CONSUMER STUDIES",
+      "grades": {
+        "ENGLISH": "C",
+        "U.S.HISTORY": "A",
+        "AMERICAN PACIFICA POLITIC": "A",
+        "MATHMATICS": "B",
+        "SCIENCE": "A",
+        "PHYSICAL EDUCATION": "A",
+        "COMPUTER SCIENCE": "C",
+        "ART": "C"
+      },
+      "attendance": 81,
+      "clubs": [
+        "Music Club"
+      ],
+      "disciplinary": [],
+      "counselor_notes": [
+        "Performing within expected parameters."
+      ]
+    },
+    {
+      "id": "TMH-89-A3723",
+      "mug_filename": "14f_BRADSONIC_mosaic_reveal.gif",
+      "name": "Abigail Crosby",
+      "gender": "f",
+      "elective": "PEACE STUDIES",
+      "grades": {
+        "ENGLISH": "C",
+        "U.S.HISTORY": "B",
+        "AMERICAN PACIFICA POLITIC": "B",
+        "MATHMATICS": "B",
+        "SCIENCE": "B",
+        "PHYSICAL EDUCATION": "C",
+        "COMPUTER SCIENCE": "C",
+        "ART": "A"
+      },
+      "attendance": 99,
+      "clubs": [
+        "Photography Club",
+        "Drama Society"
+      ],
+      "disciplinary": [
+        "MISSING HOMEWORK X3"
+      ],
+      "counselor_notes": [
+        "No concerns at this time."
+      ]
+    },
+    {
+      "id": "TMH-89-B3781",
+      "mug_filename": "14m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Zachary Templeton",
+      "gender": "m",
+      "elective": "MUSIC",
+      "grades": {
+        "ENGLISH": "B",
+        "U.S.HISTORY": "C",
+        "AMERICAN PACIFICA POLITIC": "B",
+        "MATHMATICS": "A",
+        "SCIENCE": "C",
+        "PHYSICAL EDUCATION": "A",
+        "COMPUTER SCIENCE": "B",
+        "ART": "B"
+      },
+      "attendance": 97,
+      "clubs": [
+        "Peace Committee"
+      ],
+      "disciplinary": [],
+      "counselor_notes": [
+        "No concerns at this time."
+      ]
+    },
+    {
+      "id": "TMH-89-A3799",
+      "mug_filename": "15f_BRADSONIC_mosaic_reveal.gif",
+      "name": "Caroline Sterling",
+      "gender": "f",
+      "elective": "DRAMA",
+      "grades": {
+        "ENGLISH": "C",
+        "U.S.HISTORY": "B",
+        "AMERICAN PACIFICA POLITIC": "A",
+        "MATHMATICS": "B",
+        "SCIENCE": "A",
+        "PHYSICAL EDUCATION": "A",
+        "COMPUTER SCIENCE": "C",
+        "ART": "B"
+      },
+      "attendance": 84,
+      "clubs": [
+        "Library Volunteers",
+        "Music Club"
+      ],
+      "disciplinary": [
+        "CHEWING GUM IN CLASS"
+      ],
+      "counselor_notes": [
+        "Recommend continued attendance monitoring."
+      ]
+    },
+    {
+      "id": "TMH-89-B3857",
+      "mug_filename": "15m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Jason Redgrave",
+      "gender": "m",
+      "elective": "CONSUMER STUDIES",
+      "grades": {
+        "ENGLISH": "B",
+        "U.S.HISTORY": "A",
+        "AMERICAN PACIFICA POLITIC": "C",
+        "MATHMATICS": "A",
+        "SCIENCE": "C",
+        "PHYSICAL EDUCATION": "C",
+        "COMPUTER SCIENCE": "C",
+        "ART": "C"
+      },
+      "attendance": 95,
+      "clubs": [
+        "Computer Club"
+      ],
+      "disciplinary": [],
+      "counselor_notes": [
+        "Recommend continued attendance monitoring."
+      ]
+    },
+    {
+      "id": "TMH-89-A3875",
+      "mug_filename": "16f_BRADSONIC_mosaic_reveal.gif",
+      "name": "Eliza Bellamy",
+      "gender": "f",
+      "elective": "PEACE STUDIES",
+      "grades": {
+        "ENGLISH": "B",
+        "U.S.HISTORY": "C",
+        "AMERICAN PACIFICA POLITIC": "B",
+        "MATHMATICS": "A",
+        "SCIENCE": "C",
+        "PHYSICAL EDUCATION": "A",
+        "COMPUTER SCIENCE": "C",
+        "ART": "B"
+      },
+      "attendance": 85,
+      "clubs": [
+        "Amateur Radio Club",
+        "Peace Committee"
+      ],
+      "disciplinary": [
+        "DISRUPTIVE BEHAVIOR IN ASSEMBLY"
+      ],
+      "counselor_notes": [
+        "Performing within expected parameters."
+      ]
+    },
+    {
+      "id": "TMH-89-B3933",
+      "mug_filename": "16m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Darren Dunlop",
+      "gender": "m",
+      "elective": "MUSIC",
+      "grades": {
+        "ENGLISH": "C",
+        "U.S.HISTORY": "C",
+        "AMERICAN PACIFICA POLITIC": "B",
+        "MATHMATICS": "B",
+        "SCIENCE": "C",
+        "PHYSICAL EDUCATION": "B",
+        "COMPUTER SCIENCE": "A",
+        "ART": "A"
+      },
+      "attendance": 79,
+      "clubs": [
+        "Chess Club"
+      ],
+      "disciplinary": [],
+      "counselor_notes": [
+        "Performing within expected parameters."
+      ]
+    },
+    {
+      "id": "TMH-89-B3972",
+      "mug_filename": "17m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Franklin Kingsley",
+      "gender": "m",
+      "elective": "CONSUMER STUDIES",
+      "grades": {
+        "ENGLISH": "A",
+        "U.S.HISTORY": "A",
+        "AMERICAN PACIFICA POLITIC": "B",
+        "MATHMATICS": "C",
+        "SCIENCE": "C",
+        "PHYSICAL EDUCATION": "B",
+        "COMPUTER SCIENCE": "B",
+        "ART": "A"
+      },
+      "attendance": 78,
+      "clubs": [
+        "Drama Society"
+      ],
+      "disciplinary": [],
+      "counselor_notes": [
+        "No concerns at this time."
+      ]
+    },
+    {
+      "id": "TMH-89-A1199",
+      "mug_filename": "1f_BRADSONIC_mosaic_reveal.gif",
+      "name": "Rosaline Cloud",
+      "gender": "f",
+      "elective": "MUSIC",
+      "grades": {
+        "ENGLISH": "A",
+        "U.S.HISTORY": "A",
+        "AMERICAN PACIFICA POLITIC": "A",
+        "MATHMATICS": "A",
+        "SCIENCE": "A",
+        "PHYSICAL EDUCATION": "A",
+        "COMPUTER SCIENCE": "A",
+        "ART": "A"
+      },
+      "attendance": 89,
+      "clubs": [
+        "Computer Club",
+        "Drama Society"
+      ],
+      "disciplinary": [
+        "CAUGHT PLAYING VIDEO GAMES ON LIBRARY COMPUTER DURING ENGLISH CLASS",
+        "ANTI-PACIFICA STICKER ON LOCKER (VERBAL WARNING)",
+        "COUNSELOR REFERRAL - PERSISTENT FATIGUE"
+      ],
+      "counselor_notes": [
+        "Bright, articulate student. Active in drama but distracted this term. Frequently tired. Close friends with Vandengate and Kanderton.",
+        "Raised concerns about Pacifica curriculum in class - noted by faculty as 'politically aware beyond her years.'",
+        "[FLAGGED] Suspected of coordinating with other students to access restricted terminal functions. No direct evidence. Monitor."
+      ]
+    },
+    {
+      "id": "TMH-89-B1250",
+      "mug_filename": "1m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Bertie Vandengate",
+      "gender": "m",
+      "elective": "MUSIC",
+      "grades": {
+        "ENGLISH": "C",
+        "U.S.HISTORY": "C",
+        "AMERICAN PACIFICA POLITIC": "A",
+        "MATHMATICS": "A",
+        "SCIENCE": "A",
+        "PHYSICAL EDUCATION": "A",
+        "COMPUTER SCIENCE": "A",
+        "ART": "A"
+      },
+      "attendance": 89,
+      "clubs": [
+        "Computer Club",
+        "Amateur Radio Club"
+      ],
+      "disciplinary": [
+        "USING THE LIBRARY BRADSONIC COMPUTER TO LISTEN TO PIRATE RADIO",
+        "ANTI-PACIFICA GRAFFITI - EAST STAIRWELL (DENIED INVOLVEMENT)",
+        "FOUND IN SERVER ROOM AFTER HOURS"
+      ],
+      "counselor_notes": [
+        "Student shows exceptional aptitude in electronics and computing. Frequently tired in morning classes. Warned about excessive time in radio club room.",
+        "Concerns raised re: potential access to BANNED CONTENT via personal modem. Student denies. Parents contacted - no action taken.",
+        "[FLAGGED] Possible connection to unauthorized BBS activity. Refer to administration if further incidents."
+      ]
+    },
+    {
+      "id": "TMH-89-A1274",
+      "mug_filename": "2f_BRADSONIC_mosaic_reveal.gif",
+      "name": "Beatrice Wexler",
+      "gender": "f",
+      "elective": "DRAMA",
+      "grades": {
+        "ENGLISH": "C",
+        "U.S.HISTORY": "C",
+        "AMERICAN PACIFICA POLITIC": "B",
+        "MATHMATICS": "B",
+        "SCIENCE": "A",
+        "PHYSICAL EDUCATION": "B",
+        "COMPUTER SCIENCE": "B",
+        "ART": "A"
+      },
+      "attendance": 96,
+      "clubs": [
+        "Science Olympiad",
+        "Chess Club"
+      ],
+      "disciplinary": [
+        "CHEWING GUM IN CLASS"
+      ],
+      "counselor_notes": [
+        "Recommend continued attendance monitoring."
+      ]
+    },
+    {
+      "id": "TMH-89-B1325",
+      "mug_filename": "2m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Jason Kanderton",
+      "gender": "m",
+      "elective": "MUSIC",
+      "grades": {
+        "ENGLISH": "B",
+        "U.S.HISTORY": "B",
+        "AMERICAN PACIFICA POLITIC": "A",
+        "MATHMATICS": "A",
+        "SCIENCE": "A",
+        "PHYSICAL EDUCATION": "A",
+        "COMPUTER SCIENCE": "A",
+        "ART": "A"
+      },
+      "attendance": 81,
+      "clubs": [
+        "Computer Club",
+        "Chess Club"
+      ],
+      "disciplinary": [
+        "UNAUTHORIZED SOFTWARE ON SCHOOL COMPUTER",
+        "ANTI-PACIFICA LITERATURE FOUND IN LOCKER",
+        "EXCESSIVE TARDINESS - NOTED FATIGUE"
+      ],
+      "counselor_notes": [
+        "Academically strong but increasingly withdrawn. Appears fatigued - possible late-night computer use. Recommend sleep hygiene discussion.",
+        "Student questioned about anti-Pacifica materials. Claims 'research for history paper.' No further action.",
+        "[FLAGGED] Found debugging school network login system. Claims 'testing security.' Impressive but concerning."
+      ]
+    },
+    {
+      "id": "TMH-89-A1349",
+      "mug_filename": "3f_BRADSONIC_mosaic_reveal.gif",
+      "name": "Caroline Lennox",
+      "gender": "f",
+      "elective": "CONSUMER STUDIES",
+      "grades": {
+        "ENGLISH": "B",
+        "U.S.HISTORY": "B",
+        "AMERICAN PACIFICA POLITIC": "C",
+        "MATHMATICS": "C",
+        "SCIENCE": "C",
+        "PHYSICAL EDUCATION": "B",
+        "COMPUTER SCIENCE": "B",
+        "ART": "B"
+      },
+      "attendance": 84,
+      "clubs": [
+        "Music Club"
+      ],
+      "disciplinary": [],
+      "counselor_notes": [
+        "No concerns at this time."
+      ]
+    },
+    {
+      "id": "TMH-89-B1400",
+      "mug_filename": "3m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Ryan Drayton",
+      "gender": "m",
+      "elective": "MUSIC",
+      "grades": {
+        "ENGLISH": "A",
+        "U.S.HISTORY": "B",
+        "AMERICAN PACIFICA POLITIC": "B",
+        "MATHMATICS": "A",
+        "SCIENCE": "B",
+        "PHYSICAL EDUCATION": "B",
+        "COMPUTER SCIENCE": "A",
+        "ART": "C"
+      },
+      "attendance": 79,
+      "clubs": [
+        "Computer Club"
+      ],
+      "disciplinary": [],
+      "counselor_notes": [
+        "Recommend continued attendance monitoring."
+      ]
+    },
+    {
+      "id": "TMH-89-A1424",
+      "mug_filename": "4f_BRADSONIC_mosaic_reveal.gif",
+      "name": "Daphne Yorke",
+      "gender": "f",
+      "elective": "PEACE STUDIES",
+      "grades": {
+        "ENGLISH": "B",
+        "U.S.HISTORY": "A",
+        "AMERICAN PACIFICA POLITIC": "A",
+        "MATHMATICS": "B",
+        "SCIENCE": "C",
+        "PHYSICAL EDUCATION": "A",
+        "COMPUTER SCIENCE": "A",
+        "ART": "B"
+      },
+      "attendance": 81,
+      "clubs": [
+        "Photography Club",
+        "Drama Society"
+      ],
+      "disciplinary": [
+        "DISRUPTIVE BEHAVIOR IN ASSEMBLY"
+      ],
+      "counselor_notes": [
+        "Performing within expected parameters."
+      ]
+    },
+    {
+      "id": "TMH-89-B1475",
+      "mug_filename": "4m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Spencer Hollis",
+      "gender": "m",
+      "elective": "DRAMA",
+      "grades": {
+        "ENGLISH": "B",
+        "U.S.HISTORY": "A",
+        "AMERICAN PACIFICA POLITIC": "B",
+        "MATHMATICS": "C",
+        "SCIENCE": "C",
+        "PHYSICAL EDUCATION": "A",
+        "COMPUTER SCIENCE": "C",
+        "ART": "A"
+      },
+      "attendance": 81,
+      "clubs": [
+        "Amateur Radio Club",
+        "Peace Committee"
+      ],
+      "disciplinary": [
+        "CHEWING GUM IN CLASS"
+      ],
+      "counselor_notes": [
+        "No concerns at this time."
+      ]
+    },
+    {
+      "id": "TMH-89-A1499",
+      "mug_filename": "5f_BRADSONIC_mosaic_reveal.gif",
+      "name": "Eliza Mercer",
+      "gender": "f",
+      "elective": "MUSIC",
+      "grades": {
+        "ENGLISH": "C",
+        "U.S.HISTORY": "B",
+        "AMERICAN PACIFICA POLITIC": "B",
+        "MATHMATICS": "A",
+        "SCIENCE": "B",
+        "PHYSICAL EDUCATION": "C",
+        "COMPUTER SCIENCE": "A",
+        "ART": "B"
+      },
+      "attendance": 99,
+      "clubs": [
+        "Peace Committee"
+      ],
+      "disciplinary": [],
+      "counselor_notes": [
+        "Recommend continued attendance monitoring."
+      ]
+    },
+    {
+      "id": "TMH-89-B1550",
+      "mug_filename": "5m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Trevor Whitlock",
+      "gender": "m",
+      "elective": "CONSUMER STUDIES",
+      "grades": {
+        "ENGLISH": "C",
+        "U.S.HISTORY": "B",
+        "AMERICAN PACIFICA POLITIC": "C",
+        "MATHMATICS": "C",
+        "SCIENCE": "B",
+        "PHYSICAL EDUCATION": "C",
+        "COMPUTER SCIENCE": "B",
+        "ART": "A"
+      },
+      "attendance": 81,
+      "clubs": [
+        "Chess Club"
+      ],
+      "disciplinary": [],
+      "counselor_notes": [
+        "Performing within expected parameters."
+      ]
+    },
+    {
+      "id": "TMH-89-A1574",
+      "mug_filename": "6f_BRADSONIC_mosaic_reveal.gif",
+      "name": "Felicity Prescott",
+      "gender": "f",
+      "elective": "DRAMA",
+      "grades": {
+        "ENGLISH": "C",
+        "U.S.HISTORY": "C",
+        "AMERICAN PACIFICA POLITIC": "C",
+        "MATHMATICS": "A",
+        "SCIENCE": "A",
+        "PHYSICAL EDUCATION": "C",
+        "COMPUTER SCIENCE": "A",
+        "ART": "A"
+      },
+      "attendance": 87,
+      "clubs": [
+        "Library Volunteers",
+        "Music Club"
+      ],
+      "disciplinary": [
+        "UNIFORM VIOLATION"
+      ],
+      "counselor_notes": [
+        "No concerns at this time."
+      ]
+    },
+    {
+      "id": "TMH-89-B1625",
+      "mug_filename": "6m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Vincent Danvers",
+      "gender": "m",
+      "elective": "PEACE STUDIES",
+      "grades": {
+        "ENGLISH": "C",
+        "U.S.HISTORY": "C",
+        "AMERICAN PACIFICA POLITIC": "B",
+        "MATHMATICS": "A",
+        "SCIENCE": "B",
+        "PHYSICAL EDUCATION": "B",
+        "COMPUTER SCIENCE": "C",
+        "ART": "B"
+      },
+      "attendance": 89,
+      "clubs": [
+        "Art Club",
+        "Computer Club"
+      ],
+      "disciplinary": [
+        "DISRUPTIVE BEHAVIOR IN ASSEMBLY"
+      ],
+      "counselor_notes": [
+        "Recommend continued attendance monitoring."
+      ]
+    },
+    {
+      "id": "TMH-89-A1649",
+      "mug_filename": "7f_BRADSONIC_mosaic_reveal.gif",
+      "name": "Georgia Sinclair",
+      "gender": "f",
+      "elective": "CONSUMER STUDIES",
+      "grades": {
+        "ENGLISH": "C",
+        "U.S.HISTORY": "B",
+        "AMERICAN PACIFICA POLITIC": "C",
+        "MATHMATICS": "A",
+        "SCIENCE": "C",
+        "PHYSICAL EDUCATION": "C",
+        "COMPUTER SCIENCE": "B",
+        "ART": "C"
+      },
+      "attendance": 83,
+      "clubs": [
+        "Computer Club"
+      ],
+      "disciplinary": [],
+      "counselor_notes": [
+        "Performing within expected parameters."
+      ]
+    },
+    {
+      "id": "TMH-89-B1700",
+      "mug_filename": "7m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Wesley Bennett",
+      "gender": "m",
+      "elective": "MUSIC",
+      "grades": {
+        "ENGLISH": "B",
+        "U.S.HISTORY": "C",
+        "AMERICAN PACIFICA POLITIC": "A",
+        "MATHMATICS": "C",
+        "SCIENCE": "A",
+        "PHYSICAL EDUCATION": "B",
+        "COMPUTER SCIENCE": "C",
+        "ART": "A"
+      },
+      "attendance": 82,
+      "clubs": [
+        "Drama Society"
+      ],
+      "disciplinary": [],
+      "counselor_notes": [
+        "No concerns at this time."
+      ]
+    },
+    {
+      "id": "TMH-89-A1724",
+      "mug_filename": "8f_BRADSONIC_mosaic_reveal.gif",
+      "name": "Heather Winslow",
+      "gender": "f",
+      "elective": "PEACE STUDIES",
+      "grades": {
+        "ENGLISH": "C",
+        "U.S.HISTORY": "C",
+        "AMERICAN PACIFICA POLITIC": "B",
+        "MATHMATICS": "C",
+        "SCIENCE": "C",
+        "PHYSICAL EDUCATION": "C",
+        "COMPUTER SCIENCE": "C",
+        "ART": "A"
+      },
+      "attendance": 91,
+      "clubs": [
+        "Amateur Radio Club",
+        "Peace Committee"
+      ],
+      "disciplinary": [
+        "MISSING HOMEWORK X3"
+      ],
+      "counselor_notes": [
+        "Recommend continued attendance monitoring."
+      ]
+    },
+    {
+      "id": "TMH-89-B1775",
+      "mug_filename": "8m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Zachary Parker",
+      "gender": "m",
+      "elective": "DRAMA",
+      "grades": {
+        "ENGLISH": "C",
+        "U.S.HISTORY": "B",
+        "AMERICAN PACIFICA POLITIC": "C",
+        "MATHMATICS": "B",
+        "SCIENCE": "B",
+        "PHYSICAL EDUCATION": "C",
+        "COMPUTER SCIENCE": "B",
+        "ART": "C"
+      },
+      "attendance": 90,
+      "clubs": [
+        "Science Olympiad",
+        "Chess Club"
+      ],
+      "disciplinary": [
+        "UNIFORM VIOLATION"
+      ],
+      "counselor_notes": [
+        "Performing within expected parameters."
+      ]
+    },
+    {
+      "id": "TMH-89-A1799",
+      "mug_filename": "9f_BRADSONIC_mosaic_reveal.gif",
+      "name": "Iris Ashford",
+      "gender": "f",
+      "elective": "MUSIC",
+      "grades": {
+        "ENGLISH": "B",
+        "U.S.HISTORY": "C",
+        "AMERICAN PACIFICA POLITIC": "B",
+        "MATHMATICS": "A",
+        "SCIENCE": "A",
+        "PHYSICAL EDUCATION": "B",
+        "COMPUTER SCIENCE": "C",
+        "ART": "B"
+      },
+      "attendance": 95,
+      "clubs": [
+        "Chess Club"
+      ],
+      "disciplinary": [],
+      "counselor_notes": [
+        "No concerns at this time."
+      ]
+    },
+    {
+      "id": "TMH-89-B1850",
+      "mug_filename": "9m_BRADSONIC_mosaic_reveal.gif",
+      "name": "Bertie Monroe",
+      "gender": "m",
+      "elective": "CONSUMER STUDIES",
+      "grades": {
+        "ENGLISH": "A",
+        "U.S.HISTORY": "B",
+        "AMERICAN PACIFICA POLITIC": "C",
+        "MATHMATICS": "B",
+        "SCIENCE": "C",
+        "PHYSICAL EDUCATION": "C",
+        "COMPUTER SCIENCE": "C",
+        "ART": "B"
+      },
+      "attendance": 81,
+      "clubs": [
+        "Music Club"
+      ],
+      "disciplinary": [],
+      "counselor_notes": [
+        "Recommend continued attendance monitoring."
+      ]
+    }
+  ]
+}

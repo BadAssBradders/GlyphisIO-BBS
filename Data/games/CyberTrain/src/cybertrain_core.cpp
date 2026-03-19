@@ -4,6 +4,7 @@
 #include <vector>
 #include <random>
 #include <algorithm>
+#include <array>
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
@@ -12,6 +13,8 @@
 #include <fstream>
 #include <ctime>
 #include <cstdarg>
+#include <cfloat>
+#include <cctype>
 #include <tuple>
 #ifdef _WIN32
 // Forward declare only what we need - avoid including windows.h to prevent conflicts
@@ -95,6 +98,29 @@ static char g_username[64] = "Player";
 static bool g_shouldCenterMouse = false;
 static int g_lastFinalScore = 0;
 
+static void SanitizeCyberTrainUsername(const char* source, char* dest, size_t destSize) {
+    if (!dest || destSize == 0) return;
+    dest[0] = '\0';
+    if (!source) return;
+
+    size_t out = 0;
+    for (size_t i = 0; source[i] != '\0' && out + 1 < destSize; i++) {
+        unsigned char c = (unsigned char)source[i];
+        if (c < 32 || c == 127) {
+            if (out > 0 && dest[out - 1] != ' ') dest[out++] = ' ';
+            continue;
+        }
+        dest[out++] = (char)c;
+    }
+
+    while (out > 0 && dest[out - 1] == ' ') out--;
+    dest[out] = '\0';
+    if (out == 0) {
+        strncpy(dest, "Player", destSize - 1);
+        dest[destSize - 1] = '\0';
+    }
+}
+
 // â”€â”€ Leaderboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 struct CyberTrainLBEntry { char username[64]; int score; };
 static std::vector<CyberTrainLBEntry> g_leaderboard;
@@ -117,7 +143,7 @@ static int  g_introModalFrames = 0;
 static bool g_helpModalOpen    = false;
 static int  g_helpModalFrames  = 0;
 static int  g_helpPage         = 0;
-static constexpr int kHelpPageCount = 10;
+static constexpr int kHelpPageCount = 16;
 
 // ── Intro zoom animation (fires once when the first modal closes) ─────────────
 static bool g_zoomIntroActive  = false;  // currently animating
@@ -169,7 +195,7 @@ static Vector3 g_mouseWorldPos = {0.0f, 0.0f, 0.0f};
 
 // Scrolling ticker for game tips and controls
 static float g_tickerPosition = 0.0f;
-static const char* g_baseTickerText = "H FOR HELP | ARROWS MOVE CAMERA | SHIFT+LEFT/RIGHT ROTATES CAMERA | CTRL+SHIFT+/- ZOOMS | B CYCLES BUREAU FLOOR SIZE | GREEN: GREEN TRAIN + GREEN STATION + HUB-LINKED BUREAU | MAGENTA: MAGENTA STATION + INDUSTRY STATION | CYAN: CYAN TRAIN + CYAN STATION + LINKED BUREAU | ORANGE: ORANGE TRAIN + ORANGE STATION + LINKED BUREAU | RED: RED TRAIN + RED STATION + LINKED BUREAU | YELLOW: YELLOW TRAIN + YELLOW STATION + LINKED BUREAU";
+static const char* g_baseTickerText = "H FOR HELP | KEY EL=EST LINE | MAT=CARGO MATERIALS | CR=CREDITS | NS=NEARBY STATION | LB=LINKED BUREAU | HUB=INNER CITY HUB | OOB=OUT OF BOUNDS | OVR=OVERLAP | IR/OR=BUREAU RINGS | ARROWS MOVE CAMERA | SHIFT+LEFT/RIGHT ROTATES CAMERA | CTRL+SHIFT+/- ZOOMS | B CYCLES BUREAU FLOOR SIZE | GREEN: GREEN TRAIN + GREEN STATION + HUB-LINKED BUREAU | MAGENTA: MAGENTA STATION + INDUSTRY STATION | CYAN: CYAN TRAIN + CYAN STATION + LINKED BUREAU | ORANGE: ORANGE TRAIN + ORANGE STATION + LINKED BUREAU | RED: RED TRAIN + RED STATION + LINKED BUREAU | YELLOW: YELLOW TRAIN + YELLOW STATION + LINKED BUREAU";
 static char g_tickerTextBuf[2048];
 static const char* g_tickerText = g_tickerTextBuf;
 static const float g_tickerSpeed = 80.0f; // pixels per second
@@ -192,9 +218,16 @@ static std::vector<TerminalMessage> g_terminalMessages;
 static const float g_terminalCursorX = 0.66f; // 66% of screen width
 static const float g_terminalCursorY = 0.96f; // 96% of screen height (main text line at bottom)
 static const float g_terminalLineHeight = 25.0f; // Line spacing
-static const int g_terminalMaxRows = 5;      // Max 5 rows of text
+static const int g_terminalMaxRows = 6;      // 5 rows of terminal text + 1 dedicated build-status row
 static const float g_terminalTypingSpeed = 30.0f; // Characters per second
 static char g_liveCostPreview[128] = "";     // "New extended network line cost: ####" when in platform placement/drag
+enum class BuildStatusState {
+    None = 0,
+    Possible,
+    Blocked
+};
+static BuildStatusState g_buildStatusState = BuildStatusState::None;
+static char g_buildStatusText[160] = "NO TARGET BUILD";
 
 // Scalar game state
 static int g_playerCredits = 50000;
@@ -587,6 +620,7 @@ struct Line {
     int id;                          // Unique line ID
     std::string name;                // Line name
     Color color;                     // Line color
+    int chosenSystem = -1;           // Player-chosen or detected system identity for mixed-cluster lines
     int stationCount;                // Number of station components in this line
     std::set<long long> componentKeys; // Station component keys belonging to this line
     std::set<int> platformIndices;   // All platform indices (stations + track) that belong to this line
@@ -598,6 +632,7 @@ struct Line {
 // Modal state for line establishment
 enum class LineModalState {
     None,
+    ChooseSilo,         // Prompt to choose silo system when stations span multiple clusters
     EstablishLine,      // Prompt to establish a new line
     AddToLine          // Prompt to add to existing line or create new
 };
@@ -766,6 +801,7 @@ static int g_greenGrowthFloorBonus = 0;  // Sum of bureau floors used by SYS2 si
 static int g_cyanGrowthFloorBonus = 0; // Sum of bureau floors used by SYS4 silos; increases cyan growth odds
 static int g_orangeGrowthFloorBonus = 0; // Sum of bureau floors used by SYS5 silos; increases orange growth odds
 static int g_redGrowthFloorBonus = 0; // Sum of bureau floors used by SYS6 silos; increases red growth odds
+static int g_magentaGrowthFloorBonus = 0; // Sum of bureau floors linked to SYS3 magenta lines; boosts magenta+commodity share performance by 10% per floor
 static bool g_marketUnlocked = false;
 static int g_marketChaos = 50;
 static int g_yellowEligibleBureauCount = 0;
@@ -796,6 +832,9 @@ struct LineModalData {
     Color selectedColor = {0, 255, 255, 200}; // Currently selected color (default cyan)
     int colorIndex = 0;              // Index into predefined colors
     int detectedSystem = -1;         // Silo system detected from cluster proximity (-1 = none, use default palette)
+    std::vector<int> detectedSystems; // All silo systems detected (for ChooseSilo modal when 2+)
+    int siloChoiceIndex = 0;         // Currently highlighted silo in ChooseSilo modal
+    bool siloChoiceClicked = false;  // True if player confirmed silo choice
     bool establishClicked = false;   // True if Establish button was clicked
     bool addToLineClicked = false;   // True if Add to Line button was clicked
     bool cancelClicked = false;      // True if Cancel/Continue button was clicked
@@ -816,6 +855,11 @@ struct JunctionSetting {
     // pairIndex is in [0, nC2) where n is the number of exits at this junction.
     // -1 means "unset" (will fall back to a deterministic default pair).
     int exitIndex;
+    // Persist the selected pair by exit position as well so settings survive
+    // adjacency reordering when a junction gains or loses legs later.
+    float exitAx = 0.0f, exitAz = 0.0f;
+    float exitBx = 0.0f, exitBz = 0.0f;
+    bool hasStoredPair = false;
 };
 
 // Helper to create a position key for junction lookups
@@ -836,6 +880,21 @@ struct JunctionModalData {
     Vector3 pendingEndPos = {0, 0, 0};
 };
 static JunctionModalData g_junctionModal;
+
+// Junction configuration modal: opened when clicking a junction without a train selected.
+// Lists all trains that pass through this junction and lets the player cycle each train's exit pair.
+struct JunctionConfigModal {
+    bool open = false;
+    int  framesOpen = 0;
+    int  junctionPlatformIndex = -1;   // index into g_placedPlatforms
+    Vector3 junctionPos = {0, 0, 0};
+    int  selectedTrainSlot = -1;       // which slot in trainIndices is selected
+    std::vector<int> trainIndices;     // indices into g_placedTrains that use this junction
+    bool doneClicked = false;
+    bool switchClicked = false;        // user clicked SWITCH for selected train
+};
+static JunctionConfigModal g_junctionConfigModal;
+static bool g_junctionConfigModalOpen = false;
 
 // Station configuration modal: opened on station build and on neutral-click of a station tile.
 struct StationModalData {
@@ -863,8 +922,31 @@ struct DemolishConfirmModal {
     int  lineIdx           = -1;    // first affected line (for display name only)
     char lineName[128]     = {0};
     char siloWarning[256]  = {0};   // non-empty if affected line(s) own silos
+    bool hasAffectedTrains = false;
+    int  affectedTrainCount = 0;
 };
 static DemolishConfirmModal g_demolishConfirmModal;
+
+// Paused-train delete modal: shown when player clicks a paused (infrastructure-reset) train
+struct PausedTrainDeleteModal {
+    bool open           = false;
+    int  framesOpen     = 0;
+    bool confirmClicked = false;
+    bool cancelClicked  = false;
+    int  trainIndex     = -1;
+};
+static PausedTrainDeleteModal g_pausedTrainDeleteModal;
+
+// Quit confirmation modal: shown when player presses ESC in 3D view or splash screen
+struct QuitConfirmModal {
+    bool open       = false;
+    int  framesOpen = 0;
+    bool yesClicked = false;
+    bool noClicked  = false;
+    bool quitToDesktop = false; // true = exit game entirely (splash), false = return to menu (in-game)
+};
+static QuitConfirmModal g_quitConfirmModal;
+static bool g_quitConfirmModalOpen = false;
 
 static int g_nextPlacementGroupId = 1;  // New track placements get this group; increments after each drag placement.
 
@@ -1006,11 +1088,37 @@ struct PlacedTrain {
     // Jam state: collision detection
     bool isJammed = false;
     float jamTimer = 0.0f;
-    
+
+    // Infrastructure pause state: train is stationary due to line demolish
+    bool isPaused = false;           // stationary due to infrastructure reset
+    Color pausedColor = {128,128,128,255}; // color of the line that was destroyed
+
     // Get junction setting for a specific position, returns -1 if not set
-    int GetJunctionSetting(float x, float z) const {
+    int GetJunctionSetting(float x, float z, const std::vector<Vector3>* adjacent = nullptr) const {
         for (const auto& js : junctionSettings) {
             if (fabsf(js.x - x) < 0.1f && fabsf(js.z - z) < 0.1f) {
+                if (adjacent != nullptr) {
+                    if (js.hasStoredPair) {
+                        int exitA = -1;
+                        int exitB = -1;
+                        for (int i = 0; i < (int)adjacent->size(); i++) {
+                            const Vector3& pos = (*adjacent)[i];
+                            if (fabsf(pos.x - js.exitAx) < 0.1f && fabsf(pos.z - js.exitAz) < 0.1f) exitA = i;
+                            if (fabsf(pos.x - js.exitBx) < 0.1f && fabsf(pos.z - js.exitBz) < 0.1f) exitB = i;
+                        }
+                        if (exitA >= 0 && exitB >= 0 && exitA != exitB) {
+                            if (exitA > exitB) std::swap(exitA, exitB);
+                            int pairIndex = 0;
+                            for (int i = 0; i < (int)adjacent->size() - 1; i++) {
+                                for (int j = i + 1; j < (int)adjacent->size(); j++) {
+                                    if (i == exitA && j == exitB) return pairIndex;
+                                    pairIndex++;
+                                }
+                            }
+                        }
+                        return -1;
+                    }
+                }
                 return js.exitIndex;
             }
         }
@@ -1018,15 +1126,48 @@ struct PlacedTrain {
     }
     
     // Set junction setting for a specific position
-    void SetJunctionSetting(float x, float z, int exitIndex) {
+    void SetJunctionSetting(float x, float z, int exitIndex, const std::vector<Vector3>* adjacent = nullptr) {
+        float exitAx = 0.0f, exitAz = 0.0f;
+        float exitBx = 0.0f, exitBz = 0.0f;
+        bool hasStoredPair = false;
+        if (adjacent != nullptr && exitIndex >= 0) {
+            int pairIndex = 0;
+            for (int i = 0; i < (int)adjacent->size() - 1 && !hasStoredPair; i++) {
+                for (int j = i + 1; j < (int)adjacent->size(); j++) {
+                    if (pairIndex == exitIndex) {
+                        exitAx = (*adjacent)[i].x;
+                        exitAz = (*adjacent)[i].z;
+                        exitBx = (*adjacent)[j].x;
+                        exitBz = (*adjacent)[j].z;
+                        hasStoredPair = true;
+                        break;
+                    }
+                    pairIndex++;
+                }
+            }
+        }
         for (auto& js : junctionSettings) {
             if (fabsf(js.x - x) < 0.1f && fabsf(js.z - z) < 0.1f) {
                 js.exitIndex = exitIndex;
+                js.exitAx = exitAx;
+                js.exitAz = exitAz;
+                js.exitBx = exitBx;
+                js.exitBz = exitBz;
+                js.hasStoredPair = hasStoredPair;
                 return;
             }
         }
         // Not found, add new
-        junctionSettings.push_back({ x, z, exitIndex });
+        JunctionSetting js;
+        js.x = x;
+        js.z = z;
+        js.exitIndex = exitIndex;
+        js.exitAx = exitAx;
+        js.exitAz = exitAz;
+        js.exitBx = exitBx;
+        js.exitBz = exitBz;
+        js.hasStoredPair = hasStoredPair;
+        junctionSettings.push_back(js);
     }
 };
 
@@ -1083,6 +1224,10 @@ static std::vector<int> g_cachedBureauLineId;
 static std::set<long long> g_declinedComponentKeys;
 static std::set<long long> g_declinedNeutralBranchPlatformKeys;
 static std::unordered_map<long long, int> g_lockedBranchOwnerLineId; // platform posKey -> owning crossing line id
+// Platform position keys freshly reset to neutral by demolish.
+// Prevents auto-merge with adjacent established lines on next cache rebuild.
+// Cleared when new platforms are placed.
+static std::set<long long> g_demolishNeutralizedPlatformKeys;
 // Overpass model for pure X crossings: position key -> placement groups that pass through without connecting.
 static std::unordered_map<long long, std::unordered_set<int>> g_overpassGroupsByPosKey;
 
@@ -1965,6 +2110,41 @@ static int CountWrappedLines(const char* text, float fontSize, float maxWidth) {
     return (lineCount > 0) ? lineCount : 1;
 }
 
+static std::vector<std::string> WrapTerminalTextLines(const char* text, float fontSize, float maxWidth) {
+    float terminalFontSize = fontSize * 1.125f;
+    std::vector<std::string> lines;
+    char lineBuf[128];
+    int lineLen = 0;
+    lineBuf[0] = '\0';
+    const char* wordStart = text;
+    for (const char* p = text; ; p++) {
+        bool atWordEnd = (!*p || *p == ' ');
+        if (atWordEnd && wordStart < p) {
+            char word[64];
+            size_t wlen = (size_t)(p - wordStart);
+            if (wlen >= sizeof(word)) wlen = sizeof(word) - 1;
+            memcpy(word, wordStart, wlen);
+            word[wlen] = '\0';
+            float addW = MeasureTextEx(gameFont, word, terminalFontSize, 0.0f).x;
+            float curW = (lineLen > 0) ? MeasureTextEx(gameFont, lineBuf, terminalFontSize, 0.0f).x : 0.0f;
+            if (lineLen > 0 && curW + addW + 2.0f > maxWidth) {
+                lines.push_back(lineBuf);
+                lineLen = 0;
+                lineBuf[0] = '\0';
+            }
+            if (lineLen > 0) { lineBuf[lineLen++] = ' '; lineBuf[lineLen] = '\0'; }
+            for (size_t i = 0; word[i] && lineLen < (int)sizeof(lineBuf) - 1; i++) lineBuf[lineLen++] = word[i];
+            lineBuf[lineLen] = '\0';
+            wordStart = p;
+        }
+        if (!*p) break;
+        if (*p == ' ') wordStart = p + 1;
+    }
+    if (lineLen > 0) lines.push_back(lineBuf);
+    if (lines.empty()) lines.push_back("");
+    return lines;
+}
+
 static void AddTerminalMessage(const char* message) {
     g_terminalMessages.clear();
     TerminalMessage msg;
@@ -1989,6 +2169,22 @@ static void AppendTerminalMessage(const char* message) {
     }
 }
 
+static void SetBuildStatusNone() {
+    g_buildStatusState = BuildStatusState::None;
+    snprintf(g_buildStatusText, sizeof(g_buildStatusText), "NO TARGET BUILD");
+}
+
+static void SetBuildStatusPossible() {
+    g_buildStatusState = BuildStatusState::Possible;
+    snprintf(g_buildStatusText, sizeof(g_buildStatusText), "BUILD STATUS: POSSIBLE");
+}
+
+static void SetBuildStatusBlocked(const char* reason) {
+    g_buildStatusState = BuildStatusState::Blocked;
+    if (!reason || !reason[0]) reason = "IMPOSSIBLE";
+    snprintf(g_buildStatusText, sizeof(g_buildStatusText), "BUILD STATUS: %s", reason);
+}
+
 static void UpdateTerminal(float deltaTime) {
     for (auto& msg : g_terminalMessages) {
         msg.age += deltaTime;
@@ -2006,7 +2202,10 @@ static void UpdateTerminal(float deltaTime) {
     float terminalX = (float)g_renderWidth * g_terminalCursorX;
     float terminalMaxWidth = (float)g_renderWidth - terminalX - 20.0f;
     float fontSize = GetScaledFontSize(BASE_FONT_SIZE);
-    int maxLines = g_terminalMaxRows;
+    int statusLines = CountWrappedLines(g_buildStatusText, fontSize, terminalMaxWidth);
+    if (statusLines < 1) statusLines = 1;
+    if (statusLines > g_terminalMaxRows) statusLines = g_terminalMaxRows;
+    int maxLines = g_terminalMaxRows - statusLines;
 
     int totalLines = 0;
     int eraseCount = 0;
@@ -2054,8 +2253,12 @@ static void DrawTerminal() {
     float fontSize = GetScaledFontSize(BASE_FONT_SIZE);
     float terminalFontSize = fontSize * 1.125f;
     float scaledLineHeight = g_terminalLineHeight * (fontSize / BASE_FONT_SIZE);
-    float terminalMaxY = terminalStartY - (float)g_terminalMaxRows * scaledLineHeight;  // Exactly 5 rows
     float terminalMaxWidth = (float)g_renderWidth - terminalX - 20.0f;
+    std::vector<std::string> buildStatusLines = WrapTerminalTextLines(g_buildStatusText, fontSize, terminalMaxWidth);
+    if ((int)buildStatusLines.size() > g_terminalMaxRows) buildStatusLines.resize(g_terminalMaxRows);
+    const int statusLineCount = (int)buildStatusLines.size();
+    const int messageAreaRows = g_terminalMaxRows - statusLineCount;
+    float buildStatusBottomY = terminalStartY;
 
     // When a train is selected or cost preview is active, show feedback on the TOP line of the terminal
     // so the bottom row stays free for the newest messages (terminal reads top-to-bottom, newest at bottom).
@@ -2084,12 +2287,25 @@ static void DrawTerminal() {
         drawFeedbackLine(g_liveCostPreview);
         usedFirstLine = true;
     }
-    if (usedFirstLine && g_terminalMessages.empty()) return;
-    if (g_terminalMessages.empty()) return;
+    if (g_terminalMessages.empty()) {
+        Color statusColor = (Color){ 180, 180, 180, 255 };
+        if (g_buildStatusState == BuildStatusState::Possible) {
+            statusColor = (Color){ 0, 255, 255, 255 };
+        } else if (g_buildStatusState == BuildStatusState::Blocked) {
+            float pulse = (sinf((float)GetTime() * 4.0f) + 1.0f) * 0.5f;
+            statusColor = LerpColor(BLACK, RED, pulse);
+        }
+        for (int i = 0; i < statusLineCount; i++) {
+            float lineY = buildStatusBottomY - (float)(statusLineCount - 1 - i) * scaledLineHeight;
+            DrawTextEx(gameFont, buildStatusLines[i].c_str(), (Vector2){terminalX, lineY}, terminalFontSize, 0.0f, statusColor);
+        }
+        return;
+    }
 
-    // Fixed 5-line slots: feedback uses top line when present; messages use bottom N lines with newest at bottom row.
-    const int maxMessageLines = g_terminalMaxRows - (usedFirstLine ? 1 : 0);
-    float bottomSlotY = terminalStartY;  // Newest message always on bottom row
+    // Fixed slots above build status: feedback uses top line when present; messages use bottom N lines with newest
+    // on the row immediately above the build-status line.
+    const int maxMessageLines = messageAreaRows - (usedFirstLine ? 1 : 0);
+    float bottomSlotY = terminalStartY - (float)statusLineCount * scaledLineHeight;
 
     struct LineSlot { std::string text; bool fromNewestMessage; bool fromNewestAndTyping; };
     std::vector<LineSlot> allLines;
@@ -2103,35 +2319,9 @@ static void DrawTerminal() {
         bool fromNewest = (mi == g_terminalMessages.size() - 1);
         bool typing = fromNewest && msg.typingProgress < 1.0f;
 
-        char lineBuf[128];
-        int lineLen = 0;
-        lineBuf[0] = '\0';
-        const char* wordStart = visibleText;
-        for (const char* p = visibleText; ; p++) {
-            bool atWordEnd = (!*p || *p == ' ');
-            if (atWordEnd && wordStart < p) {
-                char word[64];
-                size_t wlen = (size_t)(p - wordStart);
-                if (wlen >= sizeof(word)) wlen = sizeof(word) - 1;
-                memcpy(word, wordStart, wlen);
-                word[wlen] = '\0';
-                float addW = MeasureTextEx(gameFont, word, terminalFontSize, 0.0f).x;
-                float curW = (lineLen > 0) ? MeasureTextEx(gameFont, lineBuf, terminalFontSize, 0.0f).x : 0.0f;
-                if (lineLen > 0 && curW + addW + 2.0f > terminalMaxWidth) {
-                    allLines.push_back({ std::string(lineBuf), fromNewest, false });
-                    lineLen = 0;
-                    lineBuf[0] = '\0';
-                }
-                if (lineLen > 0) { lineBuf[lineLen++] = ' '; lineBuf[lineLen] = '\0'; }
-                for (size_t i = 0; word[i] && lineLen < (int)sizeof(lineBuf) - 1; i++) lineBuf[lineLen++] = word[i];
-                lineBuf[lineLen] = '\0';
-                wordStart = p;
-            }
-            if (!*p) break;
-            if (*p == ' ') wordStart = p + 1;
-        }
-        if (lineLen > 0)
-            allLines.push_back({ std::string(lineBuf), fromNewest, typing });
+        std::vector<std::string> wrappedLines = WrapTerminalTextLines(visibleText, fontSize, terminalMaxWidth);
+        for (const auto& wrapped : wrappedLines)
+            allLines.push_back({ wrapped, fromNewest, typing });
     }
 
     // Take last maxMessageLines; draw so newest is on bottom line, older lines fill upward (fixed slots)
@@ -2155,6 +2345,18 @@ static void DrawTerminal() {
                 DrawTextEx(gameFont, "_", (Vector2){endX, lineY}, terminalFontSize, 0.0f, (Color){ 0, 255, 0, 255 });
             }
         }
+    }
+
+    Color statusColor = (Color){ 180, 180, 180, 255 };
+    if (g_buildStatusState == BuildStatusState::Possible) {
+        statusColor = (Color){ 0, 255, 255, 255 };
+    } else if (g_buildStatusState == BuildStatusState::Blocked) {
+        float pulse = (sinf((float)GetTime() * 4.0f) + 1.0f) * 0.5f;
+        statusColor = LerpColor(BLACK, RED, pulse);
+    }
+    for (int i = 0; i < statusLineCount; i++) {
+        float lineY = buildStatusBottomY - (float)(statusLineCount - 1 - i) * scaledLineHeight;
+        DrawTextEx(gameFont, buildStatusLines[i].c_str(), (Vector2){terminalX, lineY}, terminalFontSize, 0.0f, statusColor);
     }
 }
 
@@ -2496,6 +2698,20 @@ static bool SamePhysicalStation(const PlacedPlatform& a, const PlacedPlatform& b
     return (fabsf(cxA - cxB) < 0.1f && fabsf(czA - czB) < 0.1f);
 }
 
+static std::vector<int> CollectPhysicalStationTileIndices(int stationPlatformIdx,
+                                                          const std::vector<PlacedPlatform>& platforms,
+                                                          float gridSize) {
+    std::vector<int> tiles;
+    if (stationPlatformIdx < 0 || stationPlatformIdx >= (int)platforms.size()) return tiles;
+    const PlacedPlatform& anchor = platforms[stationPlatformIdx];
+    if (!anchor.isStation || anchor.isDepot) return tiles;
+
+    for (int i = 0; i < (int)platforms.size(); i++) {
+        if (SamePhysicalStation(anchor, platforms[i], gridSize)) tiles.push_back(i);
+    }
+    return tiles;
+}
+
 bool ArePlatformsAdjacent(const Vector3& a, const Vector3& b, float gridSize) {
     float dist = Vector3Distance(a, b);
     return dist < gridSize * 1.1f; // Allow small tolerance
@@ -2770,6 +2986,35 @@ static int RemoveCargoFromCluster(std::vector<PlacedPlatform>& platforms, const 
     return removed;
 }
 
+static int RemoveCargoFromLineOwnedDepots(std::vector<PlacedPlatform>& platforms, int lineId, int amount) {
+    if (amount <= 0 || lineId < 0) return 0;
+
+    std::vector<int> order;
+    for (int i = 0; i < (int)platforms.size(); i++) {
+        if (!platforms[i].isDepot) continue;
+        if (platforms[i].lineOwnerId != lineId) continue;
+        if (platforms[i].depotCargo <= 0) continue;
+        order.push_back(i);
+    }
+
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+        if (platforms[a].depotCargo != platforms[b].depotCargo)
+            return platforms[a].depotCargo > platforms[b].depotCargo;
+        return a < b;
+    });
+
+    int removed = 0;
+    for (int idx : order) {
+        while (amount > 0 && platforms[idx].depotCargo > 0) {
+            platforms[idx].depotCargo--;
+            amount--;
+            removed++;
+        }
+        if (amount == 0) break;
+    }
+    return removed;
+}
+
 static bool HasAdjacentStation(const Vector3& pos, const std::vector<PlacedPlatform>& platforms, float gridSize) {
     for (const auto& p : platforms) {
         if (p.isDepot) continue;
@@ -3013,10 +3258,10 @@ static bool IsStationInsideCluster(const int sx, const int sz, ClusterType t) {
 static bool IsStationNearCluster(const int sx, const int sz, ClusterType t) {
     for (const auto& cl : g_clusters) {
         if (cl.type != t) continue;
-        int minX = cl.x - 1;
-        int maxX = cl.x + cl.size;
-        int minZ = cl.y - 1;
-        int maxZ = cl.y + cl.size;
+        int minX = cl.x;
+        int maxX = cl.x + cl.size - 1;
+        int minZ = cl.y;
+        int maxZ = cl.y + cl.size - 1;
         if (sx >= minX && sx <= maxX && sz >= minZ && sz <= maxZ) return true;
     }
     return false;
@@ -3240,13 +3485,35 @@ static int DetectStrictClusterSystemFromPlatforms(const std::vector<int>& platfo
     return bestSystem;
 }
 
+static std::vector<int> DetectAllClusterSystemsFromPlatforms(const std::vector<int>& platformIndices) {
+    std::set<int> found;
+    for (int pi : platformIndices) {
+        if (pi < 0 || pi >= (int)g_placedPlatforms.size()) continue;
+        const PlacedPlatform& p = g_placedPlatforms[pi];
+        if (p.isDepot || !p.isStation) continue;
+        int detected = DetectStrictClusterSystemForStationPos(p.position.x, p.position.z);
+        if (detected >= 0) found.insert(detected);
+    }
+    return std::vector<int>(found.begin(), found.end());
+}
+
 static bool IsLineEstablishedByIndex(int lineIndex) {
     if (lineIndex < 0 || lineIndex >= (int)g_lines.size()) return false;
     return (g_establishedLineIds.find(g_lines[lineIndex].id) != g_establishedLineIds.end());
 }
 
+static int FindLineIndexById(int lineId) {
+    for (int li = 0; li < (int)g_lines.size(); li++) {
+        if (g_lines[li].id == lineId) return li;
+    }
+    return -1;
+}
+
 static int DetectStrictClusterSystemForLine(int lineIndex) {
     if (lineIndex < 0 || lineIndex >= (int)g_lines.size()) return -1;
+    if (g_lines[lineIndex].chosenSystem >= (int)SiloSystem::SYS1_CARGO) {
+        return g_lines[lineIndex].chosenSystem;
+    }
     std::vector<int> stationPlatforms;
     stationPlatforms.reserve(g_lines[lineIndex].platformIndices.size());
     for (int pi : g_lines[lineIndex].platformIndices) {
@@ -3280,13 +3547,59 @@ static bool DoesEstablishedLineMatchTrainType(int lineIndex, PlacedTrain::TrainT
     if (!IsLineEstablishedByIndex(lineIndex)) return false;
     int requiredSystem = RequiredSiloSystemForTrainType(type);
     if (requiredSystem < 0) return false;
-    int lineSystem = DetectStrictClusterSystemForLine(lineIndex);
-    // Mirror the same fallback used at establish-line time: if no strict cluster system
-    // is detectable (e.g. cargo area without an activated factory+depot yet), default to
-    // SYS1_CARGO. This matches the logic at the EstablishLine confirm that sets
-    // establishDetectedSystem = SYS1_CARGO when no strict system is found.
-    if (lineSystem < 0) lineSystem = (int)SiloSystem::SYS1_CARGO;
-    return lineSystem == requiredSystem;
+    if (lineIndex < 0 || lineIndex >= (int)g_lines.size()) return false;
+    if (g_lines[lineIndex].chosenSystem >= (int)SiloSystem::SYS1_CARGO) {
+        return g_lines[lineIndex].chosenSystem == requiredSystem;
+    }
+    // Fallback for legacy lines with no persisted system identity: accept any station-matching system.
+    std::vector<int> stationPlatforms;
+    for (int pi : g_lines[lineIndex].platformIndices) {
+        if (pi < 0 || pi >= (int)g_placedPlatforms.size()) continue;
+        const PlacedPlatform& p = g_placedPlatforms[pi];
+        if (!p.isDepot && p.isStation) stationPlatforms.push_back(pi);
+    }
+    std::vector<int> allSystems = DetectAllClusterSystemsFromPlatforms(stationPlatforms);
+    // If no systems detected, default to cargo (matches establish-line fallback)
+    if (allSystems.empty()) return requiredSystem == (int)SiloSystem::SYS1_CARGO;
+    for (int sys : allSystems) {
+        if (sys == requiredSystem) return true;
+    }
+    return false;
+}
+
+static bool RebuildTrainPath(PlacedTrain& train, const std::vector<PlacedPlatform>& platforms, float gridSize);
+
+static bool AwaitedLineAcceptsTrainType(PlacedTrain::TrainType type) {
+    if (g_awaitingTrainForLineId < 0) return true;
+    int awaitedLineIndex = FindLineIndexById(g_awaitingTrainForLineId);
+    return DoesEstablishedLineMatchTrainType(awaitedLineIndex, type);
+}
+
+static void RefreshAwaitingTrainLock() {
+    g_awaitingTrainForLineId = -1;
+    for (int li = 0; li < (int)g_lines.size(); li++) {
+        if (!IsLineEstablishedByIndex(li)) continue;
+        bool hasActiveTrain = false;
+        for (const auto& train : g_placedTrains) {
+            if (!train.isPaused && train.lineId == g_lines[li].id) {
+                hasActiveTrain = true;
+                break;
+            }
+        }
+        if (!hasActiveTrain) {
+            g_awaitingTrainForLineId = g_lines[li].id;
+            return;
+        }
+    }
+}
+
+static void RebuildTrainsForLineIds(const std::set<int>& affectedLineIds) {
+    if (affectedLineIds.empty()) return;
+    for (auto& train : g_placedTrains) {
+        if (train.isPaused) continue;
+        if (!affectedLineIds.count(train.lineId)) continue;
+        RebuildTrainPath(train, g_placedPlatforms, g_gridSpacing);
+    }
 }
 
 static bool IsJunctionSwitchable(int junctionPlatformIndex, int* outReasonCode = nullptr, int* outEstablishedLineCount = nullptr) {

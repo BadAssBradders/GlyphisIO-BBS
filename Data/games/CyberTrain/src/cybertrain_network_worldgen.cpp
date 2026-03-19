@@ -62,30 +62,7 @@ static bool HasEnoughCargoInRadius(const Vector3& pos,
                                     int requiredCargo) {
     float maxDist = gridSize * 8.0f; // 8 grid spaces radius
     int totalCargo = 0;
-    
-    // Check all depots within radius
-    for (const auto& p : platforms) {
-        if (!p.isDepot) continue;
-        
-        float dist = Vector3Distance((Vector3){pos.x, 0.0f, pos.z}, (Vector3){p.position.x, 0.0f, p.position.z});
-        if (dist <= maxDist) {
-            // Get the depot cluster this depot belongs to
-            int depotIdx = -1;
-            for (int i = 0; i < (int)platforms.size(); i++) {
-                if (&platforms[i] == &p) {
-                    depotIdx = i;
-                    break;
-                }
-            }
-            if (depotIdx >= 0) {
-                std::vector<int> cluster = GetDepotClusterIndices(platforms, depotIdx, gridSize);
-                int clusterCargo = GetClusterCargoTotal(platforms, cluster);
-                // Only count cargo from this cluster once
-                // We'll sum all unique clusters
-            }
-        }
-    }
-    
+
     // Better approach: collect all unique depot clusters within radius and sum their cargo
     std::vector<char> countedCluster(platforms.size(), 0);
     for (int i = 0; i < (int)platforms.size(); i++) {
@@ -241,6 +218,32 @@ std::vector<Vector3> GetAdjacentPositions(const Vector3& position, const std::ve
 // Get adjacent positions sorted clockwise around the platform (stable exit order)
 std::vector<Vector3> GetSortedAdjacentPositions(const Vector3& position, const std::vector<PlacedPlatform>& platforms, float gridSize) {
     std::vector<Vector3> adjacent = GetAdjacentPositions(position, platforms, gridSize);
+    std::array<bool, 4> hasDir = { false, false, false, false };
+    std::array<Vector3, 4> closestByDir = {};
+    std::array<float, 4> bestDistSq = {
+        FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX
+    };
+
+    for (const auto& adj : adjacent) {
+        float dx = adj.x - position.x;
+        float dz = adj.z - position.z;
+        int dir = 0;
+        if (fabsf(dx) >= fabsf(dz)) dir = (dx < 0.0f) ? 0 : 2;
+        else dir = (dz < 0.0f) ? 3 : 1;
+
+        float distSq = dx * dx + dz * dz;
+        if (!hasDir[dir] || distSq < bestDistSq[dir]) {
+            hasDir[dir] = true;
+            bestDistSq[dir] = distSq;
+            closestByDir[dir] = adj;
+        }
+    }
+
+    adjacent.clear();
+    for (int dir = 0; dir < 4; dir++) {
+        if (hasDir[dir]) adjacent.push_back(closestByDir[dir]);
+    }
+
     std::sort(adjacent.begin(), adjacent.end(), [&](const Vector3& a, const Vector3& b) {
         float angleA = atan2f(a.x - position.x, a.z - position.z);
         float angleB = atan2f(b.x - position.x, b.z - position.z);
@@ -633,28 +636,41 @@ std::vector<Vector3> BuildPlatformPath(const Vector3& startPos, const std::vecto
         // Endpoint stop handled by caller (we need neighbors list for that check)
         if (neighbors.size() == 1) return neighbors[0];
 
-        // Junction (degree 3+): in unrestricted routing, apply per-train switch pair settings.
-        // In line-restricted routing, ignore switch state and follow the line graph deterministically
-        // so trains never bounce just because a shared crossroad switch points elsewhere.
-        if (neighbors.size() >= 3 && !(linePlatformIndices && !linePlatformIndices->empty())) {
+        // Junction (degree 3+): apply per-train switch pair settings when they resolve
+        // inside the current neighbor set. When a line-restricted train reaches a shared
+        // crossroad, `neighbors` already contains only that line's legal exits, so honoring
+        // the pair here cannot route the train off-line.
+        if (neighbors.size() >= 3) {
             int pairIdx = -1;
-            if (train != nullptr) pairIdx = train->GetJunctionSetting(cur.x, cur.z);
+            if (train != nullptr) pairIdx = train->GetJunctionSetting(cur.x, cur.z, &neighbors);
             int numPairs = NumJunctionPairs((int)neighbors.size());
-            if (pairIdx < 0 || pairIdx >= numPairs) {
+
+            if (pairIdx >= 0 && pairIdx < numPairs) {
+                int i = -1, j = -1;
+                if (PairIndexToIJ((int)neighbors.size(), pairIdx, i, j)) {
+                    // No incoming direction yet (start node): just pick one side of the active pair.
+                    if (isSentinelPrev(prevPos)) return neighbors[i];
+
+                    // If we arrived from one side of the active pair, we must exit via the other side.
+                    if (samePos(prevPos, neighbors[i])) return neighbors[j];
+                    if (samePos(prevPos, neighbors[j])) return neighbors[i];
+
+                    // Arrived from a leg that is not part of the active pair. For unrestricted routing
+                    // this is a dead end under the current switch state; for line-restricted routing,
+                    // fall through to the straight-through heuristic below.
+                    if (!(linePlatformIndices && !linePlatformIndices->empty())) {
+                        return prevPos;
+                    }
+                }
+            } else if (!(linePlatformIndices && !linePlatformIndices->empty())) {
                 pairIdx = DefaultJunctionPairIndex(cur, neighbors);
-            }
-
-            int i = -1, j = -1;
-            if (PairIndexToIJ((int)neighbors.size(), pairIdx, i, j)) {
-                // No incoming direction yet (start node): just pick one side of the active pair.
-                if (isSentinelPrev(prevPos)) return neighbors[i];
-
-                // If we arrived from one side of the active pair, we must exit via the other side.
-                if (samePos(prevPos, neighbors[i])) return neighbors[j];
-                if (samePos(prevPos, neighbors[j])) return neighbors[i];
-
-                // Arrived from a non-connected leg: no forward move (dead end under current switch state).
-                return prevPos;
+                int i = -1, j = -1;
+                if (PairIndexToIJ((int)neighbors.size(), pairIdx, i, j)) {
+                    if (isSentinelPrev(prevPos)) return neighbors[i];
+                    if (samePos(prevPos, neighbors[i])) return neighbors[j];
+                    if (samePos(prevPos, neighbors[j])) return neighbors[i];
+                    return prevPos;
+                }
             }
         }
 
@@ -948,7 +964,7 @@ void DrawJunctionOnMap(const Vector3& position, const std::vector<PlacedPlatform
     int pairIdx = -1;
     bool isEditable = (trainIndex >= 0 && trainIndex < (int)g_placedTrains.size());
     if (isEditable) {
-        pairIdx = g_placedTrains[trainIndex].GetJunctionSetting(position.x, position.z);
+        pairIdx = g_placedTrains[trainIndex].GetJunctionSetting(position.x, position.z, &adjacent);
     }
     int numPairs = NumJunctionPairs((int)adjacent.size());
     if (pairIdx < 0 || pairIdx >= numPairs) {

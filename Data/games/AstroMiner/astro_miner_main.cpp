@@ -498,6 +498,10 @@ float g_splashTimer = 0.0f;
 float g_splashBeatDuration = 1.0f;  // 1 second per beat
 int g_menuOption = 0;  // 0=new game, 1=load game, 2=quit
 bool g_exit_requested = false;  // Flag to signal exit to BBS
+float g_menuInactivityTimer = 0.0f;   // Seconds since last input on menu
+float g_attractLeaderboardTimer = -1.0f;  // -1=inactive, >=0=auto-showing leaderboard
+static const float ATTRACT_INACTIVITY_TIMEOUT  = 25.0f;  // Idle seconds before attract leaderboard
+static const float ATTRACT_LEADERBOARD_DURATION = 5.0f;  // Seconds attract leaderboard stays visible
 
 // Leaderboard system
 #define MAX_LEADERBOARD_ENTRIES 10
@@ -2422,6 +2426,14 @@ void DrawLeaderboardModal() {
         DrawTextWithFont("NO SCORES YET", modalX + modalWidth / 2 - 100, startY + 100, fontSize, GRAY);
     }
     
+    // Rank multiplier explanation (widths cached — strings are constant)
+    static const char* mulLine1 = "SCORE = CREDITS x RANK MULTIPLIER";
+    static const char* mulLine2 = "Cadet x1  Junior x2  Able x3  LDN x4  Chief x5";
+    static int mulLine1W = MeasureTextWithFont(mulLine1, 12);
+    static int mulLine2W = MeasureTextWithFont(mulLine2, 12);
+    DrawTextWithFont(mulLine1, modalX + (modalWidth - mulLine1W) / 2, modalY + modalHeight - 115, 12, (Color){120, 120, 120, 255});
+    DrawTextWithFont(mulLine2, modalX + (modalWidth - mulLine2W) / 2, modalY + modalHeight - 100, 12, (Color){120, 120, 120, 255});
+
     // Show last score if available
     if (g_lastFinalScore > 0) {
         char lastScoreText[128];
@@ -2500,12 +2512,42 @@ void DrawPageSplash(GameState* state, int* menuSelection, Vector3* shipPos, Vect
             }
         }
     } else {
-        // Show leaderboard modal if needed (after splash2, before menu)
+        // Compute once — reused by attract-dismiss and inactivity tracking below
+        bool menuActivity = CustomIsKeyPressed(KEY_DOWN) || CustomIsKeyPressed(KEY_UP)
+                         || CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_SPACE);
+
+        // Attract mode: auto-dismiss leaderboard after duration or on any key
+        if (g_attractLeaderboardTimer >= 0.0f) {
+            g_attractLeaderboardTimer += dt;
+            if (g_attractLeaderboardTimer >= ATTRACT_LEADERBOARD_DURATION || menuActivity || g_leaderboardDismissed) {
+                g_showLeaderboard = false;
+                g_leaderboardDismissed = true;
+                g_attractLeaderboardTimer = -1.0f;
+                g_menuInactivityTimer = 0.0f;
+            }
+        }
+
+        // Show leaderboard modal if needed (post-game or attract mode)
         if (g_showLeaderboard && !g_leaderboardDismissed) {
             DrawLeaderboardModal();
             return;  // Don't show menu while leaderboard is visible
         }
-        
+
+        // Track inactivity - reset on any menu input
+        if (menuActivity) {
+            g_menuInactivityTimer = 0.0f;
+        } else {
+            g_menuInactivityTimer += dt;
+        }
+
+        // After timeout, show leaderboard in attract mode for ATTRACT_LEADERBOARD_DURATION seconds
+        if (g_menuInactivityTimer >= ATTRACT_INACTIVITY_TIMEOUT && g_attractLeaderboardTimer < 0.0f && g_leaderboardCount > 0) {
+            g_showLeaderboard = true;
+            g_leaderboardDismissed = false;
+            g_attractLeaderboardTimer = 0.0f;
+            g_menuInactivityTimer = 0.0f;
+        }
+
         // Menu phase - handle navigation
         if (CustomIsKeyPressed(KEY_DOWN)) {
             g_menuOption = (g_menuOption + 1) % 3;
@@ -2769,16 +2811,16 @@ void LoadLeaderboard() {
         }
         
         if (!jaxkandoExists && g_leaderboardCount < MAX_LEADERBOARD_ENTRIES) {
-            // Add jaxkando's entry: 47,392 credits, rank 1, final score 47,392
-            g_leaderboard[g_leaderboardCount].score = 47392;
+            // Add jaxkando's entry: 47,392 credits, rank 5 (Chief Miner), final score 47,392 × 5 = 236,960
+            g_leaderboard[g_leaderboardCount].score = 236960;
             g_leaderboard[g_leaderboardCount].credits = 47392;
-            g_leaderboard[g_leaderboardCount].rank = 1;
+            g_leaderboard[g_leaderboardCount].rank = 5;
             strncpy(g_leaderboard[g_leaderboardCount].rankName, "Chief Miner", sizeof(g_leaderboard[g_leaderboardCount].rankName) - 1);
             g_leaderboard[g_leaderboardCount].rankName[sizeof(g_leaderboard[g_leaderboardCount].rankName) - 1] = '\0';
             strncpy(g_leaderboard[g_leaderboardCount].username, "jaxkando", MAX_USERNAME_LENGTH - 1);
             g_leaderboard[g_leaderboardCount].username[MAX_USERNAME_LENGTH - 1] = '\0';
             g_leaderboardCount++;
-            printf("[LoadLeaderboard] Added jaxkando's entry (Chief Miner, 47,392 credits) - ASTROMINER1 token granted\n");
+            printf("[LoadLeaderboard] Added jaxkando's entry (Chief Miner rank 5, 47,392 credits, score 236,960) - ASTROMINER1 token granted\n");
             
             // Save immediately to persist jaxkando's entry
             SaveLeaderboard();
@@ -2788,6 +2830,18 @@ void LoadLeaderboard() {
     } else {
         printf("[LoadLeaderboard] ASTROMINER1 token not yet granted - jaxkando entry not added\n");
     }
+
+    // Sort all entries by score descending (insertion sort)
+    for (int i = 1; i < g_leaderboardCount; i++) {
+        LeaderboardEntry tmp = g_leaderboard[i];
+        int j = i - 1;
+        while (j >= 0 && g_leaderboard[j].score < tmp.score) {
+            g_leaderboard[j + 1] = g_leaderboard[j];
+            j--;
+        }
+        g_leaderboard[j + 1] = tmp;
+    }
+    printf("[LoadLeaderboard] Sorted %d entries by score descending\n", g_leaderboardCount);
 }
 
 // Save leaderboard to file
@@ -8539,37 +8593,21 @@ __declspec(dllexport) __cdecl void UpdateFrame() {
                 }
             }
             
-            // Draw ship (blue triangle pointing forward) - ALWAYS at center, never moves
-            // Ship yaw: 0° = pointing in +Z direction (forward), which should point "up" on minimap
-            float shipAngle = g_shipYaw; // Already in degrees
-            
-            Vector2 shipTip = {(float)mapCenterX, (float)(mapCenterY - 6)};
-            Vector2 shipLeft = {(float)(mapCenterX - 4), (float)(mapCenterY + 4)};
-            Vector2 shipRight = {(float)(mapCenterX + 4), (float)(mapCenterY + 4)};
-            
-            // Rotate triangle based on ship yaw
-            float cosA = cosf(DEG2RAD * shipAngle);
-            float sinA = sinf(DEG2RAD * shipAngle);
-            
-            // Rotate points around center
-            Vector2 center = {(float)mapCenterX, (float)mapCenterY};
-            Vector2 tipRot, leftRot, rightRot;
-            float dx, dy;
-            
-            dx = shipTip.x - center.x; dy = shipTip.y - center.y;
-            tipRot.x = center.x + dx * cosA - dy * sinA;
-            tipRot.y = center.y + dx * sinA + dy * cosA;
-            
-            dx = shipLeft.x - center.x; dy = shipLeft.y - center.y;
-            leftRot.x = center.x + dx * cosA - dy * sinA;
-            leftRot.y = center.y + dx * sinA + dy * cosA;
-            
-            dx = shipRight.x - center.x; dy = shipRight.y - center.y;
-            rightRot.x = center.x + dx * cosA - dy * sinA;
-            rightRot.y = center.y + dx * sinA + dy * cosA;
-            
-            DrawTriangle(tipRot, leftRot, rightRot, BLUE);
-            DrawTriangleLines(tipRot, leftRot, rightRot, WHITE);
+            // Draw ship (blue diamond) - ALWAYS at center, never moves
+            Vector2 diamondTop   = {(float)mapCenterX,     (float)(mapCenterY - 6)};
+            Vector2 diamondBottom= {(float)mapCenterX,     (float)(mapCenterY + 6)};
+            Vector2 diamondLeft  = {(float)(mapCenterX - 6), (float)mapCenterY};
+            Vector2 diamondRight = {(float)(mapCenterX + 6), (float)mapCenterY};
+
+            // Fill: upper half and lower half
+            DrawTriangle(diamondTop, diamondLeft, diamondRight, BLUE);
+            DrawTriangle(diamondBottom, diamondRight, diamondLeft, BLUE);
+
+            // Outline: 4 lines connecting the diamond points
+            DrawLine((int)diamondTop.x,    (int)diamondTop.y,    (int)diamondRight.x,  (int)diamondRight.y,  WHITE);
+            DrawLine((int)diamondRight.x,  (int)diamondRight.y,  (int)diamondBottom.x, (int)diamondBottom.y, WHITE);
+            DrawLine((int)diamondBottom.x, (int)diamondBottom.y, (int)diamondLeft.x,   (int)diamondLeft.y,   WHITE);
+            DrawLine((int)diamondLeft.x,   (int)diamondLeft.y,   (int)diamondTop.x,    (int)diamondTop.y,    WHITE);
             
             // Draw pause overlay if paused
             if (g_isPaused) {

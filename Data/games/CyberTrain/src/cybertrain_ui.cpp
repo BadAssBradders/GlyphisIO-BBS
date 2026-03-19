@@ -561,50 +561,117 @@ static void DrawCustomCursor() {
 // LEADERBOARD â€” file I/O, display, year-5 modal, end-game screen
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-static const char* kLBPath = "Data/games/CyberTrain/leaderboard.json";
+static const char* kLBPathEmbedded = "Data/games/CyberTrain/leaderboard.json";
+static const char* kLBPathStandalone = "leaderboard.json";
+
+static const char* GetCyberTrainLeaderboardPath() {
+    if (g_standalone_mode) return kLBPathStandalone;
+    if (FileExists(kLBPathEmbedded)) return kLBPathEmbedded;
+    if (FileExists(kLBPathStandalone)) return kLBPathStandalone;
+    return kLBPathEmbedded;
+}
+
+static std::string EscapeCyberTrainLeaderboardString(const char* text) {
+    std::string out;
+    if (!text) return out;
+    for (const unsigned char* p = (const unsigned char*)text; *p; ++p) {
+        switch (*p) {
+            case '\\': out += "\\\\"; break;
+            case '"':  out += "\\\""; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:   out.push_back((char)*p); break;
+        }
+    }
+    return out;
+}
+
+static bool ParseCyberTrainLeaderboardQuoted(const std::string& line, size_t startQuote, size_t* outEndQuote, std::string* outValue) {
+    if (startQuote >= line.size() || line[startQuote] != '"') return false;
+    std::string value;
+    bool escaping = false;
+    for (size_t i = startQuote + 1; i < line.size(); i++) {
+        char c = line[i];
+        if (escaping) {
+            switch (c) {
+                case 'n': value.push_back('\n'); break;
+                case 'r': value.push_back('\r'); break;
+                case 't': value.push_back('\t'); break;
+                case '\\': value.push_back('\\'); break;
+                case '"': value.push_back('"'); break;
+                default: value.push_back(c); break;
+            }
+            escaping = false;
+            continue;
+        }
+        if (c == '\\') {
+            escaping = true;
+            continue;
+        }
+        if (c == '"') {
+            if (outEndQuote) *outEndQuote = i;
+            if (outValue) *outValue = value;
+            return true;
+        }
+        value.push_back(c);
+    }
+    return false;
+}
 
 static void LoadCyberTrainLeaderboard() {
     g_leaderboard.clear();
-    std::ifstream f(kLBPath);
+    std::ifstream f(GetCyberTrainLeaderboardPath());
     if (!f.is_open()) return;
     std::string line;
     while (std::getline(f, line) && (int)g_leaderboard.size() < kLBMaxEntries) {
         auto upos = line.find("\"username\":"); auto spos = line.find("\"score\":");
         if (upos == std::string::npos || spos == std::string::npos) continue;
-        auto ustart = line.find('"', upos + 11) + 1; auto uend = line.find('"', ustart);
-        if (ustart == std::string::npos || uend == std::string::npos) continue;
-        std::string uname = line.substr(ustart, uend - ustart);
+        size_t uquote = line.find('"', upos + 11);
+        std::string uname;
+        size_t uend = std::string::npos;
+        if (uquote == std::string::npos || !ParseCyberTrainLeaderboardQuoted(line, uquote, &uend, &uname)) continue;
         size_t ss = spos + 8;
-        while (ss < line.size() && !isdigit((unsigned char)line[ss])) ss++;
+        while (ss < line.size() && !isdigit((unsigned char)line[ss]) && line[ss] != '-') ss++;
         size_t se = ss;
+        if (se < line.size() && line[se] == '-') se++;
         while (se < line.size() && isdigit((unsigned char)line[se])) se++;
         if (se == ss) continue;
         CyberTrainLBEntry e;
-        strncpy(e.username, uname.c_str(), 63); e.username[63] = '\0';
-        e.score = std::stoi(line.substr(ss, se - ss));
+        SanitizeCyberTrainUsername(uname.c_str(), e.username, sizeof(e.username));
+        try {
+            e.score = std::stoi(line.substr(ss, se - ss));
+        } catch (...) {
+            continue;
+        }
         g_leaderboard.push_back(e);
     }
 }
 
 static void SaveAndMergeLBEntry(const char* username, int score) {
+    char safeUsername[64];
+    SanitizeCyberTrainUsername(username, safeUsername, sizeof(safeUsername));
     LoadCyberTrainLeaderboard();
     bool found = false;
     for (auto& e : g_leaderboard) {
-        if (strncmp(e.username, username, 63) == 0) {
+        if (strncmp(e.username, safeUsername, 63) == 0) {
             if (score > e.score) e.score = score;
             found = true; break;
         }
     }
     if (!found) {
-        CyberTrainLBEntry ne; strncpy(ne.username, username, 63); ne.username[63] = '\0'; ne.score = score;
+        CyberTrainLBEntry ne;
+        strncpy(ne.username, safeUsername, 63);
+        ne.username[63] = '\0';
+        ne.score = score;
         g_leaderboard.push_back(ne);
     }
     std::sort(g_leaderboard.begin(), g_leaderboard.end(),
         [](const CyberTrainLBEntry& a, const CyberTrainLBEntry& b){ return a.score > b.score; });
     if ((int)g_leaderboard.size() > kLBMaxEntries) g_leaderboard.resize(kLBMaxEntries);
-    std::ofstream fw(kLBPath);
+    std::ofstream fw(GetCyberTrainLeaderboardPath());
     for (const auto& e : g_leaderboard)
-        fw << "{\"username\":\"" << e.username << "\",\"score\":" << e.score << "}\n";
+        fw << "{\"username\":\"" << EscapeCyberTrainLeaderboardString(e.username) << "\",\"score\":" << e.score << "}\n";
 }
 
 // Shared leaderboard table renderer â€” cx/cy is the centre point of the table
@@ -711,19 +778,45 @@ static void DrawHelpModal() {
     Color titleCol  = {80, 180, 255, 255};
     Color bodyCol   = {220, 240, 255, 255};
     Color accentCol = {255, 215, 60, 255};
-    const char* titles[10] = {
-        "HELP 1/10 - CORE CONTROLS",
-        "HELP 2/10 - LINES & TRAINS",
-        "HELP 3/10 - CARGO & INDUSTRY",
-        "HELP 4/10 - BUREAU RULES",
-        "HELP 5/10 - BUREAU COSTS & ROI",
-        "HELP 6/10 - SILO SYSTEMS",
-        "HELP 7/10 - MARKET PLAYBOOK",
-        "HELP 8/10 - COST CONTROL",
-        "HELP 9/10 - 6-YEAR RUNBOOK",
-        "HELP 10/10 - LEADERBOARD META"
+    const char* titles[16] = {
+        "HELP 1/16 - CORE CONTROLS",
+        "HELP 2/16 - LINES & TRAINS",
+        "HELP 3/16 - CARGO & INDUSTRY",
+        "HELP 4/16 - BUREAU RULES",
+        "HELP 5/16 - BUREAU COSTS & ROI",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "HELP 13/16 - MARKET PLAYBOOK",
+        "HELP 14/16 - COST CONTROL",
+        "HELP 15/16 - 6-YEAR RUNBOOK",
+        "HELP 16/16 - LEADERBOARD META"
     };
-    DrawTextEx(gameFont, titles[g_helpPage], {mx + 40.0f, my + (tbH - tf) * 0.5f + mh * 0.015f}, tf, 0.0f, titleCol);
+    Vector2 titlePos = {mx + 40.0f, my + (tbH - tf) * 0.5f + mh * 0.015f};
+    auto DrawColourSystemTitle = [&](const char* prefix, const char* colourName, Color colour, const char* systemName) {
+        DrawTextEx(gameFont, prefix, titlePos, tf, 0.0f, titleCol);
+        float x = titlePos.x + MeasureTextEx(gameFont, prefix, tf, 0.0f).x;
+        DrawTextEx(gameFont, colourName, {x, titlePos.y}, tf, 0.0f, colour);
+        x += MeasureTextEx(gameFont, colourName, tf, 0.0f).x;
+        DrawTextEx(gameFont, systemName, {x, titlePos.y}, tf, 0.0f, titleCol);
+    };
+    if (g_helpPage >= 5 && g_helpPage <= 11) {
+        switch (g_helpPage) {
+            case 5:  DrawColourSystemTitle("HELP 6/16 - ",  "CARGO",   GetSystemColorShades((int)SiloSystem::SYS1_CARGO).colors[1],   ": MATERIALS INDUSTRY"); break;
+            case 6:  DrawColourSystemTitle("HELP 7/16 - ",  "GREEN",   GetSystemColorShades((int)SiloSystem::SYS2_GREEN).colors[1],   ": GENERAL PATRIOTS"); break;
+            case 7:  DrawColourSystemTitle("HELP 8/16 - ",  "MAGENTA", GetSystemColorShades((int)SiloSystem::SYS3_MAGENTA).colors[1], ": AI INDUSTRIAL"); break;
+            case 8:  DrawColourSystemTitle("HELP 9/16 - ",  "ORANGE",  GetSystemColorShades((int)SiloSystem::SYS5_ORANGE).colors[1],  ": AI ADMINISTRATION"); break;
+            case 9:  DrawColourSystemTitle("HELP 10/16 - ", "CYAN",    GetSystemColorShades((int)SiloSystem::SYS4_CYAN).colors[1],    ": AI TECHNOLOGY"); break;
+            case 10: DrawColourSystemTitle("HELP 11/16 - ", "RED",     GetSystemColorShades((int)SiloSystem::SYS6_RED).colors[1],     ": TRANSHUMAN ELITES"); break;
+            case 11: DrawColourSystemTitle("HELP 12/16 - ", "YELLOW",  GetSystemColorShades((int)SiloSystem::SYS7_YELLOW).colors[1],  ": CORPORATE EXECUTIVES"); break;
+        }
+    } else {
+        DrawTextEx(gameFont, titles[g_helpPage], titlePos, tf, 0.0f, titleCol);
+    }
     float lh   = bf * 1.3f;  // line height per wrapped block
     float paraGap = 0.0f;
     float textX = mx + 48.0f, textW = mw - 96.0f;
@@ -752,13 +845,13 @@ static void DrawHelpModal() {
         y = DrawWrappedText("Expansion order matters: station pair first, train second, bureau third. Avoid expensive orphan stations.",
             textX, y, textW, maxY, bf, accentCol);
     } else if (g_helpPage == 2) {
-        y = DrawWrappedText("Factories produce cargo into adjacent depot clusters. Cargo trains transfer cargo when entering station zones.",
+        y = DrawWrappedText("Factories produce MAT into adjacent depot clusters. Cargo trains move MAT when entering station zones.",
             textX, y, textW, maxY, bf, bodyCol) + paraGap;
-        y = DrawWrappedText("Cargo is a strategic bottleneck for bureau placement. Build depot chains so outer-ring cargo checks pass in multiple districts.",
+        y = DrawWrappedText("Cargo is the strategic bottleneck for bureaus. Build depot chains so outer-ring cargo checks pass in multiple districts.",
             textX, y, textW, maxY, bf, bodyCol) + paraGap;
-        y = DrawWrappedText("A cargo-only network scales materials, not direct bureau payouts. Transition into non-cargo systems as soon as bureaus are online.",
+        y = DrawWrappedText("Brown bureaus on established cargo lines also export stored MAT monthly: 1 MAT per floor for 100 CR, but only if that line's depots really hold stock.",
             textX, y, textW, maxY, bf, bodyCol) + paraGap;
-        DrawWrappedText("Best bootstrap: 1 cargo train + 1 factory + depot cluster + early 1-floor bureau, then pivot to a paying non-cargo line.",
+        DrawWrappedText("Best bootstrap: 1 cargo train + 1 factory + depot cluster + early brown bureau, then pivot into a stronger paying colour line.",
             textX, y, textW, maxY, bf, accentCol);
     } else if (g_helpPage == 3) {
         y = DrawWrappedText("Bureau placement requires BOTH checks: INNER ring must touch a station tile on an established line; OUTER ring must have enough cargo.",
@@ -772,7 +865,8 @@ static void DrawHelpModal() {
     } else if (g_helpPage == 4) {
         y = DrawWrappedText("Bureau cost is now SYSTEM-BASED per floor. Final price = floors x costPerFloor, then Red build discount applies.",
             textX, y, textW, maxY, bf, bodyCol) + paraGap;
-        y = DrawWrappedText("CARGO/NEUTRAL: 3000 CR per floor.", textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("CARGO/NEUTRAL: 3000 CR per floor. Brown bureaus also sell 1 MAT per floor each month for 100 CR if linked line depots hold stock.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
         y = DrawWrappedText("GREEN: 3500 CR per floor. MAGENTA: 4000 CR per floor. ORANGE: 4500 CR per floor.",
             textX, y, textW, maxY, bf, bodyCol) + paraGap;
         y = DrawWrappedText("CYAN: 5000 CR per floor. RED: 5500 CR per floor. YELLOW: 6000 CR per floor.",
@@ -782,26 +876,92 @@ static void DrawHelpModal() {
         DrawWrappedText("Practical rule: buy floors where uptime is stable and train movement is continuous. Idle lines delay payback.",
             textX, y, textW, maxY, bf, accentCol);
     } else if (g_helpPage == 5) {
-        y = DrawWrappedText("SYSTEM SUMMARY:", textX, y, textW, maxY, bf, bodyCol) + paraGap;
-        y = DrawWrappedText("CARGO: SYS1 (materials).", textX, y, textW, maxY, bf, bodyCol) + paraGap;
-        y = DrawWrappedText("GREEN: SYS2. MAGENTA: SYS3. CYAN: SYS4.", textX, y, textW, maxY, bf, bodyCol) + paraGap;
-        y = DrawWrappedText("ORANGE: SYS5. RED: SYS6. YELLOW: SYS7 (Market unlock).", textX, y, textW, maxY, bf, bodyCol) + paraGap;
-        y = DrawWrappedText("CYAN bonus reduces running costs globally. ORANGE reduces bureau cargo spend. RED reduces build credit spend. These compound strongly.",
+        y = DrawWrappedText("Build correctly: use an ESTABLISHED line with 1 cargo train, 1 active factory/depot cargo cluster, and 1 station on that same line inside the activated cargo cluster.",
             textX, y, textW, maxY, bf, bodyCol) + paraGap;
-        y = DrawWrappedText("YELLOW unlocks Market and lowers chaos with more yellow silos. Use it when your rail economy is already stable.",
+        y = DrawWrappedText("Cost: cargo or neutral bureau floors cost 3000 CR each, but the cargo silo itself does not require bureau floors.",
             textX, y, textW, maxY, bf, bodyCol) + paraGap;
-        DrawWrappedText("Do not chase every color early. Specialize first, then diversify once cashflow is positive and reliable.",
+        y = DrawWrappedText("Benefit: each cargo silo unlocks 1 of 6 commodity listings. Magenta on that line doubles factory output for cargo checks.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Brown bureau effect: each floor sells 1 MAT per month from depots on that established line for 100 CR, consuming real stored MAT.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        DrawWrappedText("Cargo is still the bootstrap system: it opens materials, supports bureau placement, and now gives brown bureaus direct MAT sales.",
             textX, y, textW, maxY, bf, accentCol);
     } else if (g_helpPage == 6) {
+        y = DrawWrappedText("Build correctly: run at least 1 green train on an ESTABLISHED line, place at least 1 station near a green district, and place a bureau on an inner-city hub station on that same line.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Cost: green bureau floors cost 3500 CR per floor. Green is the cheapest colour-specific bureau route after cargo.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Benefit: each qualifying hub bureau creates 1 green silo and unlocks green listings up to 6 total. The system uses a strict 1 bureau to 1 listing rule, capped by your green-station count.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Bureau floor effect: each floor used by a green silo adds 10% bullish green-share performance and improves green bullish trend odds.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        DrawWrappedText("Green is the cleanest early specialist play: cheaper than the executive colours and reliable when you have real hub coverage.",
+            textX, y, textW, maxY, bf, accentCol);
+    } else if (g_helpPage == 7) {
+        y = DrawWrappedText("Build correctly: run at least 1 magenta train on an ESTABLISHED line with at least 1 magenta station and at least 1 industry station within 2 grid spaces of a factory.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Cost: bureau floors on magenta lines cost 4000 CR per floor. The magenta silo itself does not require a bureau to form.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Benefit: each magenta silo unlocks magenta listings up to 6 total, and established magenta lines double factory output for cargo silos on that line.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Bureau floor effect: every bureau floor linked to an active magenta line adds 10% bullish performance to BOTH magenta shares and commodity shares, capped at 3x total drift.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        DrawWrappedText("Magenta is the bridge system: it upgrades cargo productivity and turns the market into a stronger compounding engine.",
+            textX, y, textW, maxY, bf, accentCol);
+    } else if (g_helpPage == 8) {
+        y = DrawWrappedText("Build correctly: run at least 1 orange train on an ESTABLISHED line with at least 1 orange station and at least 1 linked bureau station on that line.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Cost: orange bureau floors cost 4500 CR per floor.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Benefit: each orange silo unlocks orange listings up to 6 total and gives you a bureau-linked executive income path on that line.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Bureau floor effect: each floor reduces bureau cargo cost by 1 material when placing new bureaus, with a floor at zero.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        DrawWrappedText("Orange is a placement accelerator: build it when bureau expansion is limited more by cargo spend than by credits.",
+            textX, y, textW, maxY, bf, accentCol);
+    } else if (g_helpPage == 9) {
+        y = DrawWrappedText("Build correctly: run at least 1 cyan train on an ESTABLISHED line with at least 1 cyan station and at least 1 linked bureau station on that line.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Cost: cyan bureau floors cost 5000 CR per floor.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Benefit: each cyan silo unlocks cyan listings up to 6 total and makes expensive networks easier to sustain.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Bureau floor effect: each floor cuts global running costs by 5%, capped at 95%, and also improves cyan bullish trend odds.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        DrawWrappedText("Cyan is the upkeep stabilizer. It is usually worth buying before very large expansion phases or before rescuing a bloated network.",
+            textX, y, textW, maxY, bf, accentCol);
+    } else if (g_helpPage == 10) {
+        y = DrawWrappedText("Build correctly: run at least 1 red train on an ESTABLISHED line with at least 1 red station and at least 1 linked bureau station on that line.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Cost: red bureau floors cost 5500 CR per floor.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Benefit: each red silo unlocks red listings up to 6 total and turns high-credit construction plans into cheaper plays.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Bureau floor effect: each floor cuts build credit costs by 10%, capped at 90%, and also improves red bullish trend odds.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        DrawWrappedText("Red is the capex weapon. Use it before major station, bureau, factory, or track pushes when cash is the limiting resource.",
+            textX, y, textW, maxY, bf, accentCol);
+    } else if (g_helpPage == 11) {
+        y = DrawWrappedText("Build correctly: use an ESTABLISHED line with at least 1 yellow train, at least 1 station near a yellow cluster, and at least 1 eligible linked bureau on that line.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Cost: yellow bureau floors cost 6000 CR per floor, the highest in the game.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Benefit: the first yellow silo unlocks the STOCK & COMMODITIES MARKET. Stronger yellow bureau support makes the market calmer instead of wilder.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        y = DrawWrappedText("Bureau floor effect: the unique bureau floors used by yellow silos reduce market chaos by 1 per floor from a base of 50, giving calmer swings and more controllable market play.",
+            textX, y, textW, maxY, bf, bodyCol) + paraGap;
+        DrawWrappedText("Yellow is a late accelerator. Build it after your rail economy is already stable enough to survive without immediate bureau payback.",
+            textX, y, textW, maxY, bf, accentCol);
+    } else if (g_helpPage == 12) {
         y = DrawWrappedText("Market revenue adds passive credits each cycle once unlocked. Treat it as acceleration, not replacement, for bureau-led growth.",
             textX, y, textW, maxY, bf, bodyCol) + paraGap;
-        y = DrawWrappedText("Unlock sequence: establish yellow-capable ecosystem, then keep network healthy so market gains are not erased by upkeep spikes.",
+        y = DrawWrappedText("Unlock sequence: establish a yellow-capable ecosystem, then keep network health stable so market gains are not erased by upkeep spikes.",
             textX, y, textW, maxY, bf, bodyCol) + paraGap;
-        y = DrawWrappedText("When market is active, continue expanding bureau floors on high-uptime lines. Dual income streams produce best late-game scaling.",
+        y = DrawWrappedText("When market is active, continue expanding bureau floors on high-uptime lines. Dual income streams produce the best late-game scaling.",
             textX, y, textW, maxY, bf, bodyCol) + paraGap;
         DrawWrappedText("Use market timing to fund critical expansions, not decorative overbuild.",
             textX, y, textW, maxY, bf, accentCol);
-    } else if (g_helpPage == 7) {
+    } else if (g_helpPage == 13) {
         y = DrawWrappedText("Weekly costs: trains. Monthly costs: track, stations, depots, factories, bureaus. Negative credits trigger a one-year bankruptcy grace.",
             textX, y, textW, maxY, bf, bodyCol) + paraGap;
         y = DrawWrappedText("Outer ring construction is cheaper. Use it for long corridors and logistics backbone, then concentrate high-value bureaus where rules permit.",
@@ -810,12 +970,12 @@ static void DrawHelpModal() {
             textX, y, textW, maxY, bf, bodyCol) + paraGap;
         DrawWrappedText("Cut underperforming sections early with demolish mode if they consume upkeep without enabling new revenue.",
             textX, y, textW, maxY, bf, accentCol);
-    } else if (g_helpPage == 8) {
-        y = DrawWrappedText("YEAR 1-2: Build one reliable cargo bootstrap, establish first paying non-cargo line, place first bureau floors.",
+    } else if (g_helpPage == 14) {
+        y = DrawWrappedText("YEAR 1-2: Build one reliable cargo bootstrap, establish the first paying non-cargo line, and place the first bureau floors.",
             textX, y, textW, maxY, bf, bodyCol) + paraGap;
-        y = DrawWrappedText("YEAR 3-4: Scale bureau count and floors. Add silos that improve compounding (Cyan/Red/Orange) before broad expansion.",
+        y = DrawWrappedText("YEAR 3-4: Scale bureau count and floors. Add silos that improve compounding, especially Cyan, Red, and Orange, before broad expansion.",
             textX, y, textW, maxY, bf, bodyCol) + paraGap;
-        y = DrawWrappedText("YEAR 5: Optimize for net score, reduce waste, push high-confidence floor additions with active train coverage.",
+        y = DrawWrappedText("YEAR 5: Optimize for net score, reduce waste, and push high-confidence floor additions with active train coverage.",
             textX, y, textW, maxY, bf, bodyCol) + paraGap;
         DrawWrappedText("YEAR 6: Avoid risky long-payback projects. Convert liquidity into immediate, low-risk score gains.",
             textX, y, textW, maxY, bf, (Color){255, 80, 80, 255});
@@ -1151,20 +1311,59 @@ static bool DrawSplashScreen() {
         float optX = (fw - optW) * 0.5f;
         float optY = pressY + fontSize * 1.5f;
         DrawTextEx(gameFont, optionsText, {optX, optY}, fontSize * 0.8f, lineSpacing, (Color){140, 140, 140, 255});
+        // "PRESS ESC TO QUIT" below options prompt
+        const char* escText = "PRESS ESC TO QUIT";
+        float escW = MeasureTextEx(gameFont, escText, fontSize * 0.8f, lineSpacing).x;
+        float escX = (fw - escW) * 0.5f;
+        float escY = optY + fontSize * 1.2f;
+        DrawTextEx(gameFont, escText, {escX, escY}, fontSize * 0.8f, lineSpacing, (Color){100, 100, 100, 255});
         // After 30 s of inactivity show the global leaderboard
         if (g_splashTimer >= 30.0f) {
             float lbFontSize = GetScaledFontSize(BASE_FONT_SIZE) * 1.15f;
             DrawLeaderboardTable(fw*0.5f, fh*0.5f, fw*0.48f, fh*0.58f, lbFontSize);
         }
+        bool optionsClosedThisFrame = false;
+        bool quitModalDismissedThisFrame = false;
+
         // Options screen overlay
         if (g_optionsScreen == OptionsScreen::Visible) {
+            bool optionsWasVisible = true;
             HandleOptionsInput();
+            optionsClosedThisFrame = optionsWasVisible && g_optionsScreen != OptionsScreen::Visible;
             DrawOptionsScreen();
         }
+        // Quit-to-desktop modal overlay (drawn on top of splash)
+        DrawQuitConfirmModal(g_quitConfirmModal, (int)fw, (int)fh);
         DrawGammaOverlay();
         DrawCustomCursor();
         if (!g_standalone_mode && g_framebuffer_initialized) EndTextureMode(); else EndDrawing();
+
+        // Handle quit modal result
+        if (g_quitConfirmModal.yesClicked) {
+            g_quitConfirmModal = {};
+            g_quitConfirmModalOpen = false;
+            if (g_standalone_mode) {
+                g_exit_requested = true;
+                return false; // signal exit
+            } else {
+                g_exit_requested = true;
+                return false;
+            }
+        }
+        if (g_quitConfirmModal.noClicked) {
+            quitModalDismissedThisFrame = true;
+            g_quitConfirmModal = {};
+            g_quitConfirmModalOpen = false;
+        }
+
+        if (g_quitConfirmModalOpen) return true; // block other input while modal is open
         if (g_optionsScreen == OptionsScreen::Visible) return true; // block game input
+        if (!quitModalDismissedThisFrame && !optionsClosedThisFrame && CustomIsKeyPressed(KEY_ESCAPE)) {
+            g_quitConfirmModal = {};
+            g_quitConfirmModal.open = true;
+            g_quitConfirmModal.quitToDesktop = true;
+            g_quitConfirmModalOpen = true;
+        }
         if (CustomIsKeyPressed(KEY_O)) {
             g_optionsScreen = OptionsScreen::Visible;
             g_optionsSelection = 0;

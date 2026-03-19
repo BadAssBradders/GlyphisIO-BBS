@@ -50,6 +50,18 @@ class Tokens:
     JAXGRADES = "JAXGRADES"  # Read uncle-am's email about school grades (after SCHOOL_HACK)
     SCHOOL_HACK1 = "SCHOOL_HACK1"  # Read Rain's school op plan (region switch, email receptionist, etc.)
     SCHOOL_HACK2 = "SCHOOL_HACK2"  # Changed OS region to American Mainland / US Mainland (no BBS pulse, no logout ghost)
+    SCHOOL_HACK3 = "SCHOOL_HACK3"  # Sent "I'm in" email via BRADSONIC-MAIL; Rain's next-steps reply received
+    SCHOOL_HACK4 = "SCHOOL_HACK4"  # Composed and sent spoofed receptionist email with correct from/signature
+    SCHOOL_HACK4A = "SCHOOL_HACK4A"  # Receptionist replied with the three school numbers
+    SCHOOL_HACK4B = "SCHOOL_HACK4B"  # Sent "connected" update to Rain and received database login guidance
+    SCHOOL_HACK5 = "SCHOOL_HACK5"  # All mission grades changed to A in school database
+    SCHOOL_HACK_FAIL1 = "SCHOOL_HACK_FAIL1"  # First failed Telebase grade attempt; Rain allows a retry
+    SCHOOL_HACK_FAIL2 = "SCHOOL_HACK_FAIL2"  # Second failed Telebase grade attempt; Glyphis issues a warning
+    GAMEOVER_SCHOOLHACK = "GAMEOVER_SCHOOLHACK"  # Third failed Telebase grade attempt; school-hack arc hard-fails
+    RAINSINVITE_1 = "RAINSINVITE_1"  # Accepted Rain's secret Fugamatchi gig invitation
+    RAINSINVITE_2 = "RAINSINVITE_2"  # Played Rise New Voices in dotSONIC and primed the courier call
+    RAINSINVITE_3 = "RAINSINVITE_3"  # Completed the payphone courier check and secured the ticket
+    DOTSONIC = "DOTSONIC"  # dotSONIC media player unlocked
     AUDIO_ON = "AUDIO_ON"  # Completed all 7 nodes, all LEDs green
     MODEM1ST = "MODEM1ST"  # First successful modem connection established
 
@@ -242,6 +254,66 @@ TOKEN_METADATA: Dict[str, TokenMeta] = {
         code=Tokens.SCHOOL_HACK2,
         label="SCHOOL_HACK2",
         description="Changed OS region to American Mainland / US Mainland",
+    ),
+    Tokens.SCHOOL_HACK3: TokenMeta(
+        code=Tokens.SCHOOL_HACK3,
+        label="SCHOOL_HACK3",
+        description="Sent I'm in email via BRADSONIC-MAIL; Rain's next-steps reply received",
+    ),
+    Tokens.SCHOOL_HACK4: TokenMeta(
+        code=Tokens.SCHOOL_HACK4,
+        label="SCHOOL_HACK4",
+        description="Composed and sent spoofed receptionist email with correct from/signature",
+    ),
+    Tokens.SCHOOL_HACK4A: TokenMeta(
+        code=Tokens.SCHOOL_HACK4A,
+        label="SCHOOL_HACK4A",
+        description="Receptionist replied with the school's reception, fax, and server numbers",
+    ),
+    Tokens.SCHOOL_HACK4B: TokenMeta(
+        code=Tokens.SCHOOL_HACK4B,
+        label="SCHOOL_HACK4B",
+        description="Reported the connection to Rain and received school database login instructions",
+    ),
+    Tokens.SCHOOL_HACK5: TokenMeta(
+        code=Tokens.SCHOOL_HACK5,
+        label="SCHOOL_HACK5",
+        description="Successfully changed all required school grades to A",
+    ),
+    Tokens.SCHOOL_HACK_FAIL1: TokenMeta(
+        code=Tokens.SCHOOL_HACK_FAIL1,
+        label="SCHOOL_HACK_FAIL1",
+        description="First failed school-hack Telebase attempt; Rain noticed and offered another try",
+    ),
+    Tokens.SCHOOL_HACK_FAIL2: TokenMeta(
+        code=Tokens.SCHOOL_HACK_FAIL2,
+        label="SCHOOL_HACK_FAIL2",
+        description="Second failed school-hack Telebase attempt; Glyphis warned the player to stop being a liability",
+    ),
+    Tokens.GAMEOVER_SCHOOLHACK: TokenMeta(
+        code=Tokens.GAMEOVER_SCHOOLHACK,
+        label="GAMEOVER_SCHOOLHACK",
+        description="Third failed school-hack Telebase attempt; Glyphis cut the player off from the network",
+    ),
+    Tokens.RAINSINVITE_1: TokenMeta(
+        code=Tokens.RAINSINVITE_1,
+        label="RAINSINVITE_1",
+        description="Accepted Rain's invitation to the secret Fugamatchi gig",
+    ),
+    Tokens.RAINSINVITE_2: TokenMeta(
+        code=Tokens.RAINSINVITE_2,
+        label="RAINSINVITE_2",
+        description="Played Rise New Voices on dotSONIC and decoded the courier call setup",
+    ),
+    Tokens.RAINSINVITE_3: TokenMeta(
+        code=Tokens.RAINSINVITE_3,
+        label="RAINSINVITE_3",
+        description="Passed the payphone courier check and secured the underground gig ticket",
+    ),
+    Tokens.DOTSONIC: TokenMeta(
+        code=Tokens.DOTSONIC,
+        label="DOTSONIC",
+        description="dotSONIC media player access granted",
     ),
     Tokens.AUDIO_ON: TokenMeta(
         code=Tokens.AUDIO_ON,

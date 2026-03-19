@@ -215,21 +215,27 @@ __declspec(dllexport) void SetRenderResolutionPreset(int preset) {
     else { g_renderWidth = 1200; g_renderHeight = 800; }
 }
 __declspec(dllexport) bool ShouldCenterMouse() { bool r = g_shouldCenterMouse; g_shouldCenterMouse = false; return r; }
-__declspec(dllexport) void SetUsername(const char* name) { if(name) { strncpy(g_username, name, 63); g_username[63] = '\0'; } }
-__declspec(dllexport) int GetLastFinalScore() { return g_lastFinalScore; }
+__declspec(dllexport) void SetUsername(const char* name) { SanitizeCyberTrainUsername(name, g_username, sizeof(g_username)); }
+__declspec(dllexport) int GetLastFinalScore() {
+    int score = g_lastFinalScore;
+    g_lastFinalScore = 0;
+    return score;
+}
 // â”€â”€ Leaderboard / game-over exports consumed by the Python Steam layer â”€â”€â”€â”€â”€â”€â”€â”€
 __declspec(dllexport) bool IsGameOver() { return g_gameOver; }
 __declspec(dllexport) int  GetFinalScore() { return g_finalScore; }
 __declspec(dllexport) void PushLeaderboardEntry(const char* username, int score) {
     if (!username) return;
+    char safeUsername[64];
+    SanitizeCyberTrainUsername(username, safeUsername, sizeof(safeUsername));
     for (auto& e : g_leaderboard) {
-        if (strncmp(e.username, username, 63) == 0) {
+        if (strncmp(e.username, safeUsername, 63) == 0) {
             if (score > e.score) e.score = score;
             else return;
             goto sort_lb;
         }
     }
-    { CyberTrainLBEntry ne; strncpy(ne.username, username, 63); ne.username[63]='\0'; ne.score=score; g_leaderboard.push_back(ne); }
+    { CyberTrainLBEntry ne; strncpy(ne.username, safeUsername, 63); ne.username[63]='\0'; ne.score=score; g_leaderboard.push_back(ne); }
     sort_lb:
     std::sort(g_leaderboard.begin(), g_leaderboard.end(),
         [](const CyberTrainLBEntry& a, const CyberTrainLBEntry& b){ return a.score > b.score; });

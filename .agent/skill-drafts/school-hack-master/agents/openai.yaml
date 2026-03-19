@@ -1,0 +1,4 @@
+interface:
+  display_name: "School Hack Master"
+  short_description: "School hack tokens, mails, terminal, and Telebase canon"
+  default_prompt: "Use $school-hack-master to answer questions about the school hack arc, including tokens, Rain emails, terminal and modem steps, school database behavior, and related in-game progression."

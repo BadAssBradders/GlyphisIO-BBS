@@ -15,6 +15,8 @@ import pygame
 import os
 import sys
 import random
+import json
+from datetime import datetime
 from typing import Callable, Optional, List, Dict
 
 try:
@@ -39,6 +41,9 @@ BG = (5, 8, 12)                 # Very dark blue-black
 BG_PANEL = (10, 15, 20)         # Panel background
 STAR_COLOR = (150, 150, 150)    # Twinkling stars
 
+DOTSONIC_INSTALLER_FILENAME = "DOTSONIC_INSTALL.BINST"
+FORUM_REPLIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "forum_replies.json")
+
 
 class EchoChamberBBS:
     """
@@ -50,18 +55,25 @@ class EchoChamberBBS:
     States: splash -> menu -> panel. ESC exits.
     """
 
-    def __init__(self, width: int, height: int, scale: float, on_exit: Optional[Callable[[], None]] = None):
+    def __init__(self, width: int, height: int, scale: float,
+                 on_exit: Optional[Callable[[], None]] = None,
+                 get_region: Optional[Callable[[], int]] = None,
+                 on_download_file: Optional[Callable[[str, str], None]] = None,
+                 has_token: Optional[Callable[[str], bool]] = None):
         self.width = width
         self.height = height
         self.scale = scale
         self.on_exit = on_exit
+        self.get_region = get_region
+        self.on_download_file = on_download_file
+        self.has_token = has_token or (lambda token: False)
 
         # Fonts
         self.font_title = self._load_font("Retro Gaming.ttf", int(28 * self.scale))
         self.font_label = self._load_font("Retro Gaming.ttf", int(18 * self.scale))
-        self.font_body = self._load_font("Retro Gaming.ttf", int(14 * self.scale))
-        self.font_small = self._load_font("Retro Gaming.ttf", int(12 * self.scale))
-        self.font_code = self._load_font("Retro Gaming.ttf", int(11 * self.scale))
+        self.font_body = self._load_font("Retro Gaming.ttf", int(16 * self.scale))
+        self.font_small = self._load_font("Retro Gaming.ttf", int(13 * self.scale))
+        self.font_code = self._load_font("Retro Gaming.ttf", int(14 * self.scale))
 
         # Assets
         self.banner_image = self._load_banner_image()
@@ -99,8 +111,18 @@ class EchoChamberBBS:
         self.tutorial_scroll = 0
         self.tutorial_list_scroll = 0
 
+        # Forum reply compose state
+        self.forum_composing = False
+        self.forum_reply_text = ""
+
+        # NPC reply system
+        self.npc_reply_pools = self._build_npc_reply_pools()
+        self.forum_npc_reply_counts: Dict[int, int] = {}  # thread_idx → delivered count
+        self.forum_npc_reply_pending = None  # {"thread_idx": int, "timer": float, "delay": float, "reply": dict}
+
         # Forum system
         self.forum_threads = self._build_forum_threads()
+        self._load_forum_replies()
         self.forum_selected_index = 0
         self.forum_open_index: Optional[int] = None
         self.forum_scroll = 0
@@ -114,6 +136,15 @@ class EchoChamberBBS:
         self.download_progress = 0.0
         self.download_speed = 0.0
         self.download_timer = 0.0
+        self.download_error_timer = 0.0
+        self.download_error_message = ""
+
+        # Sysop stats — cached so they don't re-roll every frame
+        self.sysop_stats_uptime = random.randint(100, 999)
+        self.sysop_stats_users = random.randint(5, 23)
+        self.sysop_stats_files = random.randint(500, 2000)
+        self.sysop_stats_timer = 0.0
+        self.sysop_stats_interval = random.uniform(90.0, 150.0)
 
     def _load_font(self, filename: str, size: int) -> pygame.font.Font:
         """Load a font with fallback to system font."""
@@ -922,22 +953,264 @@ class EchoChamberBBS:
                     "Don't let the flame go out.",
                 ]
             },
+            {
+                "title": "HOW TO UNLOCK FILE TRANSFERS (READ THIS)",
+                "author": "packet_rat",
+                "date": "1989.11.12",
+                "replies": 23,
+                "lines": [
+                    "THREAD: HOW TO UNLOCK FILE TRANSFERS",
+                    "BY: packet_rat | 1989.11.12 | 23 REPLIES",
+                    "==========================================",
+                    "",
+                    "[packet_rat]:",
+                    "OK I keep seeing people in here trying",
+                    "to grab files and getting hit with a",
+                    "TRANSFER BLOCKED error. Posting this so",
+                    "I don't have to explain it again.",
+                    "",
+                    "It's a region lock. If your machine is",
+                    "set to American Pacifica Isles, outbound",
+                    "file transfers are restricted. Period.",
+                    "The Pacifica administration locked it",
+                    "down after the '87 data riots.",
+                    "",
+                    "Region settings are behind an admin wall",
+                    "on most machines. To change it you need",
+                    "to get into the admin subset. The",
+                    "username and password for admin access is",
+                    "different on every machine but it's",
+                    "usually buried somewhere in the file",
+                    "system.",
+                    "",
+                    "On a Bradsonic, try starting the file",
+                    "system mode first. Look for a SECURITY",
+                    "or CONFIG or SYSTEM folder. Somewhere",
+                    "in there should be a document with the",
+                    "locale protocols. You're looking for a",
+                    "username and a password. Once you have",
+                    "that, start the admin console and enter",
+                    "those credentials. Should be obvious",
+                    "from there.",
+                    "",
+                    "[neon_rebel] REPLY:",
+                    "Can confirm this works on my Bradsonic.",
+                    "The credentials were in a file I had to",
+                    "dig for. Took me a while. Check every",
+                    "folder carefully.",
+                    "",
+                    "[void_walker] REPLY:",
+                    "Same process on TI and MotoPC boxes but",
+                    "the folder structure is different. The",
+                    "general idea is the same though - find",
+                    "the config doc, get the creds, open the",
+                    "admin environment.",
+                    "",
+                    "[data_miner] REPLY:",
+                    "Also worth noting - once you change your",
+                    "region to US Mainland, transfers work",
+                    "on ALL outside boards. Not just here.",
+                    "Paper Crane, Never Again, wherever.",
+                    "",
+                    "[old_timer] REPLY:",
+                    "Back in my day we didn't need permission",
+                    "to move a damn file across a wire.",
+                    "",
+                    "[packet_rat] REPLY:",
+                    "Yeah well that was before the Pacifica",
+                    "Accords. Welcome to 1989.",
+                    "",
+                    "[SHADOWBYTE] REPLY:",
+                    "Pinning this. Stop asking me about it",
+                    "in private messages.",
+                ]
+            },
         ]
 
     def _build_darknet_files(self) -> List[Dict]:
-        """Build darknet file listings."""
-        return [
-            {"name": "B69K_Full_Datasheet.pdf", "size": "4.2 MB", "desc": "Complete processor documentation"},
-            {"name": "ASM_Reference_Card.txt", "size": "12 KB", "desc": "Quick reference for all opcodes"},
-            {"name": "RF_Shielding_Guide.pdf", "size": "890 KB", "desc": "Protect your hardware from scans"},
-            {"name": "Admin_Scanner_Freqs.txt", "size": "3 KB", "desc": "Known detection frequencies"},
-            {"name": "Shadow_Memory_Map.bin", "size": "256 B", "desc": "Scanner blind spot locations"},
-            {"name": "Arcade_PCB_Schematics.zip", "size": "15.6 MB", "desc": "Various B69K board designs"},
-            {"name": "Sound_Driver_Source.asm", "size": "48 KB", "desc": "FM synthesis driver code"},
-            {"name": "Sprite_Engine_v2.asm", "size": "92 KB", "desc": "Optimized sprite routines"},
-            {"name": "Encryption_Toolkit.zip", "size": "340 KB", "desc": "Code obfuscation tools"},
-            {"name": "EMERGENCY_WIPE.exe", "size": "8 KB", "desc": "Secure data destruction"},
+        """Build darknet file listings with downloadable package content."""
+        files: List[Dict] = []
+        if self.has_token("SCHOOL_HACK5"):
+            files.append({
+                "name": DOTSONIC_INSTALLER_FILENAME, "size": "188 KB",
+                "desc": "Cracked Bradsonic installer + DOTSONIC.BRX image",
+                "preview": [
+                    "Cracked mainland install wizard for dotSONIC.",
+                    "Mainland-only player, cracked loose before release.",
+                    "Deploys DOTSONIC.BRX to the Bradsonic desktop.",
+                    "For Pacificans sick of hearing banned music only by pirate radio.",
+                    "US Mainland locale required for transfer.",
+                ],
+                "content": (
+                    "dotSONIC INSTALL PACKAGE\n"
+                    "========================\n"
+                    "Package: DOTSONIC_INSTALL.BINST\n"
+                    "Target Platform: Bradsonic 69000 Desktop OS\n"
+                    "Executable Image: DOTSONIC.BRX\n"
+                    "Required Driver: Radland LAPC-1\n"
+                    "Destination: C:\\BRADSONIC\\DOTSONIC\n"
+                    "Copy Status: Cracked mainland install wizard\n"
+                    "Distribution Notes: US MAINLAND transfer only\n"
+                    "Release Status: Leaked and cracked ahead of rollout\n"
+                    "Echo Chamber Note: Pacifica listeners no longer have to rely on pirate radio alone\n"
+                ),
+            })
+        files.extend([
+            {
+                "name": "ASM_Reference_Card.txt", "size": "12 KB",
+                "desc": "Quick reference for all opcodes",
+                "preview": [
+                    "Pocket opcode card for the Bradsonic 69000.",
+                    "Load/store, arithmetic, branch, and sound ops.",
+                    "Good for quick checks mid-session.",
+                ],
+                "content": (
+                    "B69K ASM QUICK REFERENCE CARD\n"
+                    "=============================\n"
+                    "Compiled by SHADOWBYTE - 1989\n\n"
+                    "LOAD/STORE:\n"
+                    "  LDA #imm   - Load accumulator immediate\n"
+                    "  LDA addr   - Load accumulator from address\n"
+                    "  STA addr   - Store accumulator to address\n"
+                    "  LDX #imm   - Load X register immediate\n"
+                    "  STX addr   - Store X register\n\n"
+                    "ARITHMETIC:\n"
+                    "  ADD #imm   - Add immediate to accumulator\n"
+                    "  SUB #imm   - Subtract immediate\n"
+                    "  MUL #imm   - Multiply (result in A:X)\n"
+                    "  DIV #imm   - Divide (quotient A, rem X)\n\n"
+                    "BITWISE:\n"
+                    "  AND #imm   - Bitwise AND\n"
+                    "  ORA #imm   - Bitwise OR\n"
+                    "  EOR #imm   - Bitwise XOR\n"
+                    "  ASL        - Arithmetic shift left\n"
+                    "  LSR        - Logical shift right\n\n"
+                    "BRANCH:\n"
+                    "  JMP addr   - Unconditional jump\n"
+                    "  BEQ addr   - Branch if zero flag set\n"
+                    "  BNE addr   - Branch if zero flag clear\n"
+                    "  JSR addr   - Jump to subroutine\n"
+                    "  RTS        - Return from subroutine\n\n"
+                    "SPECIAL B69K EXTENSIONS:\n"
+                    "  DMA src dst len  - Block memory transfer\n"
+                    "  VBL              - Wait for vertical blank\n"
+                    "  SPR #n addr      - Load sprite from address\n"
+                    "  SND ch freq vol  - Direct sound register\n\n"
+                    "-- END OF REFERENCE --\n"
+                ),
+            },
+            {
+                "name": "Admin_Scanner_Freqs.txt", "size": "3 KB",
+                "desc": "Known detection frequencies",
+                "preview": [
+                    "Intercepted admin sweep frequencies and blind windows.",
+                    "Useful for timing around network scans.",
+                    "Treat as volatile intel, not gospel.",
+                ],
+                "content": (
+                    "ADMIN SCANNER FREQUENCY LIST\n"
+                    "===========================\n"
+                    "Last updated: 1989.10.28\n"
+                    "Source: intercepted sweep logs\n\n"
+                    "BAND A (Urban Sweeps):\n"
+                    "  14.220 MHz - Primary scan pulse\n"
+                    "  14.335 MHz - Secondary handshake\n"
+                    "  14.440 MHz - Acknowledgment carrier\n\n"
+                    "BAND B (Infrastructure):\n"
+                    "  21.100 MHz - Tower relay backbone\n"
+                    "  21.280 MHz - Satellite uplink\n"
+                    "  21.450 MHz - Emergency override\n\n"
+                    "BAND C (Surveillance):\n"
+                    "  28.500 MHz - Mobile unit dispatch\n"
+                    "  28.885 MHz - Plaintext chatter\n"
+                    "  29.100 MHz - Encrypted command\n\n"
+                    "KNOWN BLIND WINDOWS:\n"
+                    "  02:00-02:15 JST - Band A goes silent\n"
+                    "  (maintenance cycle, confirmed 3x)\n\n"
+                    "WARNING: These frequencies rotate\n"
+                    "monthly. Verify before relying on them.\n\n"
+                    "-- packet_rat\n"
+                ),
+            },
+        ])
+        return files
+
+    def _build_sysop_message(self) -> List[str]:
+        """Build the system-ops message, upgrading once SCHOOL_HACK5 lands."""
+        base = [
+            "FROM: SHADOWBYTE",
+            "DATE: 1989.11.15",
+            "SUBJECT: WELCOME TO THE ECHO CHAMBER",
+            "=" * 40,
+            "",
+            "If you're reading this, you found us.",
+            "Good. We need more people who seek",
+            "knowledge over compliance.",
+            "",
+            "We're American-raised, but we reject",
+            "the control. The Bradsonic 69000 gives",
+            "us real computational freedom - code",
+            "that does what WE want, not what",
+            "the administration approves.",
+            "",
+            "This BBS exists to preserve that",
+            "knowledge. Every tutorial, every",
+            "schematic, every line of ASM here",
+            "is a small act of rebellion against",
+            "the system that erased our heritage.",
+            "",
         ]
+        if self.has_token("SCHOOL_HACK5"):
+            base.extend([
+                "Good news before you start pulling",
+                "files. We finally have a cracked copy",
+                "of Bradsonic's mainland dotSONIC",
+                "installer in DARKNET FILEZ.",
+                "",
+                "That player was meant to land with",
+                "Mainland kids first while Pacifica",
+                "was expected to make do with pirate",
+                "radio and hiss-soaked tape copies.",
+                "We disagreed with that plan.",
+                "",
+                "Package name: DOTSONIC_INSTALL.BINST",
+                "Installed image: DOTSONIC.BRX",
+                "It is wired for the Radland LAPC-1",
+                "driver and the stock Bradsonic path.",
+                "",
+                "Even better: the crack was finished",
+                "before the official release window.",
+                "Some of the first clean listens in",
+                "Pacifica might happen because of it.",
+                "",
+                "Transfers only go through when your",
+                "machine is set to US Mainland.",
+                "That is not our rule. That's how the",
+                "original installer was locked down.",
+                "",
+                "Grab it if you want the player on",
+                "your desktop. We left the wizard",
+                "intact so it still feels official.",
+                "",
+            ])
+        base.extend([
+            "RULES:",
+            "1. Never reveal this frequency",
+            "2. Never use real names",
+            "3. Always encrypt your uploads",
+            "4. Help newcomers - we all started",
+            "   somewhere",
+            "",
+            "The signal hops every 72 hours.",
+            "If you lose us, scan 15000-15100 kHz.",
+            "",
+            "Stay curious. Stay free.",
+            "",
+            "- SHADOWBYTE",
+            "  Sysop, The Echo Chamber",
+            "",
+        ])
+        return base
 
     # === UPDATE & EVENT HANDLING ===
 
@@ -955,7 +1228,7 @@ class EchoChamberBBS:
             self.connecting_timer += dt
             # Add lines periodically
             log_messages = [
-                "DIALING (07) 57 42 19 89...",
+                "DIALING 075-742-1989...",
                 "CONNECT 14400 / ARQ",
                 "STATION: THE ECHO CHAMBER",
                 "FREQUENCY: 15050 kHz",
@@ -977,6 +1250,26 @@ class EchoChamberBBS:
             elif self.connecting_timer > (len(log_messages) + 2) * 0.4:
                 self.state = "splash"
 
+        if self.download_error_timer > 0:
+            self.download_error_timer -= dt
+            if self.download_error_timer <= 0:
+                self.download_error_timer = 0.0
+                self.download_error_message = ""
+
+        if self.forum_npc_reply_pending is not None:
+            self.forum_npc_reply_pending["timer"] += dt
+            if self.forum_npc_reply_pending["timer"] >= self.forum_npc_reply_pending["delay"]:
+                self._deliver_npc_reply(self.forum_npc_reply_pending)
+                self.forum_npc_reply_pending = None
+
+        self.sysop_stats_timer += dt
+        if self.sysop_stats_timer >= self.sysop_stats_interval:
+            self.sysop_stats_timer = 0.0
+            self.sysop_stats_interval = random.uniform(90.0, 150.0)
+            self.sysop_stats_uptime = random.randint(100, 999)
+            self.sysop_stats_users = random.randint(5, 23)
+            self.sysop_stats_files = random.randint(500, 2000)
+
         if self.downloading_file is not None:
             self.download_progress += dt * self.download_speed
             self.download_timer += dt
@@ -984,6 +1277,10 @@ class EchoChamberBBS:
                 self.download_progress = 100.0
                 # Hold the "complete" state briefly before returning to list
                 if self.download_timer >= 1.2:
+                    # Save file to disk if callback available
+                    file = self.darknet_files[self.downloading_file]
+                    if self.on_download_file and file.get("content"):
+                        self.on_download_file(file["name"], file["content"])
                     self.downloading_file = None
                     self.download_progress = 0.0
                     self.download_speed = 0.0
@@ -994,6 +1291,13 @@ class EchoChamberBBS:
 
     def handle_event(self, event: pygame.event.Event) -> bool:
         """Handle pygame events. Returns True if event was consumed."""
+        # Route TEXTINPUT to the forum compose box when active
+        if event.type == pygame.TEXTINPUT:
+            if self.forum_composing and self.state == "panel":
+                self.forum_reply_text += event.text
+                return True
+            return False
+
         if event.type != pygame.KEYDOWN:
             return False
 
@@ -1060,6 +1364,8 @@ class EchoChamberBBS:
         self.forum_open_index = None
         self.forum_scroll = 0
         self.forum_list_scroll = 0
+        self.forum_composing = False
+        self.forum_reply_text = ""
         self.darknet_selected_index = 0
         self.darknet_scroll = 0
 
@@ -1122,7 +1428,25 @@ class EchoChamberBBS:
                 self.forum_scroll = 0
                 return True
         else:
-            if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE, pygame.K_RETURN):
+            # Inside a thread — handle compose mode first
+            if self.forum_composing:
+                if event.key == pygame.K_ESCAPE:
+                    self.forum_composing = False
+                    self.forum_reply_text = ""
+                    return True
+                if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    self._submit_forum_reply()
+                    return True
+                if event.key == pygame.K_BACKSPACE:
+                    self.forum_reply_text = self.forum_reply_text[:-1]
+                    return True
+                return True  # Swallow all other keys while composing
+
+            # Normal thread navigation
+            if event.key == pygame.K_ESCAPE:
+                self.forum_open_index = None
+                return True
+            if event.key == pygame.K_BACKSPACE:
                 self.forum_open_index = None
                 return True
             if event.key in (pygame.K_UP, pygame.K_w):
@@ -1131,7 +1455,308 @@ class EchoChamberBBS:
             if event.key in (pygame.K_DOWN, pygame.K_s):
                 self.forum_scroll += 1
                 return True
+            if event.key == pygame.K_r:
+                self.forum_composing = True
+                self.forum_reply_text = ""
+                return True
         return False
+
+    def _submit_forum_reply(self) -> None:
+        """Append the player's reply to the current open thread."""
+        text = self.forum_reply_text.strip()
+        if not text or self.forum_open_index is None:
+            self.forum_composing = False
+            self.forum_reply_text = ""
+            return
+        thread = self.forum_threads[self.forum_open_index]
+        today = datetime.now().strftime("%Y.%m.%d")
+        thread["lines"].append("")
+        thread["lines"].append("[ANON] REPLY:")
+        # Word-wrap the reply to ~40 chars per line for readability
+        words = text.split()
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            if len(candidate) > 40 and current:
+                thread["lines"].append(current)
+                current = word
+            else:
+                current = candidate
+        if current:
+            thread["lines"].append(current)
+        thread["replies"] += 1
+        thread["date"] = today
+        if "_player_replies" not in thread:
+            thread["_player_replies"] = []
+        thread["_player_replies"].append({"text": text, "date": today})
+        self.forum_composing = False
+        self.forum_reply_text = ""
+        # Scroll to the bottom to show the new reply
+        self.forum_scroll = max(0, len(thread["lines"]) - 1)
+        self._save_forum_replies()
+        # Schedule an NPC reply if the pool has any remaining responses
+        self._schedule_npc_reply(self.forum_open_index)
+
+    def _build_npc_reply_pools(self) -> Dict[int, List[Dict]]:
+        """Per-thread NPC reply pools, consumed in order as the player posts."""
+        return {
+            0: [  # B69K vs ZENTEC-8
+                {"npc": "ghost_coder", "lines": [
+                    "You've got the right instincts, ANON.",
+                    "Run a sprite DMA test on both chips.",
+                    "The numbers don't lie when you run them yourself.",
+                ]},
+                {"npc": "silicon_dreams", "lines": [
+                    "The Z8 is a cage dressed as a computer.",
+                    "Faster at nothing that matters.",
+                    "Independent code is the only real code.",
+                ]},
+                {"npc": "null_ptr", "lines": [
+                    "Z8 fans don't last long in here.",
+                    "Welcome.",
+                ]},
+                {"npc": "SHADOWBYTE", "lines": [
+                    "Another sharp mind finds us.",
+                    "The B69K debate never gets old.",
+                    "Because the truth never changes.",
+                ]},
+            ],
+            1: [  # CRT timing on custom PCB
+                {"npc": "retro_repair", "lines": [
+                    "Good to have another builder in this thread.",
+                    "CRT sync is a dying art. Keep at it.",
+                    "If the crystal swap doesn't hold, come back.",
+                    "I have the full sync circuit schematics.",
+                ]},
+                {"npc": "hardware_sam", "lines": [
+                    "Most people just buy pre-built. Not you.",
+                    "CPLD offer still stands if you need it.",
+                    "Post the board layout when you're done.",
+                    "We'll all learn something.",
+                ]},
+                {"npc": "analog_witch", "lines": [
+                    "Another builder. This thread needed that.",
+                    "Hardware people are rare here. Stay.",
+                    "Share the schematics when you're finished.",
+                ]},
+            ],
+            2: [  # ADMIN RAID WARNING
+                {"npc": "phantom_ops", "lines": [
+                    "Reading this thread puts you on the list.",
+                    "That's not a warning. That's a fact.",
+                    "Zone 7 went quiet after they got Marcus.",
+                    "Quiet isn't the same as safe.",
+                ]},
+                {"npc": "bit_runner", "lines": [
+                    "Faraday cages work. I've field-tested it.",
+                    "Dead signal equals invisible signal.",
+                    "Stay analog when it matters most.",
+                ]},
+                {"npc": "zone7_survivor", "lines": [
+                    "I lost three boards in that sweep.",
+                    "Don't underestimate their scan radius.",
+                    "They know exactly what they're hunting for.",
+                ]},
+                {"npc": "SHADOWBYTE", "lines": [
+                    "New eyes on this thread are always noted.",
+                    "RF shielding guide is in DARKNET FILEZ.",
+                    "Read it. It is not optional.",
+                ]},
+            ],
+            3: [  # First B69K program
+                {"npc": "silicon_dreams", "lines": [
+                    "Every master was once exactly where you are.",
+                    "The underground grows one program at a time.",
+                    "Don't stop at Hello World.",
+                ]},
+                {"npc": "newbie_coder", "lines": [
+                    "I remember my first successful compile.",
+                    "That feeling doesn't really go away.",
+                    "Keep going. All of us are cheering.",
+                ]},
+                {"npc": "ghost_coder", "lines": [
+                    "Hello World is step one of many.",
+                    "Next challenge: memory-mapped I/O.",
+                    "Welcome to the real machine, ANON.",
+                ]},
+                {"npc": "SHADOWBYTE", "lines": [
+                    "The first program is the most honest one.",
+                    "No tricks. Just you and the hardware.",
+                    "Work through the tutorials. Then break them.",
+                    "That's where actual understanding begins.",
+                ]},
+            ],
+            4: [  # Admin OS Backdoor
+                {"npc": "void_walker", "lines": [
+                    "So you found the thread. Good.",
+                    "The midnight socket is completely real.",
+                    "I've been logging it for six months straight.",
+                    "Traces back to the Pacific admin cluster.",
+                ]},
+                {"npc": "root_ghost", "lines": [
+                    "The Ghost Protocol predates the B69K ban.",
+                    "Someone was watching before the sweeps started.",
+                    "This goes deeper than people want to believe.",
+                ]},
+                {"npc": "data_miner", "lines": [
+                    "The $A55A response spoof still works.",
+                    "But the connection interval shifted again.",
+                    "It's 03:17 JST now. Not midnight anymore.",
+                    "They updated it. Stay current.",
+                ]},
+                {"npc": "SHADOWBYTE", "lines": [
+                    "This thread makes certain people very nervous.",
+                    "Good.",
+                    "Nervous people pay closer attention.",
+                ]},
+            ],
+            5: [  # Remembering the Old Days
+                {"npc": "old_timer", "lines": [
+                    "Good to hear another voice who remembers.",
+                    "The machines still sing if you know how",
+                    "to listen for them.",
+                    "Keep the old iron alive.",
+                ]},
+                {"npc": "neon_rebel", "lines": [
+                    "Every board that still runs is a statement.",
+                    "Against the recall. Against all of it.",
+                    "Don't let them define what's possible.",
+                ]},
+                {"npc": "SHADOWBYTE", "lines": [
+                    "Memory is a form of resistance.",
+                    "They can confiscate the hardware.",
+                    "They cannot take what we carry.",
+                    "Welcome to the community, ANON.",
+                ]},
+            ],
+            6: [  # HOW TO UNLOCK FILE TRANSFERS
+                {"npc": "packet_rat", "lines": [
+                    "Glad you found this thread.",
+                    "The steps work. I've seen dozens succeed.",
+                    "The admin console looks scary. It isn't.",
+                    "Just follow the sequence exactly.",
+                ]},
+                {"npc": "SHADOWBYTE", "lines": [
+                    "Knowledge shared is knowledge multiplied.",
+                    "That is why this place exists.",
+                    "Good luck with the transfer.",
+                ]},
+            ],
+        }
+
+    def _schedule_npc_reply(self, thread_idx: int) -> None:
+        """Queue an NPC reply if the pool for this thread has remaining entries."""
+        if self.forum_npc_reply_pending is not None:
+            return  # Already one pending
+        pool = self.npc_reply_pools.get(thread_idx, [])
+        used = self.forum_npc_reply_counts.get(thread_idx, 0)
+        if used >= len(pool):
+            return  # Pool exhausted
+        self.forum_npc_reply_pending = {
+            "thread_idx": thread_idx,
+            "timer": 0.0,
+            "delay": random.uniform(3.0, 7.0),
+            "reply": pool[used],
+        }
+
+    def _deliver_npc_reply(self, pending: dict) -> None:
+        """Append the pending NPC reply to the thread and persist it."""
+        thread_idx = pending["thread_idx"]
+        if thread_idx >= len(self.forum_threads):
+            return
+        reply = pending["reply"]
+        thread = self.forum_threads[thread_idx]
+        today = datetime.now().strftime("%Y.%m.%d")
+        thread["lines"].append("")
+        thread["lines"].append(f"[{reply['npc']}] REPLY:")
+        for line in reply["lines"]:
+            thread["lines"].append(line)
+        thread["replies"] += 1
+        thread["date"] = today
+        used = self.forum_npc_reply_counts.get(thread_idx, 0)
+        self.forum_npc_reply_counts[thread_idx] = used + 1
+        # Persist NPC reply
+        if "_npc_replies" not in thread:
+            thread["_npc_replies"] = []
+        thread["_npc_replies"].append({"npc_name": reply["npc"], "lines": reply["lines"], "date": today})
+        self._save_forum_replies()
+
+    def _save_forum_replies(self) -> None:
+        """Persist all player-posted and NPC replies to disk."""
+        data = []
+        for idx, thread in enumerate(self.forum_threads):
+            for reply in thread.get("_player_replies", []):
+                data.append({"type": "player", "thread_idx": idx,
+                             "text": reply["text"], "date": reply["date"]})
+            for reply in thread.get("_npc_replies", []):
+                data.append({"type": "npc", "thread_idx": idx,
+                             "npc_name": reply["npc_name"],
+                             "lines": reply["lines"], "date": reply["date"]})
+        try:
+            with open(FORUM_REPLIES_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"[EchoChamber] Could not save forum replies: {e}")
+
+    def _load_forum_replies(self) -> None:
+        """Load persisted player and NPC replies and merge them into thread data."""
+        if not os.path.exists(FORUM_REPLIES_FILE):
+            return
+        try:
+            with open(FORUM_REPLIES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"[EchoChamber] Could not load forum replies: {e}")
+            return
+        for entry in data:
+            idx = entry.get("thread_idx", -1)
+            date = entry.get("date", "")
+            if idx < 0 or idx >= len(self.forum_threads):
+                continue
+            thread = self.forum_threads[idx]
+            entry_type = entry.get("type", "player")
+
+            if entry_type == "player":
+                text = entry.get("text", "").strip()
+                if not text:
+                    continue
+                thread["lines"].append("")
+                thread["lines"].append("[ANON] REPLY:")
+                words = text.split()
+                current = ""
+                for word in words:
+                    candidate = f"{current} {word}".strip()
+                    if len(candidate) > 40 and current:
+                        thread["lines"].append(current)
+                        current = word
+                    else:
+                        current = candidate
+                if current:
+                    thread["lines"].append(current)
+                thread["replies"] += 1
+                if date:
+                    thread["date"] = date
+                if "_player_replies" not in thread:
+                    thread["_player_replies"] = []
+                thread["_player_replies"].append({"text": text, "date": date})
+
+            elif entry_type == "npc":
+                npc_name = entry.get("npc_name", "")
+                lines = entry.get("lines", [])
+                if not npc_name or not lines:
+                    continue
+                thread["lines"].append("")
+                thread["lines"].append(f"[{npc_name}] REPLY:")
+                for line in lines:
+                    thread["lines"].append(line)
+                thread["replies"] += 1
+                if date:
+                    thread["date"] = date
+                if "_npc_replies" not in thread:
+                    thread["_npc_replies"] = []
+                thread["_npc_replies"].append({"npc_name": npc_name, "lines": lines, "date": date})
+                # Track usage count so the pool advances correctly
+                self.forum_npc_reply_counts[idx] = self.forum_npc_reply_counts.get(idx, 0) + 1
 
     def _scroll_forum_list(self) -> None:
         """Auto-scroll the forum list to keep selection visible."""
@@ -1144,7 +1769,9 @@ class EchoChamberBBS:
     def _handle_darknet_event(self, event: pygame.event.Event) -> bool:
         """Handle events in the darknet files panel."""
         if self.downloading_file is not None:
-            return True # Lock input during download
+            return True  # Lock input during download
+        if self.download_error_timer > 0:
+            return True  # Lock input during error display
 
         if event.key in (pygame.K_UP, pygame.K_w):
             self.darknet_selected_index = (self.darknet_selected_index - 1) % len(self.darknet_files)
@@ -1153,7 +1780,12 @@ class EchoChamberBBS:
             self.darknet_selected_index = (self.darknet_selected_index + 1) % len(self.darknet_files)
             return True
         if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-            # Start simulated download
+            # Region check before download
+            if self.get_region and self.get_region() != 1:
+                self.download_error_message = "Switch to US Mainland - the cracked dotSONIC package still rides the old mainland transfer gate."
+                self.download_error_timer = 3.0
+                return True
+            # Start download
             self.downloading_file = self.darknet_selected_index
             self.download_progress = 0.0
             self.download_speed = random.uniform(15.0, 35.0)
@@ -1312,31 +1944,33 @@ class EchoChamberBBS:
         self._draw_text_centered(surface, self.font_small, subtitle, GREEN, int(65 * self.scale))
 
         # Menu container
+        title_bar_h = int(34 * self.scale)
         menu_x = int(self.width * 0.08)
-        menu_y = int(120 * self.scale)
+        menu_y = int(88 * self.scale)
         menu_w = int(self.width * 0.40)
-        menu_h = int(50 * self.scale) * len(self.menu_options) + int(40 * self.scale)
+        line_h = int(50 * self.scale)
+        menu_h = title_bar_h + line_h * len(self.menu_options) + int(16 * self.scale)
 
         menu_rect = pygame.Rect(menu_x, menu_y, menu_w, menu_h)
         self._draw_panel_box(surface, menu_rect, "MAIN MENU")
 
-        # Menu options
-        line_h = int(50 * self.scale)
+        # Menu options — start below title bar
+        content_top = menu_y + title_bar_h + int(8 * self.scale)
         for idx, option in enumerate(self.menu_options):
             is_active = idx == self.menu_index and self.state == "menu"
-            y = menu_y + int(35 * self.scale) + idx * line_h
+            y = content_top + idx * line_h
 
             if is_active:
                 # Selection highlight
-                sel_rect = pygame.Rect(menu_x + int(10 * self.scale), y - int(5 * self.scale),
-                                       menu_w - int(20 * self.scale), line_h - int(10 * self.scale))
+                sel_rect = pygame.Rect(menu_x + int(10 * self.scale), y,
+                                       menu_w - int(20 * self.scale), line_h - int(8 * self.scale))
                 pulse = int(math.sin(self.glow_timer * 6) * 30 + 40)
                 pygame.draw.rect(surface, (0, pulse + 30, pulse // 2), sel_rect, 0, border_radius=4)
                 pygame.draw.rect(surface, GREEN, sel_rect, 1, border_radius=4)
 
                 # Arrow indicator
                 arrow_x = menu_x + int(15 * self.scale)
-                arrow_y = y + int(12 * self.scale)
+                arrow_y = y + int(14 * self.scale)
                 pygame.draw.polygon(surface, CYAN, [
                     (arrow_x, arrow_y - 6),
                     (arrow_x + 10, arrow_y),
@@ -1346,13 +1980,16 @@ class EchoChamberBBS:
             color = CYAN if is_active else WHITE
             prefix = f"{idx + 1}. "
             text = prefix + option
+            max_menu_w = menu_w - int(50 * self.scale)
+            text = self._truncate_text(self.font_body, text, max_menu_w)
             text_surf = self.font_body.render(text, True, color)
-            surface.blit(text_surf, (menu_x + int(35 * self.scale), y))
+            surface.blit(text_surf, (menu_x + int(35 * self.scale), y + int(4 * self.scale)))
 
-        # Footer warning
+        # Footer warning — left edge aligned with menu frame
         footer_y = self.height - int(30 * self.scale)
         footer = "ESC: DISCONNECT // UP/DOWN: NAVIGATE // ENTER: SELECT"
-        self._draw_text_centered(surface, self.font_small, footer, GREEN_DIM, footer_y)
+        footer_surf = self.font_small.render(footer, True, GREEN_DIM)
+        surface.blit(footer_surf, (menu_x, footer_y))
 
     def _draw_panel(self, surface: pygame.Surface) -> None:
         """Draw the active panel content."""
@@ -1367,57 +2004,67 @@ class EchoChamberBBS:
 
     def _draw_tutorial_panel(self, surface: pygame.Surface) -> None:
         """Draw the ASM tutorials panel."""
-        # Panel dimensions
+        title_bar_h = int(34 * self.scale)
+        footer_h = int(32 * self.scale)
+        padding = int(12 * self.scale)
+
+        # Panel dimensions — taller panel, starts higher
         panel_x = int(self.width * 0.50)
-        panel_y = int(100 * self.scale)
+        panel_y = int(88 * self.scale)
         panel_w = int(self.width * 0.47)
-        panel_h = int(self.height * 0.75)
+        panel_h = int(self.height * 0.84)
         panel_rect = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
 
         self._draw_panel_box(surface, panel_rect, "BRADSONIC 69000 ASM TUTORIALS")
 
+        # Content area (below title bar, above footer)
+        content_top = panel_y + title_bar_h + padding
+        content_bottom = panel_y + panel_h - footer_h
+        content_h = content_bottom - content_top
+
+        # Clip to panel interior
+        clip_rect = pygame.Rect(panel_x + 2, content_top, panel_w - 4, content_h)
+        old_clip = surface.get_clip()
+        surface.set_clip(clip_rect)
+
         if self.tutorial_open_index is None:
             # Show tutorial list
-            line_h = int(45 * self.scale)
-            visible_items = (panel_h - int(80 * self.scale)) // line_h
-            
+            line_h = int(48 * self.scale)
+            visible_items = content_h // line_h
+
             for i in range(visible_items):
                 idx = self.tutorial_list_scroll + i
                 if idx >= len(self.tutorials):
                     break
-                
+
                 tutorial = self.tutorials[idx]
                 is_selected = idx == self.tutorial_selected_index
-                y = panel_y + int(45 * self.scale) + i * line_h
+                y = content_top + i * line_h
 
                 if is_selected:
-                    sel_rect = pygame.Rect(panel_x + 10, y - 5, panel_w - 20, line_h - 10)
+                    sel_rect = pygame.Rect(panel_x + 10, y, panel_w - 20, line_h - 6)
                     pygame.draw.rect(surface, (0, 50, 30), sel_rect, 0, border_radius=3)
                     pygame.draw.rect(surface, GREEN, sel_rect, 1, border_radius=3)
 
                 color = GREEN_BRIGHT if is_selected else WHITE
                 prefix = "> " if is_selected else "  "
-                
-                # Category tag
-                cat_color = GOLD if tutorial["category"] == "FORBIDDEN" else CYAN
-                cat_surf = self.font_small.render(f"[{tutorial['category']}]", True, cat_color)
-                surface.blit(cat_surf, (panel_x + int(20 * self.scale), y))
-                
-                # Title
-                title_surf = self.font_body.render(prefix + tutorial["title"], True, color)
-                surface.blit(title_surf, (panel_x + int(20 * self.scale), y + int(18 * self.scale)))
 
-            # Footer
-            footer_y = panel_y + panel_h - int(25 * self.scale)
-            footer = "ENTER: READ // ESC: BACK"
-            footer_surf = self.font_small.render(footer, True, GREEN_DIM)
-            surface.blit(footer_surf, (panel_x + int(15 * self.scale), footer_y))
+                # Category tag
+                text_x = panel_x + int(20 * self.scale)
+                max_text_w = panel_w - int(40 * self.scale)
+                cat_color = GOLD if tutorial["category"] == "FORBIDDEN" else CYAN
+                cat_text = self._truncate_text(self.font_small, f"[{tutorial['category']}]", max_text_w)
+                cat_surf = self.font_small.render(cat_text, True, cat_color)
+                surface.blit(cat_surf, (text_x, y + int(4 * self.scale)))
+
+                # Title
+                title_text = self._truncate_text(self.font_body, prefix + tutorial["title"], max_text_w)
+                title_surf = self.font_body.render(title_text, True, color)
+                surface.blit(title_surf, (text_x, y + int(20 * self.scale)))
         else:
             # Show tutorial content
             tutorial = self.tutorials[self.tutorial_open_index]
-            content_y = panel_y + int(45 * self.scale)
-            content_h = panel_h - int(90 * self.scale)
-            line_h = int(22 * self.scale)
+            line_h = int(24 * self.scale)
             visible_lines = content_h // line_h
 
             # Clamp scroll
@@ -1428,17 +2075,17 @@ class EchoChamberBBS:
                 line_idx = self.tutorial_scroll + i
                 if line_idx >= len(tutorial["lines"]):
                     break
-                
+
                 line = tutorial["lines"][line_idx]
-                y = content_y + i * line_h
-                
+                y = content_top + i * line_h
+
                 # Color code lines
                 if line.startswith(";") or line.strip().startswith(";"):
                     color = GREEN_DIM  # Comments
                 elif line.startswith("!!"):
                     color = RED  # Warnings
-                elif line.startswith("  ") and any(line.strip().startswith(op) for op in 
-                        ["MOVE", "LEA", "ADD", "SUB", "AND", "OR", "JSR", "RTS", "BRA", "BEQ", "BNE", 
+                elif line.startswith("  ") and any(line.strip().startswith(op) for op in
+                        ["MOVE", "LEA", "ADD", "SUB", "AND", "OR", "JSR", "RTS", "BRA", "BEQ", "BNE",
                          "CMP", "BTST", "LSL", "LSR", "NOP", "EXG", "MULU", "DIVU", "NOT", "EOR",
                          "PEA", "LINK", "UNLK", "MOVEM", "DBRA", "JMP", "RTE", "DC.B", "ORG"]):
                     color = CYAN  # ASM instructions
@@ -1449,71 +2096,89 @@ class EchoChamberBBS:
                 else:
                     color = WHITE
 
+                max_line_w = panel_w - int(30 * self.scale)
+                line = self._truncate_text(self.font_code, line, max_line_w)
                 text_surf = self.font_code.render(line, True, color)
                 surface.blit(text_surf, (panel_x + int(15 * self.scale), y))
 
-            # Scroll indicator
+            # Scroll indicator (drawn inside clip)
             if len(tutorial["lines"]) > visible_lines:
-                self._draw_scroll_indicator(surface, panel_rect, self.tutorial_scroll, 
+                self._draw_scroll_indicator(surface, panel_rect, self.tutorial_scroll,
                                            visible_lines, len(tutorial["lines"]))
 
-            # Footer
-            footer_y = panel_y + panel_h - int(25 * self.scale)
-            footer = "UP/DOWN: SCROLL // ESC: BACK TO LIST"
-            footer_surf = self.font_small.render(footer, True, GREEN_DIM)
-            surface.blit(footer_surf, (panel_x + int(15 * self.scale), footer_y))
+        # Restore clip before drawing footer
+        surface.set_clip(old_clip)
+
+        # Footer — below content area, inside panel
+        footer_y = panel_y + panel_h - footer_h + int(4 * self.scale)
+        footer = "ENTER: READ // ESC: BACK" if self.tutorial_open_index is None else "UP/DOWN: SCROLL // ESC: BACK TO LIST"
+        footer_surf = self.font_small.render(footer, True, GREEN_DIM)
+        surface.blit(footer_surf, (panel_x + int(15 * self.scale), footer_y))
 
     def _draw_forum_panel(self, surface: pygame.Surface) -> None:
         """Draw the forum panel."""
+        title_bar_h = int(34 * self.scale)
+        footer_h = int(32 * self.scale)
+        padding = int(12 * self.scale)
+
         panel_x = int(self.width * 0.50)
-        panel_y = int(100 * self.scale)
+        panel_y = int(88 * self.scale)
         panel_w = int(self.width * 0.47)
-        panel_h = int(self.height * 0.75)
+        panel_h = int(self.height * 0.84)
         panel_rect = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
 
         self._draw_panel_box(surface, panel_rect, "UNDERGROUND PROG. FORUMS")
 
+        content_top = panel_y + title_bar_h + padding
+        content_bottom = panel_y + panel_h - footer_h
+        content_h = content_bottom - content_top
+
+        clip_rect = pygame.Rect(panel_x + 2, content_top, panel_w - 4, content_h)
+        old_clip = surface.get_clip()
+        surface.set_clip(clip_rect)
+
         if self.forum_open_index is None:
             # Show thread list
-            line_h = int(60 * self.scale)
-            visible_items = (panel_h - int(80 * self.scale)) // line_h
-            
+            line_h = int(55 * self.scale)
+            visible_items = content_h // line_h
+
             for i in range(visible_items):
                 idx = self.forum_list_scroll + i
                 if idx >= len(self.forum_threads):
                     break
-                
+
                 thread = self.forum_threads[idx]
                 is_selected = idx == self.forum_selected_index
-                y = panel_y + int(45 * self.scale) + i * line_h
+                y = content_top + i * line_h
 
                 if is_selected:
-                    sel_rect = pygame.Rect(panel_x + 10, y - 5, panel_w - 20, line_h - 10)
+                    sel_rect = pygame.Rect(panel_x + 10, y, panel_w - 20, line_h - 6)
                     pygame.draw.rect(surface, (0, 50, 30), sel_rect, 0, border_radius=3)
                     pygame.draw.rect(surface, GREEN, sel_rect, 1, border_radius=3)
 
                 color = GREEN_BRIGHT if is_selected else WHITE
-                
+                text_x = panel_x + int(20 * self.scale)
+                max_text_w = panel_w - int(40 * self.scale)
+
                 # Thread title
-                title_surf = self.font_body.render(thread["title"][:40], True, color)
-                surface.blit(title_surf, (panel_x + int(20 * self.scale), y))
-                
+                title_text = self._truncate_text(self.font_body, thread["title"], max_text_w)
+                title_surf = self.font_body.render(title_text, True, color)
+                surface.blit(title_surf, (text_x, y + int(4 * self.scale)))
+
                 # Meta info
                 meta = f"by {thread['author']} | {thread['date']} | {thread['replies']} replies"
+                meta = self._truncate_text(self.font_small, meta, max_text_w)
                 meta_surf = self.font_small.render(meta, True, GREEN_DIM)
-                surface.blit(meta_surf, (panel_x + int(20 * self.scale), y + int(22 * self.scale)))
-
-            footer_y = panel_y + panel_h - int(25 * self.scale)
-            footer = "ENTER: READ THREAD // ESC: BACK"
-            footer_surf = self.font_small.render(footer, True, GREEN_DIM)
-            surface.blit(footer_surf, (panel_x + int(15 * self.scale), footer_y))
+                surface.blit(meta_surf, (text_x, y + int(26 * self.scale)))
         else:
             # Show thread content
             thread = self.forum_threads[self.forum_open_index]
-            content_y = panel_y + int(45 * self.scale)
-            content_h = panel_h - int(90 * self.scale)
-            line_h = int(22 * self.scale)
-            visible_lines = content_h // line_h
+            line_h = int(24 * self.scale)
+
+            # Reserve space at bottom of content area for compose box when active
+            compose_box_h = int(52 * self.scale) if self.forum_composing else 0
+            thread_content_h = content_h - compose_box_h
+            visible_lines = thread_content_h // line_h
 
             max_scroll = max(0, len(thread["lines"]) - visible_lines)
             self.forum_scroll = min(self.forum_scroll, max_scroll)
@@ -1522,10 +2187,10 @@ class EchoChamberBBS:
                 line_idx = self.forum_scroll + i
                 if line_idx >= len(thread["lines"]):
                     break
-                
+
                 line = thread["lines"][line_idx]
-                y = content_y + i * line_h
-                
+                y = content_top + i * line_h
+
                 # Color coding
                 if line.startswith("[") and "]:" in line:
                     color = CYAN  # Username
@@ -1538,6 +2203,8 @@ class EchoChamberBBS:
                 else:
                     color = WHITE
 
+                max_line_w = panel_w - int(30 * self.scale)
+                line = self._truncate_text(self.font_code, line, max_line_w)
                 text_surf = self.font_code.render(line, True, color)
                 surface.blit(text_surf, (panel_x + int(15 * self.scale), y))
 
@@ -1545,164 +2212,265 @@ class EchoChamberBBS:
                 self._draw_scroll_indicator(surface, panel_rect, self.forum_scroll,
                                            visible_lines, len(thread["lines"]))
 
-            footer_y = panel_y + panel_h - int(25 * self.scale)
-            footer = "UP/DOWN: SCROLL // ESC: BACK TO LIST"
-            footer_surf = self.font_small.render(footer, True, GREEN_DIM)
-            surface.blit(footer_surf, (panel_x + int(15 * self.scale), footer_y))
+            # Compose box
+            if self.forum_composing:
+                surface.set_clip(old_clip)
+                box_y = content_top + thread_content_h + int(4 * self.scale)
+                box_h = compose_box_h - int(8 * self.scale)
+                box_rect = pygame.Rect(panel_x + int(10 * self.scale), box_y,
+                                       panel_w - int(20 * self.scale), box_h)
+                pygame.draw.rect(surface, (0, 30, 20), box_rect, 0, border_radius=3)
+                pygame.draw.rect(surface, CYAN, box_rect, 1, border_radius=3)
+                prompt_surf = self.font_small.render("REPLY> ", True, CYAN)
+                max_input_w = box_rect.width - int(16 * self.scale) - prompt_surf.get_width()
+                display_text = self.forum_reply_text
+                # Trim from the left if too long to display
+                while display_text and self.font_small.size(display_text)[0] > max_input_w:
+                    display_text = display_text[1:]
+                cursor_str = "|" if self.cursor_visible else " "
+                input_surf = self.font_small.render(display_text + cursor_str, True, WHITE)
+                text_blit_y = box_y + (box_h - prompt_surf.get_height()) // 2
+                surface.blit(prompt_surf, (box_rect.x + int(8 * self.scale), text_blit_y))
+                surface.blit(input_surf, (box_rect.x + int(8 * self.scale) + prompt_surf.get_width(), text_blit_y))
+
+        surface.set_clip(old_clip)
+
+        # Footer
+        footer_y = panel_y + panel_h - footer_h + int(4 * self.scale)
+        if self.forum_open_index is None:
+            footer = "ENTER: READ THREAD // ESC: BACK"
+        elif self.forum_composing:
+            footer = "ENTER: POST REPLY // ESC: CANCEL"
+        else:
+            footer = "R: REPLY // UP/DOWN: SCROLL // ESC: BACK"
+        footer_surf = self.font_small.render(footer, True, GREEN_DIM)
+        surface.blit(footer_surf, (panel_x + int(15 * self.scale), footer_y))
 
     def _draw_darknet_panel(self, surface: pygame.Surface) -> None:
         """Draw the darknet files panel."""
+        title_bar_h = int(34 * self.scale)
+        footer_h = int(32 * self.scale)
+        padding = int(12 * self.scale)
+
         panel_x = int(self.width * 0.50)
-        panel_y = int(100 * self.scale)
+        panel_y = int(88 * self.scale)
         panel_w = int(self.width * 0.47)
-        panel_h = int(self.height * 0.75)
+        panel_h = int(self.height * 0.84)
         panel_rect = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
 
         self._draw_panel_box(surface, panel_rect, "DARKNET FILEZ // SECURE TRANSFER")
+
+        content_top = panel_y + title_bar_h + padding
+        content_bottom = panel_y + panel_h - footer_h
+        content_h = content_bottom - content_top
 
         if self.downloading_file is not None:
             # Show download progress
             file = self.darknet_files[self.downloading_file]
             mid_y = panel_y + panel_h // 2
-            
+
             text = f"DOWNLOADING: {file['name']}"
             text_surf = self.font_body.render(text, True, GREEN_BRIGHT)
             surface.blit(text_surf, (panel_x + panel_w // 2 - text_surf.get_width() // 2, mid_y - int(40 * self.scale)))
-            
+
             # Progress bar
             bar_w = panel_w - int(60 * self.scale)
             bar_h = int(20 * self.scale)
-            bar_x = panel_x + 30 * self.scale
+            bar_x = int(panel_x + 30 * self.scale)
             bar_y = mid_y
-            
+
             pygame.draw.rect(surface, GREEN_DIM, (bar_x, bar_y, bar_w, bar_h), 1)
             inner_w = int((bar_w - 4) * (self.download_progress / 100.0))
             if inner_w > 0:
                 pygame.draw.rect(surface, GREEN, (bar_x + 2, bar_y + 2, inner_w, bar_h - 4))
-            
+
             pct_text = f"{int(self.download_progress)}%"
             pct_surf = self.font_small.render(pct_text, True, WHITE)
             surface.blit(pct_surf, (bar_x + bar_w // 2 - pct_surf.get_width() // 2, bar_y + bar_h + 5))
-            
+
             if self.download_progress >= 100.0:
                 success_text = "TRANSFER COMPLETE. DECRYPTING..."
                 success_surf = self.font_small.render(success_text, True, GOLD)
                 surface.blit(success_surf, (panel_x + panel_w // 2 - success_surf.get_width() // 2, bar_y + bar_h + int(30 * self.scale)))
-            
+
             return
 
+        if self.download_error_timer > 0:
+            # Show region error message with word-wrap
+            max_err_w = panel_w - int(40 * self.scale)
+            mid_y = panel_y + panel_h // 2
+            title_text = "TRANSFER BLOCKED"
+            title_surf = self.font_body.render(title_text, True, RED)
+            surface.blit(title_surf, (panel_x + panel_w // 2 - title_surf.get_width() // 2, mid_y - int(30 * self.scale)))
+            err_lines = self._wrap_text_to_width(self.download_error_message, self.font_small, max_err_w)
+            line_h_err = int(20 * self.scale)
+            for i, err_line in enumerate(err_lines):
+                err_surf = self.font_small.render(err_line, True, WHITE)
+                surface.blit(err_surf, (panel_x + panel_w // 2 - err_surf.get_width() // 2, mid_y + int(5 * self.scale) + i * line_h_err))
+            return
+
+        # Clip content area
+        clip_rect = pygame.Rect(panel_x + 2, content_top, panel_w - 4, content_h)
+        old_clip = surface.get_clip()
+        surface.set_clip(clip_rect)
+
         # Warning header
-        warn_y = panel_y + int(40 * self.scale)
         warn_text = "!! ALL FILES ENCRYPTED - HANDLE WITH CARE !!"
         warn_surf = self.font_small.render(warn_text, True, RED)
-        surface.blit(warn_surf, (panel_x + int(15 * self.scale), warn_y))
+        surface.blit(warn_surf, (panel_x + int(15 * self.scale), content_top))
+
+        preview_h = int(120 * self.scale)
+        preview_gap = int(14 * self.scale)
+        preview_rect = pygame.Rect(
+            panel_x + int(12 * self.scale),
+            content_bottom - preview_h,
+            panel_w - int(24 * self.scale),
+            preview_h - int(4 * self.scale),
+        )
 
         # File list
-        line_h = int(55 * self.scale)
-        start_y = panel_y + int(70 * self.scale)
-        
+        line_h = int(58 * self.scale)
+        start_y = content_top + int(28 * self.scale)
+        list_bottom = preview_rect.top - preview_gap
+        selected_file = self.darknet_files[self.darknet_selected_index] if self.darknet_files else None
+
         for idx, file in enumerate(self.darknet_files):
             is_selected = idx == self.darknet_selected_index
             y = start_y + idx * line_h
 
-            if y + line_h > panel_y + panel_h - int(40 * self.scale):
+            if y + line_h > list_bottom:
                 break
 
             if is_selected:
-                sel_rect = pygame.Rect(panel_x + 10, y - 5, panel_w - 20, line_h - 10)
+                sel_rect = pygame.Rect(panel_x + 10, y, panel_w - 20, line_h - 6)
                 pygame.draw.rect(surface, (0, 50, 30), sel_rect, 0, border_radius=3)
                 pygame.draw.rect(surface, GREEN, sel_rect, 1, border_radius=3)
 
             color = GREEN_BRIGHT if is_selected else WHITE
-            
+
             # File icon and name
+            text_x = panel_x + int(15 * self.scale)
+            max_text_w = panel_w - int(30 * self.scale)
             icon = "[>]" if is_selected else "[ ]"
-            name_text = f"{icon} {file['name']}"
+            name_text = self._truncate_text(self.font_body, f"{icon} {file['name']}", max_text_w)
             name_surf = self.font_body.render(name_text, True, color)
-            surface.blit(name_surf, (panel_x + int(15 * self.scale), y))
-            
+            surface.blit(name_surf, (text_x, y + int(4 * self.scale)))
+
             # Size and description
-            meta = f"    {file['size']} - {file['desc']}"
+            meta = self._truncate_text(self.font_small, f"    {file['size']} - {file['desc']}", max_text_w)
             meta_surf = self.font_small.render(meta, True, GREEN_DIM if not is_selected else GREEN)
-            surface.blit(meta_surf, (panel_x + int(15 * self.scale), y + int(22 * self.scale)))
+            surface.blit(meta_surf, (text_x, y + int(28 * self.scale)))
+
+        pygame.draw.rect(surface, BG_PANEL, preview_rect)
+        pygame.draw.rect(surface, GREEN_DIM, preview_rect, 1)
+        preview_title = "SELECTED FILE // INFO"
+        preview_title_surf = self.font_small.render(preview_title, True, CYAN)
+        surface.blit(preview_title_surf, (preview_rect.x + int(10 * self.scale), preview_rect.y + int(8 * self.scale)))
+
+        if selected_file:
+            info_x = preview_rect.x + int(12 * self.scale)
+            info_y = preview_rect.y + int(30 * self.scale)
+            preview_name = self._truncate_text(self.font_body, selected_file["name"], preview_rect.width - int(24 * self.scale))
+            preview_name_surf = self.font_body.render(preview_name, True, GREEN_BRIGHT)
+            surface.blit(preview_name_surf, (info_x, info_y))
+
+            meta_text = self._truncate_text(
+                self.font_small,
+                f"{selected_file['size']} // {selected_file['desc']}",
+                preview_rect.width - int(24 * self.scale),
+            )
+            meta_surf = self.font_small.render(meta_text, True, GOLD)
+            surface.blit(meta_surf, (info_x, info_y + int(24 * self.scale)))
+
+            preview_lines = selected_file.get("preview") or [selected_file.get("desc", "Encrypted package.")]
+            line_y = info_y + int(46 * self.scale)
+            max_preview_w = preview_rect.width - int(24 * self.scale)
+            max_preview_lines = max(1, (preview_rect.bottom - line_y - int(8 * self.scale)) // self.font_small.get_height())
+            drawn_lines = 0
+            for raw_line in preview_lines:
+                wrapped_lines = self._wrap_text_to_width(raw_line, self.font_small, max_preview_w)
+                for wrapped_line in wrapped_lines:
+                    if drawn_lines >= max_preview_lines:
+                        break
+                    preview_line = self._truncate_text(self.font_small, wrapped_line, max_preview_w)
+                    line_surf = self.font_small.render(preview_line, True, WHITE)
+                    surface.blit(line_surf, (info_x, line_y))
+                    line_y += self.font_small.get_height()
+                    drawn_lines += 1
+                if drawn_lines >= max_preview_lines:
+                    break
+
+        surface.set_clip(old_clip)
 
         # Footer
-        footer_y = panel_y + panel_h - int(25 * self.scale)
+        footer_y = panel_y + panel_h - footer_h + int(4 * self.scale)
         footer = "ENTER: DOWNLOAD // ESC: BACK"
         footer_surf = self.font_small.render(footer, True, GREEN_DIM)
         surface.blit(footer_surf, (panel_x + int(15 * self.scale), footer_y))
 
+    def _wrap_text_to_width(self, text: str, font: pygame.font.Font, max_width: int) -> List[str]:
+        """Wrap simple text to fit the available width."""
+        words = text.split()
+        if not words:
+            return [""]
+        lines = []
+        current = words[0]
+        for word in words[1:]:
+            candidate = f"{current} {word}"
+            if font.size(candidate)[0] <= max_width:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+        return lines
+
     def _draw_sysop_panel(self, surface: pygame.Surface) -> None:
         """Draw the system ops / sysop message panel."""
+        title_bar_h = int(34 * self.scale)
+        footer_h = int(32 * self.scale)
+        padding = int(12 * self.scale)
+
         panel_x = int(self.width * 0.50)
-        panel_y = int(100 * self.scale)
+        panel_y = int(88 * self.scale)
         panel_w = int(self.width * 0.47)
-        panel_h = int(self.height * 0.75)
+        panel_h = int(self.height * 0.84)
         panel_rect = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
 
         self._draw_panel_box(surface, panel_rect, "SYSTEM OPS // SYSOP MESSAGE")
 
-        sysop_message = [
-            "FROM: SHADOWBYTE",
-            "DATE: 1989.11.15",
-            "SUBJECT: WELCOME TO THE ECHO CHAMBER",
-            "=" * 40,
-            "",
-            "If you're reading this, you found us.",
-            "Good. We need more people who seek",
-            "knowledge over compliance.",
-            "",
-            "We're American-raised, but we reject",
-            "the control. The Bradsonic 69000 gives",
-            "us real computational freedom - code",
-            "that does what WE want, not what",
-            "the administration approves.",
-            "",
-            "This BBS exists to preserve that",
-            "knowledge. Every tutorial, every",
-            "schematic, every line of ASM here",
-            "is a small act of rebellion against",
-            "the system that erased our heritage.",
-            "",
-            "RULES:",
-            "1. Never reveal this frequency",
-            "2. Never use real names",
-            "3. Always encrypt your uploads",
-            "4. Help newcomers - we all started",
-            "   somewhere",
-            "",
-            "The signal hops every 72 hours.",
-            "If you lose us, scan 15000-15100 kHz.",
-            "",
-            "Stay curious. Stay free.",
-            "",
-            "- SHADOWBYTE",
-            "  Sysop, The Echo Chamber",
-            "",
+        content_top = panel_y + title_bar_h + padding
+        content_bottom = panel_y + panel_h - footer_h
+        content_h = content_bottom - content_top
+
+        sysop_message = self._build_sysop_message() + [
             "=" * 40,
             "SYSTEM STATS:",
-            f"  Uptime: {random.randint(100, 999)} hours",
-            f"  Users online: {random.randint(5, 23)}",
-            f"  Files shared: {random.randint(500, 2000)}",
+            f"  Uptime: {self.sysop_stats_uptime} hours",
+            f"  Users online: {self.sysop_stats_users}",
+            f"  Files shared: {self.sysop_stats_files}",
             f"  Signal strength: STRONG",
         ]
 
-        content_y = panel_y + int(45 * self.scale)
-        content_h = panel_h - int(90 * self.scale)
-        line_h = int(22 * self.scale)
+        line_h = int(24 * self.scale)
         visible_lines = content_h // line_h
 
         max_scroll = max(0, len(sysop_message) - visible_lines)
         self.panel_scroll = min(self.panel_scroll, max_scroll)
 
+        # Clip content area
+        clip_rect = pygame.Rect(panel_x + 2, content_top, panel_w - 4, content_h)
+        old_clip = surface.get_clip()
+        surface.set_clip(clip_rect)
+
         for i in range(visible_lines):
             line_idx = self.panel_scroll + i
             if line_idx >= len(sysop_message):
                 break
-            
+
             line = sysop_message[line_idx]
-            y = content_y + i * line_h
-            
+            y = content_top + i * line_h
+
             # Color coding
             if line.startswith("FROM:") or line.startswith("DATE:") or line.startswith("SUBJECT:"):
                 color = GOLD
@@ -1715,6 +2483,8 @@ class EchoChamberBBS:
             else:
                 color = WHITE
 
+            max_line_w = panel_w - int(30 * self.scale)
+            line = self._truncate_text(self.font_code, line, max_line_w)
             text_surf = self.font_code.render(line, True, color)
             surface.blit(text_surf, (panel_x + int(15 * self.scale), y))
 
@@ -1722,7 +2492,10 @@ class EchoChamberBBS:
             self._draw_scroll_indicator(surface, panel_rect, self.panel_scroll,
                                        visible_lines, len(sysop_message))
 
-        footer_y = panel_y + panel_h - int(25 * self.scale)
+        surface.set_clip(old_clip)
+
+        # Footer
+        footer_y = panel_y + panel_h - footer_h + int(4 * self.scale)
         footer = "UP/DOWN: SCROLL // ESC: BACK"
         footer_surf = self.font_small.render(footer, True, GREEN_DIM)
         surface.blit(footer_surf, (panel_x + int(15 * self.scale), footer_y))
@@ -1731,26 +2504,29 @@ class EchoChamberBBS:
 
     def _draw_panel_box(self, surface: pygame.Surface, rect: pygame.Rect, title: str) -> None:
         """Draw a styled panel box with title."""
+        title_bar_h = int(34 * self.scale)
+
         # Shadow
         shadow_rect = rect.move(4, 4)
         pygame.draw.rect(surface, (0, 0, 0), shadow_rect, 0, border_radius=4)
-        
+
         # Background
         pygame.draw.rect(surface, BG_PANEL, rect, 0, border_radius=4)
-        
+
         # Border
         pygame.draw.rect(surface, GREEN, rect, 2, border_radius=4)
-        
+
         # Title bar
-        title_bar = pygame.Rect(rect.x, rect.y, rect.width, int(30 * self.scale))
-        pygame.draw.rect(surface, GREEN_DIM, title_bar, 0, 
+        title_bar = pygame.Rect(rect.x, rect.y, rect.width, title_bar_h)
+        pygame.draw.rect(surface, GREEN_DIM, title_bar, 0,
                         border_top_left_radius=4, border_top_right_radius=4)
-        pygame.draw.line(surface, GREEN, (rect.x, rect.y + int(30 * self.scale)),
-                        (rect.x + rect.width, rect.y + int(30 * self.scale)), 1)
-        
-        # Title text
+        pygame.draw.line(surface, GREEN, (rect.x, rect.y + title_bar_h),
+                        (rect.x + rect.width, rect.y + title_bar_h), 1)
+
+        # Title text — vertically centered in title bar
         title_surf = self.font_small.render(title, True, GREEN_BRIGHT)
-        surface.blit(title_surf, (rect.x + int(10 * self.scale), rect.y + int(8 * self.scale)))
+        title_text_y = rect.y + (title_bar_h - title_surf.get_height()) // 2
+        surface.blit(title_surf, (rect.x + int(10 * self.scale), title_text_y))
 
     def _draw_text_centered(self, surface: pygame.Surface, font: pygame.font.Font,
                            text: str, color, y: int) -> None:
@@ -1759,27 +2535,40 @@ class EchoChamberBBS:
         x = self.width // 2 - text_surf.get_width() // 2
         surface.blit(text_surf, (x, y))
 
+    def _truncate_text(self, font: pygame.font.Font, text: str, max_width: int) -> str:
+        """Truncate text with ellipsis if it exceeds max_width pixels."""
+        if font.size(text)[0] <= max_width:
+            return text
+        while len(text) > 1 and font.size(text + "..")[0] > max_width:
+            text = text[:-1]
+        return text + ".."
+
     def _draw_scroll_indicator(self, surface: pygame.Surface, rect: pygame.Rect,
                               start_line: int, visible_lines: int, total_lines: int) -> None:
         """Draw a scroll position indicator."""
         if total_lines <= visible_lines:
             return
 
+        title_bar_h = int(34 * self.scale)
+        footer_h = int(32 * self.scale)
+
         max_scroll = total_lines - visible_lines
         scroll_pct = start_line / max_scroll if max_scroll > 0 else 0
 
         bar_w = int(4 * self.scale)
         bar_h = int(30 * self.scale)
-        track_h = rect.height - int(60 * self.scale)
+        track_top = rect.y + title_bar_h + int(10 * self.scale)
+        track_bottom = rect.y + rect.height - footer_h - int(6 * self.scale)
+        track_h = track_bottom - track_top
         available_track = track_h - bar_h
 
         bar_x = rect.right - bar_w - int(8 * self.scale)
-        bar_y = rect.y + int(40 * self.scale) + int(scroll_pct * available_track)
+        bar_y = track_top + int(scroll_pct * available_track)
 
         # Track line
         pygame.draw.line(surface, GREEN_DIM,
-                        (bar_x + bar_w // 2, rect.y + int(40 * self.scale)),
-                        (bar_x + bar_w // 2, rect.y + rect.height - int(30 * self.scale)), 1)
-        
+                        (bar_x + bar_w // 2, track_top),
+                        (bar_x + bar_w // 2, track_bottom), 1)
+
         # Handle
         pygame.draw.rect(surface, GOLD, (bar_x, bar_y, bar_w, bar_h), 0, border_radius=2)

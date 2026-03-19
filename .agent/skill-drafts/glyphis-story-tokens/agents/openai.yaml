@@ -1,0 +1,4 @@
+interface:
+  display_name: "Glyphis Story Tokens"
+  short_description: "Story token and trigger map for GlyphisIO BBS"
+  default_prompt: "Use $glyphis-story-tokens to inspect or modify progression tokens, story beats, token grants, and token-driven triggers across the BBS and Bradsonic OS."

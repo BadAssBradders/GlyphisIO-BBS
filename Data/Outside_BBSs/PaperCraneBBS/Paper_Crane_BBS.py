@@ -39,12 +39,28 @@ class PaperCraneBBS:
         scale: float,
         on_exit: Optional[Callable[[], None]] = None,
         on_grant_token: Optional[Callable[[str, Optional[str]], bool]] = None,
+        get_region: Optional[Callable[[], int]] = None,
+        on_download_file: Optional[Callable[[str, str], None]] = None,
+        on_download_track: Optional[Callable[[str], None]] = None,
     ):
         self.width = width
         self.height = height
         self.scale = scale
         self.on_exit = on_exit
         self.on_grant_token = on_grant_token
+        self.get_region = get_region
+        self.on_download_file = on_download_file
+        self.on_download_track = on_download_track
+
+        # Download state
+        self.download_error_timer = 0.0
+        self.download_error_message = ""
+        self.download_progress: Optional[float] = None  # None = not downloading, 0-100 = progress
+        self.download_speed = 0.0
+        self.download_timer = 0.0
+        self.download_doc_index: Optional[int] = None
+        self.download_track_index: Optional[int] = None
+        self.download_kind: Optional[str] = None
 
         # Fonts
         self.font_title = self._load_font("misaki_gothic.ttf", int(32 * self.scale), bold=False)
@@ -95,13 +111,10 @@ class PaperCraneBBS:
         self.logs_wipe_timer = 0.0
         self.audio_tracks = self._load_audio_tracks()
         self.audio_selected_index = 0
-        self.current_playing_track: Optional[int] = None
-        self.showing_lyrics = False
-        self.lyrics_scroll = 0
         self.audio_welcome_scroll = 0
         self.track_list_scroll = 0
         self.archive_list_scroll = 0
-        self.audio_message = "WELCOME TO THE MIAZUKI AUDIO MATRIX. MiaZuki's rebellious spirit remains a beacon in the static. She has donated these tracks so that we, the guests of Paper Crane, may have something to steel our hearts while we sift through the fragments of our destroyed culture. Listen. Remember. Rebel."
+        self.audio_message = "WELCOME TO THE MIAZUKI AUDIO MATRIX. THESE TRACKS TRANSFER INTO BRADSONIC AS .SONIC DOWNLOADS, BUT ONLY WHEN YOUR OS REGION IS SET TO US MAINLAND. SELECT A TRACK, PRESS D, AND COLLECT IT FROM DOWNLOADS IN dotSONIC."
 
     def _create_scanline_surface(self) -> pygame.Surface:
         surf = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
@@ -431,6 +444,37 @@ class PaperCraneBBS:
                 self.splash_row_timer -= self.splash_row_time
                 self.splash_rows_shown += 1
 
+        # Download error timer
+        if self.download_error_timer > 0:
+            self.download_error_timer -= dt
+            if self.download_error_timer <= 0:
+                self.download_error_timer = 0.0
+                self.download_error_message = ""
+
+        # Download progress
+        if self.download_progress is not None:
+            self.download_progress += dt * self.download_speed
+            self.download_timer += dt
+            if self.download_progress >= 100.0:
+                self.download_progress = 100.0
+                if self.download_timer >= 1.2:
+                    if self.download_kind == "doc" and self.on_download_file and self.download_doc_index is not None:
+                        doc = self.archive_docs[self.download_doc_index]
+                        content = "\n".join(doc["lines"])
+                        self.on_download_file(doc["title"] + ".txt", content)
+                    elif self.download_kind == "track" and self.on_download_track and self.download_track_index is not None:
+                        track = self.audio_tracks[self.download_track_index]
+                        self.on_download_track(track["title"])
+                    self.download_progress = None
+                    self.download_speed = 0.0
+                    self.download_timer = 0.0
+                    self.download_doc_index = None
+                    self.download_track_index = None
+                    self.download_kind = None
+            else:
+                import random
+                self.download_speed = max(5.0, min(50.0, self.download_speed + random.uniform(-2, 2)))
+
     def handle_event(self, event: pygame.event.Event) -> bool:
         if event.type != pygame.KEYDOWN:
             return False
@@ -531,8 +575,26 @@ class PaperCraneBBS:
         return False
 
     def _handle_archive_event(self, event: pygame.event.Event) -> bool:
+        # Lock input during download or error display
+        if self.download_progress is not None or self.download_error_timer > 0:
+            return True
+
         # Document list navigation
         if self.archive_open_index is None:
+            if event.key == pygame.K_d:
+                # Download selected document
+                if self.get_region and self.get_region() != 1:
+                    self.download_error_message = "Region American Pacifica Isles does not permit file transfers at this time."
+                    self.download_error_timer = 3.0
+                    return True
+                import random
+                self.download_doc_index = self.archive_selected_index
+                self.download_track_index = None
+                self.download_kind = "doc"
+                self.download_progress = 0.0
+                self.download_speed = random.uniform(15.0, 35.0)
+                self.download_timer = 0.0
+                return True
             if event.key in (pygame.K_UP, pygame.K_w):
                 self.archive_selected_index = (self.archive_selected_index - 1) % len(self.archive_docs)
                 
@@ -596,17 +658,8 @@ class PaperCraneBBS:
         return False
 
     def _handle_audio_event(self, event: pygame.event.Event) -> bool:
-        if self.showing_lyrics:
-            if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE, pygame.K_l):
-                self.showing_lyrics = False
-                return True
-            if event.key in (pygame.K_UP, pygame.K_w):
-                self.lyrics_scroll = max(0, self.lyrics_scroll - 1)
-                return True
-            if event.key in (pygame.K_DOWN, pygame.K_s):
-                self.lyrics_scroll += 1
-                return True
-            return False
+        if self.download_progress is not None or self.download_error_timer > 0:
+            return True
 
         if event.key in (pygame.K_UP, pygame.K_w):
             self.audio_selected_index = (self.audio_selected_index - 1) % len(self.audio_tracks)
@@ -637,24 +690,24 @@ class PaperCraneBBS:
             elif self.audio_selected_index >= self.track_list_scroll + visible_tracks:
                 self.track_list_scroll = self.audio_selected_index - visible_tracks + 1
             return True
-        if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-            print(f"[DEBUG] Audio Matrix: Enter pressed. Attempting to play track {self.audio_selected_index}: {self.audio_tracks[self.audio_selected_index]['title']}")
-            self._play_track(self.audio_selected_index)
-            track_title = self.audio_tracks[self.audio_selected_index]['title']
-            self._log_action(f"playback audio: {track_title}")
-            return True
-        if event.key == pygame.K_l:
-            track = self.audio_tracks[self.audio_selected_index]
-            if "lyrics" in track:
-                self.showing_lyrics = True
-                self.lyrics_scroll = 0
+        if event.key == pygame.K_d:
+            if self.get_region and self.get_region() != 1:
+                self.download_error_message = "Set your Bradsonic OS region to US Mainland to download .sonic files."
+                self.download_error_timer = 3.0
                 return True
-        if event.key == pygame.K_SPACE:
-            print(f"[DEBUG] Audio Matrix: Space pressed. Stopping music.")
-            # Stop music
-            if pygame.mixer.music.get_busy():
-                pygame.mixer.music.stop()
-                self.current_playing_track = None
+            import random
+            self.download_doc_index = None
+            self.download_track_index = self.audio_selected_index
+            self.download_kind = "track"
+            self.download_progress = 0.0
+            self.download_speed = random.uniform(15.0, 35.0)
+            self.download_timer = 0.0
+            track_title = self.audio_tracks[self.audio_selected_index]["title"]
+            self._log_action(f"queued .sonic download: {track_title}")
+            return True
+        if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+            self.state = "menu"
+            self.active_panel = None
             return True
         return False
 
@@ -763,54 +816,6 @@ class PaperCraneBBS:
             TEXT,
             (panel_rect.x + int(15 * self.scale), panel_rect.bottom - int(20 * self.scale)),
         )
-
-    def _play_track(self, index: int) -> None:
-        track = self.audio_tracks[index]
-        base_filename = track["file"]
-        print(f"[DEBUG] _play_track: index={index}, base_filename={base_filename}")
-        
-        try:
-            if not pygame.mixer.get_init():
-                print(f"[DEBUG] _play_track: Initializing mixer.")
-                # Initialize with standard frequency and buffer for better compatibility
-                pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
-            
-            # EXCLUSIVE search in local MiaZukiMatrix folder
-            audio_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "MiaZukiMatrix")
-            
-            print(f"[DEBUG] _play_track: Searching exclusively in: {audio_dir}")
-            
-            audio_path = None
-            # Try .wav first (preferred for reliability), then .mp3
-            for ext in [".wav", ".mp3"]:
-                p = os.path.join(audio_dir, base_filename + ext)
-                if os.path.exists(p):
-                    audio_path = p
-                    break
-            
-            if audio_path:
-                print(f"[DEBUG] _play_track: Found file at {audio_path}. Loading into mixer.music.")
-                # Same method as Pirate Radio
-                pygame.mixer.music.stop() 
-                pygame.mixer.music.load(audio_path)
-                pygame.mixer.music.set_volume(0.8) # 80% volume
-                pygame.mixer.music.play(-1) # Loop indefinitely
-                
-                self.current_playing_track = index
-                # Grant JEWEL_VOICE token when player plays "Jewel Voice" (or "Jewl Voice")
-                title = (track.get("title") or "").strip()
-                if title and self.on_grant_token:
-                    if title.lower() in ("jewel voice", "jewl voice"):
-                        self.on_grant_token("JEWEL_VOICE", reason="played Jewel Voice on Paper Crane BBS")
-                print(f"[DEBUG] _play_track: Playback started successfully.")
-            else:
-                print(f"[DEBUG] _play_track ERROR: Audio file not found: {base_filename} in MiaZukiMatrix.")
-                # Still set as playing for UI feedback in dev if it was a fallback
-                self.current_playing_track = index
-        except Exception as e:
-            print(f"[DEBUG] _play_track EXCEPTION: Failed to play audio '{base_filename}': {e}")
-            import traceback
-            traceback.print_exc()
 
     def _clamp_archive_scroll(self) -> None:
         if self.archive_open_index is None:
@@ -1281,9 +1286,7 @@ class PaperCraneBBS:
 
         header_x = panel_rect.x + int(20 * self.scale)
         header_y = panel_rect.y + int(15 * self.scale)
-        header_text = "MIAZUKI AUDIO MATRIX"
-        if self.showing_lyrics:
-            header_text += " // LYRICS: " + self.audio_tracks[self.audio_selected_index]["title"].upper()
+        header_text = "MIAZUKI AUDIO MATRIX // DOWNLOADS ONLY"
             
         self._blit_text_with_shadow(
             surface,
@@ -1293,61 +1296,6 @@ class PaperCraneBBS:
             GOLD,
             (header_x, header_y),
         )
-
-        if self.showing_lyrics:
-            # Draw Lyrics View
-            lyrics_rect = pygame.Rect(
-                panel_rect.x + int(20 * self.scale),
-                panel_rect.y + int(60 * self.scale),
-                panel_rect.width - int(40 * self.scale),
-                panel_rect.height - int(120 * self.scale)
-            )
-            # Solid lyrics box
-            pygame.draw.rect(surface, (10, 5, 8), lyrics_rect, 0, border_radius=4)
-            pygame.draw.rect(surface, PINK_DIM, lyrics_rect, 1, border_radius=4)
-            
-            track = self.audio_tracks[self.audio_selected_index]
-            raw_lyrics = track["lyrics"]
-            
-            # Wrap lyrics
-            available_width = lyrics_rect.width - int(40 * self.scale)
-            wrapped_lyrics = self._wrap_text_lines(raw_lyrics, self.font_small, self.font_small_fallback, available_width)
-            
-            line_h = int(24 * self.scale)
-            visible_lines = lyrics_rect.height // line_h - 1
-            max_scroll = max(0, len(wrapped_lyrics) - visible_lines)
-            self.lyrics_scroll = min(self.lyrics_scroll, max_scroll)
-            
-            old_clip = surface.get_clip()
-            surface.set_clip(lyrics_rect)
-            y = lyrics_rect.y + int(10 * self.scale)
-            for i in range(self.lyrics_scroll, min(len(wrapped_lyrics), self.lyrics_scroll + visible_lines)):
-                line = wrapped_lyrics[i]
-                color = GOLD if line.startswith("[") else TEXT
-                self._blit_text_with_shadow(
-                    surface,
-                    self.font_small,
-                    self.font_small_fallback,
-                    line,
-                    color,
-                    (lyrics_rect.x + int(20 * self.scale), y),
-                )
-                y += line_h
-            surface.set_clip(old_clip)
-                
-            # Unified Scroll Indicator
-            self._draw_scroll_indicator(surface, lyrics_rect, self.lyrics_scroll, visible_lines, len(wrapped_lyrics))
-
-            ctrl_y = panel_rect.bottom - int(45 * self.scale)
-            self._blit_text_with_shadow(
-                surface,
-                self.font_small,
-                self.font_small_fallback,
-                "[UP/DOWN] SCROLL  [L/ESC] RETURN TO LIST",
-                TEXT,
-                (panel_rect.x + int(20 * self.scale), ctrl_y),
-            )
-            return
 
         # Welcome Message Area
         msg_rect = pygame.Rect(
@@ -1419,7 +1367,6 @@ class PaperCraneBBS:
             
             track = self.audio_tracks[idx]
             is_selected = idx == self.audio_selected_index
-            is_playing = idx == self.current_playing_track
             
             y = list_rect.y + int(10 * self.scale) + i * track_h
             if y + track_h > list_rect.bottom:
@@ -1432,10 +1379,10 @@ class PaperCraneBBS:
                 pygame.draw.rect(surface, PINK, sel_rect, 1, border_radius=4)
             
             # Track Title wrapping
-            color = GOLD if is_playing else (ACCENT if is_selected else TEXT)
-            prefix = ">> " if is_playing else (" > " if is_selected else "   ")
+            color = ACCENT if is_selected else TEXT
+            prefix = "[D] " if is_selected else "    "
             
-            # Max width for title (leaving space for prefix and [LYRICS])
+            # Max width for title and download badge
             title_max_w = list_rect.width - int(120 * self.scale)
             wrapped_title = self._wrap_text_lines([track['title']], self.font_small, self.font_small_fallback, title_max_w)
             
@@ -1453,16 +1400,15 @@ class PaperCraneBBS:
                 )
                 display_y += int(18 * self.scale)
             
-            if "lyrics" in track:
-                lyrics_color = GOLD if is_selected else PINK_DIM
-                self._blit_text_with_shadow(
-                    surface,
-                    self.font_small,
-                    self.font_small_fallback,
-                    "[LYRICS]",
-                    lyrics_color,
-                    (list_rect.right - int(90 * self.scale), y + int(10 * self.scale)),
-                )
+            badge_color = GOLD if is_selected else PINK_DIM
+            self._blit_text_with_shadow(
+                surface,
+                self.font_small,
+                self.font_small_fallback,
+                "[.SONIC]",
+                badge_color,
+                (list_rect.right - int(100 * self.scale), y + int(10 * self.scale)),
+            )
         surface.set_clip(old_clip_list)
             
         # Unified Scroll Indicator for Track List
@@ -1470,10 +1416,7 @@ class PaperCraneBBS:
 
         # Status / Controls
         ctrl_y = panel_rect.bottom - int(30 * self.scale)
-        hints = "[UP/DOWN] NAVIGATE  [ENTER] PLAY  [SPACE] STOP"
-        if "lyrics" in self.audio_tracks[self.audio_selected_index]:
-            hints += "  [L] VIEW LYRICS"
-        hints += "  [ESC] BACK"
+        hints = "[UP/DOWN] NAVIGATE  [D] DOWNLOAD .SONIC  [ESC] BACK"
         
         self._blit_text_with_shadow(
             surface,
@@ -1606,6 +1549,7 @@ class PaperCraneBBS:
                 "KEYS:",
                 " [UP/DOWN] NAVIGATE",
                 " [ENTER]   OPEN DATA",
+                " [D]       DOWNLOAD",
                 " [ESC]     BACK TO MENU"
             ]
             
@@ -1697,6 +1641,43 @@ class PaperCraneBBS:
             (right_rect.x + int(10 * self.scale), right_rect.bottom - int(20 * self.scale)),
         )
 
+        # Download progress overlay (drawn over everything)
+        if self.download_progress is not None:
+            overlay = pygame.Surface((right_rect.width, right_rect.height), pygame.SRCALPHA)
+            overlay.fill((10, 5, 8, 220))
+            surface.blit(overlay, (right_rect.x, right_rect.y))
+            mid_y = right_rect.y + right_rect.height // 2
+            doc = self.archive_docs[self.download_doc_index] if self.download_doc_index is not None else None
+            dl_name = doc["title"] if doc else "FILE"
+            dl_text = f"DOWNLOADING: {dl_name}"
+            self._blit_text_with_shadow(surface, self.font_small, self.font_small_fallback,
+                                        dl_text, ACCENT, (right_rect.x + int(20 * self.scale), mid_y - int(35 * self.scale)))
+            bar_w = right_rect.width - int(40 * self.scale)
+            bar_h = int(16 * self.scale)
+            bar_x = right_rect.x + int(20 * self.scale)
+            bar_y = mid_y
+            pygame.draw.rect(surface, PINK_DIM, (bar_x, bar_y, bar_w, bar_h), 1)
+            inner_w = int((bar_w - 4) * (self.download_progress / 100.0))
+            if inner_w > 0:
+                pygame.draw.rect(surface, PINK, (bar_x + 2, bar_y + 2, inner_w, bar_h - 4))
+            pct_text = f"{int(self.download_progress)}%"
+            self._blit_text_with_shadow(surface, self.font_small, self.font_small_fallback,
+                                        pct_text, TEXT, (bar_x + bar_w // 2 - int(15 * self.scale), bar_y + bar_h + int(5 * self.scale)))
+            if self.download_progress >= 100.0:
+                self._blit_text_with_shadow(surface, self.font_small, self.font_small_fallback,
+                                            "TRANSFER COMPLETE", GOLD, (bar_x, bar_y + bar_h + int(25 * self.scale)))
+
+        # Download error overlay
+        if self.download_error_timer > 0:
+            overlay = pygame.Surface((right_rect.width, right_rect.height), pygame.SRCALPHA)
+            overlay.fill((10, 5, 8, 220))
+            surface.blit(overlay, (right_rect.x, right_rect.y))
+            mid_y = right_rect.y + right_rect.height // 2
+            self._blit_text_with_shadow(surface, self.font_label, self.font_label_fallback,
+                                        "TRANSFER BLOCKED", ERROR, (right_rect.x + int(20 * self.scale), mid_y - int(20 * self.scale)))
+            self._blit_text_with_shadow(surface, self.font_small, self.font_small_fallback,
+                                        self.download_error_message, TEXT, (right_rect.x + int(20 * self.scale), mid_y + int(15 * self.scale)))
+
     def _get_panel_body(self, panel: Optional[str]):
         if panel == "SYSOP":
             return [
@@ -1733,7 +1714,6 @@ class PaperCraneBBS:
                 pygame.mixer.music.stop()
         except Exception:
             pass
-        self.current_playing_track = None
         self.request_exit = True
         if self.on_exit:
             self.on_exit()

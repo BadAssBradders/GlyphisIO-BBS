@@ -10,6 +10,7 @@ import sys
 import time
 import math
 import threading
+from datetime import datetime
 from typing import List, Dict, Tuple, Optional, Callable
 
 try:
@@ -38,8 +39,23 @@ def get_dotsonic_path(*path_parts) -> str:
     return os.path.join(script_dir, *path_parts)
 
 
-# Slider debugging: set True to show hit rects, values, and print events
-SLIDER_DEBUG = True
+def _get_hourly_rise_new_voices_path() -> Optional[str]:
+    hour_index = datetime.now().hour + 1
+    base_dir = get_data_path(
+        "Social_Engineering",
+        "Fugamatchi_Concert",
+        "Rise_New_Voices_Tracks&Tones",
+    )
+    for base_name in (
+        f"Rise_Voices_{hour_index:02d}",
+        f"Rise_New_Voices_{hour_index:02d}",
+    ):
+        for ext in (".mp3", ".wav"):
+            candidate = os.path.join(base_dir, base_name + ext)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
 
 # Colors (match retro aesthetic)
 COLOR_BG_DARK = (8, 12, 32)
@@ -82,6 +98,8 @@ class DotSonicMediaPlayer:
         get_downloaded_tracks: Callable[[], List[str]] = None,
         open_file_browser_callback: Callable[[], None] = None,
         close_callback: Callable[[], None] = None,
+        track_started_callback: Callable[[str, str], None] = None,
+        has_token_callback: Callable[[str], bool] = None,
     ):
         self.screen = screen
         self.scale = scale
@@ -91,6 +109,8 @@ class DotSonicMediaPlayer:
         self.get_downloaded_tracks = get_downloaded_tracks or (lambda: [])
         self.open_file_browser_callback = open_file_browser_callback or (lambda: None)
         self.close_callback = close_callback or (lambda: None)
+        self.track_started_callback = track_started_callback or (lambda title, real_name: None)
+        self.has_token_callback = has_token_callback or (lambda token: False)
         
         self.active = False
         self.window_rect: Optional[pygame.Rect] = None
@@ -101,6 +121,9 @@ class DotSonicMediaPlayer:
         self.current_index = -1
         self.playing = False
         self.paused = False
+        self.playback_channel: Optional[pygame.mixer.Channel] = None
+        self.current_sound: Optional[pygame.mixer.Sound] = None
+        self.using_music_fallback = False
         
         # Volume 0.0-1.0, Balance -1.0 (left) to 1.0 (right)
         self.volume = 0.8
@@ -337,26 +360,33 @@ class DotSonicMediaPlayer:
     def _resolve_track_path(self, entry: Dict) -> Optional[str]:
         """Resolve track to actual audio file path."""
         real_name = entry.get("real_name", "")
-        title = entry.get("title", "").replace(".sonic", "")
         file_path = entry.get("file_path")
         if file_path and os.path.isfile(file_path):
             return file_path
-        # Virtual __sonic__{title} - look in Fugamatchi folder
+        # Virtual __sonic__{title} - look in BBS music archives
         if real_name.startswith("__sonic__"):
             title_clean = real_name.replace("__sonic__", "")
-            fugamatchi_dir = get_data_path("Outside_BBSs", "NeverAgainBBS", "Fugamatchi")
-            if os.path.isdir(fugamatchi_dir):
-                for fn in os.listdir(fugamatchi_dir):
+            if self.has_token_callback("SCHOOL_HACK5") and "rise new voices" in title_clean.lower():
+                hourly_path = _get_hourly_rise_new_voices_path()
+                if hourly_path:
+                    return hourly_path
+            music_dirs = [
+                get_data_path("Outside_BBSs", "NeverAgainBBS", "Fugamatchi"),
+                get_data_path("Outside_BBSs", "PaperCraneBBS", "MiaZukiMatrix"),
+            ]
+            for music_dir in music_dirs:
+                if not os.path.isdir(music_dir):
+                    continue
+                for fn in os.listdir(music_dir):
                     if fn.lower().endswith((".wav", ".mp3")):
                         base = os.path.splitext(fn)[0]
-                        # Strip numeric prefix like "01_"
                         if "_" in base:
                             parts = base.split("_", 1)
                             if parts[0].isdigit():
                                 base = parts[1]
                         base_clean = base.replace("_", " ").strip()
                         if base_clean.lower() == title_clean.lower():
-                            return os.path.join(fugamatchi_dir, fn)
+                            return os.path.join(music_dir, fn)
         return None
     
     # ------------------------------------------------------------------
@@ -550,14 +580,12 @@ class DotSonicMediaPlayer:
             got_real = False
             if self._audio_bands is not None:
                 try:
-                    pos_ms = pygame.mixer.music.get_pos()
-                    if pos_ms >= 0:
-                        frame = int((pos_ms / 1000.0) * self._audio_fps)
-                        frame = max(0, min(frame, len(self._audio_bands) - 1))
-                        self.viz_targets = list(self._audio_bands[frame])
-                        if self._audio_wave is not None and frame < len(self._audio_wave):
-                            self.viz_wave_targets = list(self._audio_wave[frame])
-                        got_real = True
+                    frame = int(self._get_playback_elapsed_seconds() * self._audio_fps)
+                    frame = max(0, min(frame, len(self._audio_bands) - 1))
+                    self.viz_targets = list(self._audio_bands[frame])
+                    if self._audio_wave is not None and frame < len(self._audio_wave):
+                        self.viz_wave_targets = list(self._audio_wave[frame])
+                    got_real = True
                 except Exception:
                     pass
             if not got_real:
@@ -660,35 +688,97 @@ class DotSonicMediaPlayer:
         if index < 0 or index >= len(self.playlist):
             return
         self.current_index = index
-        path = self._resolve_track_path(self.playlist[index])
+        entry = self.playlist[index]
+        path = self._resolve_track_path(entry)
         if path:
             try:
-                pygame.mixer.music.load(path)
-                pygame.mixer.music.set_volume(self._effective_volume())
-                pygame.mixer.music.play()
+                self._stop_playback()
+                self.current_sound = pygame.mixer.Sound(path)
+                self.playback_channel = pygame.mixer.find_channel(True)
+                if self.playback_channel is None:
+                    raise RuntimeError("No mixer channel available for dotSONIC playback")
+                self.using_music_fallback = False
+                self._apply_output_levels()
+                self.playback_channel.play(self.current_sound)
                 self.playing = True
                 self.paused = False
                 self.track_start_time = time.time()
                 self.pause_elapsed = 0.0
                 self._start_audio_analysis(path)
+                self.track_started_callback(entry.get("title", ""), entry.get("real_name", ""))
             except Exception as e:
-                print(f"DotSonic: Could not play {path}: {e}")
+                try:
+                    pygame.mixer.music.load(path)
+                    pygame.mixer.music.set_volume(self.volume)
+                    pygame.mixer.music.play()
+                    self.playing = True
+                    self.paused = False
+                    self.track_start_time = time.time()
+                    self.pause_elapsed = 0.0
+                    self.playback_channel = None
+                    self.current_sound = None
+                    self.using_music_fallback = True
+                    self._start_audio_analysis(path)
+                    self.track_started_callback(entry.get("title", ""), entry.get("real_name", ""))
+                except Exception as music_error:
+                    print(f"DotSonic: Could not play {path}: {e}; fallback failed: {music_error}")
         else:
             self.playing = True
             self.paused = False
+            self.track_started_callback(entry.get("title", ""), entry.get("real_name", ""))
     
-    def _effective_volume(self) -> float:
-        """Volume with balance applied (simplified)."""
-        return self.volume
+    def _get_output_levels(self) -> Tuple[float, float]:
+        """Return left/right output levels from master volume and balance."""
+        pan = max(-1.0, min(1.0, self.balance))
+        left = self.volume
+        right = self.volume
+        if pan < 0.0:
+            right *= 1.0 + pan
+        elif pan > 0.0:
+            left *= 1.0 - pan
+        return max(0.0, min(1.0, left)), max(0.0, min(1.0, right))
+
+    def _apply_output_levels(self) -> None:
+        """Apply current left/right levels to active playback."""
+        left, right = self._get_output_levels()
+        try:
+            if self.playback_channel is not None and not self.using_music_fallback:
+                self.playback_channel.set_volume(left, right)
+            else:
+                pygame.mixer.music.set_volume(self.volume)
+        except Exception:
+            pass
+
+    def _get_playback_elapsed_seconds(self) -> float:
+        """Track playback time for the visualizer."""
+        if self.paused:
+            return max(0.0, self.pause_elapsed)
+        if self.playing:
+            return max(0.0, time.time() - self.track_start_time)
+        return 0.0
+
+    def _is_playback_busy(self) -> bool:
+        """Return True while the active playback path is still running."""
+        try:
+            if self.playback_channel is not None and not self.using_music_fallback:
+                return self.playback_channel.get_busy()
+            return pygame.mixer.music.get_busy()
+        except Exception:
+            return False
     
     def _stop_playback(self) -> None:
         """Stop playback."""
         try:
+            if self.playback_channel is not None:
+                self.playback_channel.stop()
             pygame.mixer.music.stop()
         except Exception:
             pass
         self.playing = False
         self.paused = False
+        self.playback_channel = None
+        self.current_sound = None
+        self.using_music_fallback = False
         self._analysis_generation += 1
         self._audio_bands = None
         self._audio_wave = None
@@ -698,11 +788,17 @@ class DotSonicMediaPlayer:
         """Toggle play/pause."""
         if self.playing:
             if self.paused:
-                pygame.mixer.music.unpause()
+                if self.playback_channel is not None and not self.using_music_fallback:
+                    self.playback_channel.unpause()
+                else:
+                    pygame.mixer.music.unpause()
                 self.paused = False
                 self.track_start_time = time.time() - self.pause_elapsed
             else:
-                pygame.mixer.music.pause()
+                if self.playback_channel is not None and not self.using_music_fallback:
+                    self.playback_channel.pause()
+                else:
+                    pygame.mixer.music.pause()
                 self.paused = True
                 self.pause_elapsed = time.time() - self.track_start_time
         else:
@@ -755,8 +851,6 @@ class DotSonicMediaPlayer:
                     self._set_balance_from_slider(mouse_y)
                 return True
             if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                if SLIDER_DEBUG:
-                    print(f"[dotSONIC] Slider drag ended: vol={self.volume:.2f} bal={self.balance:.2f}")
                 self.dragging_vol = False
                 self.dragging_bal = False
                 return True
@@ -782,8 +876,6 @@ class DotSonicMediaPlayer:
             return False
         
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            if SLIDER_DEBUG:
-                print(f"[dotSONIC] MOUSEBUTTONDOWN in window: ({mouse_x},{mouse_y}) vol_rect={self.vol_slider_rect} bal_rect={self.bal_slider_rect}")
             # Exit
             if self.exit_rect.collidepoint(mouse_x, mouse_y):
                 self.close()
@@ -791,14 +883,10 @@ class DotSonicMediaPlayer:
             
             # Sliders
             if self.vol_slider_rect.collidepoint(mouse_x, mouse_y):
-                if SLIDER_DEBUG:
-                    print(f"[dotSONIC] VOL slider hit: mouse=({mouse_x},{mouse_y}) rect={self.vol_slider_rect}")
                 self.dragging_vol = True
                 self._set_volume_from_slider(mouse_y)
                 return True
             if self.bal_slider_rect.collidepoint(mouse_x, mouse_y):
-                if SLIDER_DEBUG:
-                    print(f"[dotSONIC] BAL slider hit: mouse=({mouse_x},{mouse_y}) rect={self.bal_slider_rect}")
                 self.dragging_bal = True
                 self._set_balance_from_slider(mouse_y)
                 return True
@@ -858,16 +946,14 @@ class DotSonicMediaPlayer:
         r = self.vol_slider_rect
         t = (r.bottom - mouse_y) / r.height if r.height else 0
         self.volume = max(0.0, min(1.0, t))
-        try:
-            pygame.mixer.music.set_volume(self._effective_volume())
-        except Exception:
-            pass
+        self._apply_output_levels()
     
     def _set_balance_from_slider(self, mouse_y: int) -> None:
         """Up = left speaker, Down = right speaker, Middle = 50/50. Balance -1 (left) to 1 (right)."""
         r = self.bal_slider_rect
         t = (r.bottom - mouse_y) / r.height if r.height else 0  # t=0 at bottom, t=1 at top
         self.balance = max(-1.0, min(1.0, 1 - 2 * t))  # top=left(-1), bottom=right(1), middle=0
+        self._apply_output_levels()
     
     def draw(self) -> None:
         """Draw the player."""
@@ -964,44 +1050,16 @@ class DotSonicMediaPlayer:
         bal_value = (1 - self.balance) / 2  # -1->1(top), 1->0(bottom), 0->0.5(center)
         self._draw_slider_png(self.bal_slider_rect, bal_value, self.bal_slider_img)
         
-        # Slider debug: hit rects, values, hover state
-        if SLIDER_DEBUG:
-            mx, my = pygame.mouse.get_pos()
-            in_vol = self.vol_slider_rect.collidepoint(mx, my)
-            in_bal = self.bal_slider_rect.collidepoint(mx, my)
-            pygame.draw.rect(self.screen, (255, 255, 0), self.vol_slider_rect, 2)  # Yellow = VOL hit area
-            pygame.draw.rect(self.screen, (255, 128, 0), self.bal_slider_rect, 2)  # Orange = BAL hit area
-            pct_x = ((mx - self.window_rect.x) / self.window_rect.width * 100) if self.window_rect.width else 0
-            pct_y = ((my - self.window_rect.y) / self.window_rect.height * 100) if self.window_rect.height else 0
-            dbg_lines = [
-                f"VOL:{self.volume:.2f} BAL:{self.balance:.2f}",
-                f"drag_v:{self.dragging_vol} drag_b:{self.dragging_bal}",
-                f"in_vol:{in_vol} in_bal:{in_bal} pos:{pct_x:.0f}%x{pct_y:.0f}%",
-                f"VOLrect:{self.vol_slider_rect} BALrect:{self.bal_slider_rect}",
-            ]
-            for i, line in enumerate(dbg_lines):
-                s = self.font.render(line, True, (255, 255, 0))
-                self.screen.blit(s, (self.window_rect.x + 5, self.window_rect.bottom - 75 + i * 18))
-        
         # Exit button
         pygame.draw.rect(self.screen, COLOR_RED, self.exit_rect)
         pygame.draw.rect(self.screen, COLOR_WHITE, self.exit_rect, 1)
         ex = self.font.render("X", True, COLOR_WHITE)
         self.screen.blit(ex, (self.exit_rect.centerx - ex.get_width() // 2, self.exit_rect.centery - ex.get_height() // 2))
         
-        # Mouse position debug overlay (%) - when not in slider debug mode
-        if not SLIDER_DEBUG and self.window_rect.collidepoint(pygame.mouse.get_pos()):
-            mx, my = pygame.mouse.get_pos()
-            pct_x = ((mx - self.window_rect.x) / self.window_rect.width * 100) if self.window_rect.width else 0
-            pct_y = ((my - self.window_rect.y) / self.window_rect.height * 100) if self.window_rect.height else 0
-            debug_text = f"{pct_x:.1f}, {pct_y:.1f}"
-            dbg_surf = self.font.render(debug_text, True, COLOR_CYAN)
-            self.screen.blit(dbg_surf, (self.window_rect.x + 5, self.window_rect.bottom - 25))
-        
         # Check end of track - remove finished track, next moves up and plays
         if self.playing and not self.paused:
             try:
-                if not pygame.mixer.music.get_busy():
+                if not self._is_playback_busy():
                     if self.playlist and 0 <= self.current_index < len(self.playlist):
                         had_next = self.current_index < len(self.playlist) - 1
                         self.playlist.pop(self.current_index)

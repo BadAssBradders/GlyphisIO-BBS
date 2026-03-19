@@ -162,7 +162,7 @@ int main() {
     LoadAudioAssets();
     
     // Main game loop
-    while (!WindowShouldClose()) {
+    while (!WindowShouldClose() && !g_exit_requested) {
         GameLoopBody();
     }
     

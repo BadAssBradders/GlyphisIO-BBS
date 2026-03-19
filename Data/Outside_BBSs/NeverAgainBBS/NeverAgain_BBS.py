@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import random
+from datetime import datetime
 from typing import Callable, Dict, Optional
 
 try:
@@ -25,6 +26,25 @@ DIM_BLUE = (30, 90, 130)    # muted blue for inactive elements
 BG_DARK = (20, 14, 45)      # darker background for panels
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
+_RISE_NEW_VOICES_HOURLY_DIR = get_data_path(
+    "Social_Engineering",
+    "Fugamatchi_Concert",
+    "Rise_New_Voices_Tracks&Tones",
+)
+
+
+def _get_hourly_rise_new_voices_path() -> Optional[str]:
+    hour_index = datetime.now().hour + 1
+    base_names = [
+        f"Rise_Voices_{hour_index:02d}",
+        f"Rise_New_Voices_{hour_index:02d}",
+    ]
+    for base_name in base_names:
+        for ext in (".mp3", ".wav"):
+            candidate = os.path.join(_RISE_NEW_VOICES_HOURLY_DIR, base_name + ext)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
 
 
 class NeverAgainBBS:
@@ -54,6 +74,8 @@ class NeverAgainBBS:
         on_exit: Optional[Callable[[], None]] = None,
         on_grant_token: Optional[Callable[[str, Optional[str]], bool]] = None,
         on_download_track: Optional[Callable[[str], None]] = None,
+        get_region: Optional[Callable[[], int]] = None,
+        has_token: Optional[Callable[[str], bool]] = None,
     ):
         self.width = width
         self.height = height
@@ -61,6 +83,10 @@ class NeverAgainBBS:
         self.on_exit = on_exit
         self.on_grant_token = on_grant_token
         self.on_download_track = on_download_track
+        self.get_region = get_region
+        self.has_token = has_token or (lambda token: False)
+        self.download_error_timer = 0.0
+        self.download_error_message = ""
 
         # fonts
         self.font_title = self._load_font("misaki_gothic_2nd.ttf", int(32 * self.scale))
@@ -294,6 +320,7 @@ class NeverAgainBBS:
     # ────────────────────────────────────────────────────────────────
     def _load_audio_tracks(self) -> list:
         tracks: list = []
+        rise_track_found = False
         audio_folder = os.path.join(_DIR, "Fugamatchi")
         if not os.path.isdir(audio_folder):
             return tracks
@@ -313,6 +340,10 @@ class NeverAgainBBS:
                     title = parts[1]
             title = title.replace("_", " ")
             entry: dict = {"title": title, "file": base, "filename": fn}
+            if title.lower().startswith("rise new voices"):
+                rise_track_found = True
+                if self.has_token("SCHOOL_HACK5"):
+                    entry["hourly_variant"] = True
             # Try lyrics: same dir as audio (base.txt), then Lyrics subfolder (title)
             lyrics_path = os.path.join(audio_folder, base + ".txt")
             if not os.path.exists(lyrics_path):
@@ -324,6 +355,16 @@ class NeverAgainBBS:
                 except Exception:
                     pass
             tracks.append(entry)
+        if self.has_token("SCHOOL_HACK5") and not rise_track_found:
+            hourly_entry = {"title": "Rise New Voices", "hourly_variant": True}
+            lyrics_path = os.path.join(audio_folder, "Lyrics", "Rise New Voices.txt")
+            if os.path.exists(lyrics_path):
+                try:
+                    with open(lyrics_path, "r", encoding="utf-8") as lf:
+                        hourly_entry["lyrics"] = [ln.strip() for ln in lf.readlines()]
+                except Exception:
+                    pass
+            tracks.append(hourly_entry)
         return tracks
 
     def _play_track(self, index: int) -> None:
@@ -335,11 +376,14 @@ class NeverAgainBBS:
                 pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
             audio_dir = os.path.join(_DIR, "Fugamatchi")
             audio_path = None
-            for ext in (".wav", ".mp3"):
-                p = os.path.join(audio_dir, track["file"] + ext)
-                if os.path.exists(p):
-                    audio_path = p
-                    break
+            if track.get("hourly_variant"):
+                audio_path = _get_hourly_rise_new_voices_path()
+            if not audio_path and track.get("file"):
+                for ext in (".wav", ".mp3"):
+                    p = os.path.join(audio_dir, track["file"] + ext)
+                    if os.path.exists(p):
+                        audio_path = p
+                        break
             if audio_path:
                 pygame.mixer.music.stop()
                 pygame.mixer.music.load(audio_path)
@@ -415,6 +459,13 @@ class NeverAgainBBS:
 
         # glow timer (always tick for menu pulse)
         self.menu_glow_timer += dt
+
+        # download error timer
+        if self.download_error_timer > 0:
+            self.download_error_timer -= dt
+            if self.download_error_timer <= 0:
+                self.download_error_timer = 0.0
+                self.download_error_message = ""
 
         # download progress — slow while connected; +33% total time per extra concurrent download
         n = len(self.downloading_tracks)
@@ -884,6 +935,11 @@ class NeverAgainBBS:
     def _start_download(self, track_index: int) -> None:
         """Start downloading a track (or add to queue if already downloading others)."""
         if not self.audio_tracks or not self.on_download_track:
+            return
+        # Region check
+        if self.get_region and self.get_region() != 1:
+            self.download_error_message = "Region American Pacifica Isles does not permit file transfers at this time."
+            self.download_error_timer = 3.0
             return
         if 0 <= track_index < len(self.audio_tracks) and track_index not in self.downloading_tracks:
             self.downloading_tracks[track_index] = 0.0
@@ -1485,6 +1541,17 @@ class NeverAgainBBS:
         self._shadow(surface, self.font_small, "[ESC] BACK", TEXT,
                       (self.width - esc_surf.get_width() - int(12 * self.scale),
                        self.height - int(28 * self.scale)))
+
+        # Download error overlay
+        if self.download_error_timer > 0:
+            overlay = pygame.Surface((panel_rect.width, int(60 * self.scale)), pygame.SRCALPHA)
+            overlay.fill((30, 21, 65, 220))
+            err_y = panel_rect.y + panel_rect.height // 2 - int(30 * self.scale)
+            surface.blit(overlay, (panel_rect.x, err_y))
+            self._shadow(surface, self.font_label, "TRANSFER BLOCKED", ERROR,
+                          (panel_rect.x + int(20 * self.scale), err_y + int(5 * self.scale)))
+            self._shadow(surface, self.font_small, self.download_error_message, TEXT,
+                          (panel_rect.x + int(20 * self.scale), err_y + int(32 * self.scale)))
 
     def _draw_lyrics(self, surface: pygame.Surface, panel_rect: pygame.Rect):
         if not self.audio_tracks:

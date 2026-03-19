@@ -344,7 +344,7 @@ The player's journey begins with assessment and gradually escalates to active pa
 
 **The Ancient Lantern (Paper Crane BBS)**
 * Location: Hiroshima
-* Dial-in: (082) 77 34 19 45
+* Dial-in: 082-7734-1945
 * Sysop: Paper Crane
 * Purpose: Archive of banned literature, historical documents, poetry, and cultural artifacts
 * Discovery: Players learn about this BBS through the pirate radio interview with Paper Crane on Tokyo Yamoto Forever
@@ -353,7 +353,7 @@ The player's journey begins with assessment and gradually escalates to active pa
 
 **Echo Chamber BBS**
 * Location: Unknown
-* Dial-in: (07) 57 42 19 89
+* Dial-in: 075-742-1989
 * Purpose: Additional underground communication node
 * Discovery: Players discover this BBS through pirate radio broadcasts
 * Role: Part of the distributed network of resistance BBSs operating across the Pacifica Isles

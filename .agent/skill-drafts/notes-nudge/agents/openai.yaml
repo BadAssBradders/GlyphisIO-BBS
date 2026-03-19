@@ -1,0 +1,5 @@
+version: 1
+interface:
+  display_name: NOTES-NUDGE
+  short_description: Reusable notes overlay prompt system
+  default_prompt: Use $notes-nudge to implement or adjust the NOTES-NUDGE player aide, including trigger wiring, full-screen SHIFT+N prompts, and external notes overlay behavior.

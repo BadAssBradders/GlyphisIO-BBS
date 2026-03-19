@@ -1,4 +1,11 @@
-﻿static void RecomputeSilosAndMarket() {
+﻿// Forward declarations for functions defined in cybertrain_network_worldgen.cpp
+// (included after this file in the single translation unit)
+static std::vector<Vector3> GetSortedAdjacentPositions(const Vector3& position, const std::vector<PlacedPlatform>& platforms, float gridSize);
+static int NumJunctionPairs(int exits);
+static bool PairIndexToIJ(int exits, int pairIndex, int& outI, int& outJ);
+static int DefaultJunctionPairIndex(const Vector3& center, const std::vector<Vector3>& exits);
+
+static void RecomputeSilosAndMarket() {
     g_silos.clear();
     for (int i = 0; i < 7; i++) g_siloCountBySystem[i] = 0;
     g_commoditiesUnlocked = 0;
@@ -11,6 +18,7 @@
     g_cyanGrowthFloorBonus = 0;
     g_orangeGrowthFloorBonus = 0;
     g_redGrowthFloorBonus = 0;
+    g_magentaGrowthFloorBonus = 0;
     g_marketUnlocked = false;
     g_marketChaos = 50;
     g_yellowEligibleBureauCount = 0;
@@ -20,6 +28,14 @@
     g_establishedLineCount = 0;
     g_establishedLineIds.clear();
     snprintf(g_sys7DiagnosticMsg, sizeof(g_sys7DiagnosticMsg), "No established lines");
+    bool sys7DiagnosticLocked = false;
+    auto setSys7Diagnostic = [&](const char* fmt, ...) {
+        if (sys7DiagnosticLocked) return;
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(g_sys7DiagnosticMsg, sizeof(g_sys7DiagnosticMsg), fmt, args);
+        va_end(args);
+    };
     g_lineBureauSiloPotential.clear();
 
     for (auto& p : g_placedPlatforms) {
@@ -251,6 +267,7 @@
     std::unordered_map<int, int> redTrainsPerLine;
     std::unordered_map<int, int> yellowTrainsPerLine;
     for (auto& tr : g_placedTrains) {
+        if (tr.isPaused && tr.lineId < 0) continue;
         if (establishedLineIds.find(tr.lineId) == establishedLineIds.end()) {
             int derivedLineId = -1;
             for (const auto& pathPos : tr.path) {
@@ -418,9 +435,12 @@
     // SYS1: cargo train + active factory/depot cargo cluster + at least one station in that cluster on same established line.
     for (int lineId : establishedLineIds) {
         int t = (cargoTrainsPerLine.find(lineId) != cargoTrainsPerLine.end()) ? cargoTrainsPerLine[lineId] : 0;
+        int magTrainsOnLineForSys1 = (magentaTrainsPerLine.find(lineId) != magentaTrainsPerLine.end()) ? magentaTrainsPerLine[lineId] : 0;
         int activeFactories = 0;
         for (const auto& fo : factories) {
-            if (fo.lineOwnerId == lineId && fo.depotOwnerId > 0) activeFactories++;
+            // Magenta line bonus: established magenta lines double factory output for cargo silos
+            if (fo.lineOwnerId == lineId && fo.depotOwnerId > 0)
+                activeFactories += (magTrainsOnLineForSys1 > 0) ? 2 : 1;
         }
         std::vector<int> cargoClusterStations;
         std::vector<int> lineStationIdsVec = lineStationIds(lineId);
@@ -550,6 +570,13 @@
                     addSilo(SiloSystem::SYS3_MAGENTA, lineId, msid, isid, -1, 0);
                 }
             }
+            // Magenta bureau floor bonus: bureaus linked to active magenta lines boost magenta+commodity share performance
+            if (!magentaStations.empty() && !industryStations.empty()) {
+                for (int bsid : bureauStations) {
+                    BureauChoice bc = getBureauChoice(lineId, bsid);
+                    g_magentaGrowthFloorBonus += std::max(0, bc.floors);
+                }
+            }
         }
 
         // SYS4: cyan train + cyan station + bureau station on same line
@@ -596,11 +623,9 @@
 
         // SYS7 diagnostic: track the most-advanced failing condition per line
         if (yellowTrainsOnLine <= 0) {
-            snprintf(g_sys7DiagnosticMsg, sizeof(g_sys7DiagnosticMsg),
-                     "L%d: NO YELLOW TRAIN (need 1)", lineId);
+            setSys7Diagnostic("L%d: NO YELLOW TRAIN (need 1)", lineId);
         } else if (yellowStations.empty()) {
-            snprintf(g_sys7DiagnosticMsg, sizeof(g_sys7DiagnosticMsg),
-                     "L%d: NO STATION NEAR YELLOW CLUSTER", lineId);
+            setSys7Diagnostic("L%d: NO STATION NEAR YELLOW CLUSTER", lineId);
         } else {
             // Has yellow train + yellow station. Check bureau.
             std::vector<int> eligibleBureauStations;
@@ -613,11 +638,9 @@
             eligibleBureausOnLine = (int)eligibleBureauStations.size();
 
             if (totalBureausOnLine == 0) {
-                snprintf(g_sys7DiagnosticMsg, sizeof(g_sys7DiagnosticMsg),
-                         "L%d: NO BUREAU LINKED TO LINE (need inner ring touching an established-line station)", lineId);
+                setSys7Diagnostic("L%d: NO BUREAU LINKED TO LINE (need inner ring touching an established-line station)", lineId);
             } else if (eligibleBureauStations.empty()) {
-                snprintf(g_sys7DiagnosticMsg, sizeof(g_sys7DiagnosticMsg),
-                         "L%d: BUREAU NOT ELIGIBLE (%d linked but none eligible)", lineId, totalBureausOnLine);
+                setSys7Diagnostic("L%d: BUREAU NOT ELIGIBLE (%d linked but none eligible)", lineId, totalBureausOnLine);
             } else {
                 std::sort(eligibleBureauStations.begin(), eligibleBureauStations.end());
                 eligibleBureauStations.erase(std::unique(eligibleBureauStations.begin(), eligibleBureauStations.end()), eligibleBureauStations.end());
@@ -628,8 +651,8 @@
                 addSilo(SiloSystem::SYS7_YELLOW, lineId, ysid, bsid, bsid, bc.floors);
                 if (bc.bureauIndex >= 0) yellowBureauIndicesUsed.insert(bc.bureauIndex);
                 sys7Created = true;
-                snprintf(g_sys7DiagnosticMsg, sizeof(g_sys7DiagnosticMsg),
-                         "L%d: SYS7 SILO CREATED!", lineId);
+                setSys7Diagnostic("L%d: SYS7 SILO CREATED!", lineId);
+                sys7DiagnosticLocked = true;
             }
         }
 
@@ -828,9 +851,9 @@ static Color GetTabColor(MarketTab tab) {
 
 static const char* GetSiloHintForTab(MarketTab tab) {
     switch (tab) {
-        case MarketTab::Commodities: return "Build Cargo Silos (cargo train + depot + factory). Factory bonus only from Cargo/Magenta silo lines with bureaus.";
-        case MarketTab::Green: return "Build Green Silos (green train + linked HUB bureau; 1 bureau = 1 listing). More bureau floors = higher green growth odds.";
-        case MarketTab::Magenta: return "Build Magenta Silos (magenta train + magenta station + industry station). Factory bonus only from Cargo/Magenta silo lines with bureaus.";
+        case MarketTab::Commodities: return "Build Cargo Silos (cargo train + depot + factory). Magenta lines double factory output. Magenta bureau floors boost commodity share performance by 10% per floor.";
+        case MarketTab::Green: return "Build Green Silos (green train + linked HUB bureau; 1 bureau = 1 listing). Each green bureau floor boosts green share performance by 10% and improves bullish trend odds.";
+        case MarketTab::Magenta: return "Build Magenta Silos (magenta train + magenta station + industry station). Magenta lines double factory output for cargo silos. Bureau floors on magenta lines boost magenta and commodity share performance by 10% per floor.";
         case MarketTab::Cyan: return "Build Cyan Silos (cyan train + cyan station + linked bureau). More bureau floors = higher cyan growth odds.";
         case MarketTab::Orange: return "Build Orange Silos (orange train + orange station + linked bureau). More bureau floors = higher orange growth odds.";
         case MarketTab::Red: return "Build Red Silos (red train + red station + linked bureau). More bureau floors = higher red growth odds.";
@@ -852,7 +875,9 @@ static void UpdateMarketPrices() {
     float chaosScale = 1.0f + (g_marketChaos / 50.0f);
     auto growthFloorBonusForTab = [&](int tabIdx) -> int {
         switch (tabIdx) {
+            case 0: return g_magentaGrowthFloorBonus;  // Commodities: boosted by magenta bureau floors
             case 1: return g_greenGrowthFloorBonus;
+            case 2: return g_magentaGrowthFloorBonus;  // Magenta: boosted by magenta bureau floors
             case 3: return g_cyanGrowthFloorBonus;
             case 4: return g_orangeGrowthFloorBonus;
             case 5: return g_redGrowthFloorBonus;
@@ -894,6 +919,14 @@ static void UpdateMarketPrices() {
             s.trendDaysLeft--;
 
             float drift = s.trend * s.volatility * 0.3f;
+            // 10% share performance boost per bureau floor for green/magenta/commodities (bullish only)
+            if (s.trend > 0) {
+                int driftFloors = (tabIdx == 0 || tabIdx == 2) ? g_magentaGrowthFloorBonus
+                                : (tabIdx == 1)                ? g_greenGrowthFloorBonus
+                                :                                0;
+                if (driftFloors > 0)
+                    drift *= std::min(3.0f, 1.0f + 0.10f * (float)driftFloors);
+            }
             float noise = rDist(g_marketRng) * s.volatility * chaosScale;
             float change = drift + noise + eventMod * s.volatility;
             s.price *= (1.0f + change);
@@ -1090,6 +1123,7 @@ static void RebuildTickerText() {
     } else {
         g_tickerChunks.insert(g_tickerChunks.begin(), {"STOCKS", WHITE});
     }
+    g_tickerChunks.insert(g_tickerChunks.begin(), {" | KEY EL=EST LINE | MAT=CARGO MATERIALS | CR=CREDITS | NS=NEARBY STATION | LB=LINKED BUREAU | HUB=INNER CITY HUB | OOB=OUT OF BOUNDS | OVR=OVERLAP | IR/OR=BUREAU RINGS ", WHITE});
     // Always prepend the "H FOR HELP | " hint; color is updated each frame in DrawTicker
     g_tickerChunks.insert(g_tickerChunks.begin(), {"H FOR HELP | ", WHITE});
     g_tickerTextBuf[0] = '\0';
@@ -1101,17 +1135,7 @@ static void CancelStationModal(StationModalData& modal) {
         // Remove the 4 station tiles that were just placed and refund credits
         int anchorIdx = modal.anchorPlatformIndex;
         if (anchorIdx >= 0 && anchorIdx < (int)g_placedPlatforms.size()) {
-            const PlacedPlatform& anchor = g_placedPlatforms[anchorIdx];
-            float orient = (float)anchor.placementOrientation;
-            // Collect indices of all 4 sibling tiles (same orientation, within station footprint)
-            std::vector<int> toRemove;
-            for (int pi = (int)g_placedPlatforms.size() - 1; pi >= 0; pi--) {
-                const PlacedPlatform& p = g_placedPlatforms[pi];
-                if (!p.isStation || p.isDepot) continue;
-                if (p.placementOrientation != anchor.placementOrientation) continue;
-                if (Vector3Distance(p.position, anchor.position) < g_gridSpacing * 3.6f)
-                    toRemove.push_back(pi);
-            }
+            std::vector<int> toRemove = CollectPhysicalStationTileIndices(anchorIdx, g_placedPlatforms, g_gridSpacing);
             // Sort descending so erasing by index is safe
             std::sort(toRemove.begin(), toRemove.end(), std::greater<int>());
             for (int idx : toRemove)
@@ -1130,12 +1154,11 @@ static void CancelStationModal(StationModalData& modal) {
 static void CommitStationModal(StationModalData& modal) {
     int anchorIdx = modal.anchorPlatformIndex;
     if (anchorIdx >= 0 && anchorIdx < (int)g_placedPlatforms.size() && g_placedPlatforms[anchorIdx].isStation) {
-        const PlacedPlatform& anchor = g_placedPlatforms[anchorIdx];
-        for (int pi = 0; pi < (int)g_placedPlatforms.size(); pi++) {
+        std::vector<int> stationTiles = CollectPhysicalStationTileIndices(anchorIdx, g_placedPlatforms, g_gridSpacing);
+        for (int pi : stationTiles) {
+            if (pi < 0 || pi >= (int)g_placedPlatforms.size()) continue;
             PlacedPlatform& p = g_placedPlatforms[pi];
-            if (!p.isStation) continue;
-            if (p.placementOrientation != anchor.placementOrientation) continue;
-            if (Vector3Distance(p.position, anchor.position) < g_gridSpacing * 3.6f) {
+            if (p.isStation) {
                 memcpy(p.stationName, modal.nameBuffer, 64);
                 p.stationDelayMode = modal.delayMode;
             }
@@ -1160,7 +1183,7 @@ static void CommitStationModal(StationModalData& modal) {
     InvalidatePlatformCaches();
 }
 
-// â”€â”€ Station Configuration Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Station Configuration Modal â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 // Opened when a station is first built, or when the player neutral-clicks a station tile.
 // Lets the player name the station and set the platform dwell time for that stop.
 // When the station is on an established line it also shows live telemetry.
@@ -1169,7 +1192,7 @@ static void DrawStationModal(StationModalData& modal, int screenWidth, int scree
     if (!modal.open) return;
     modal.framesOpen++;
 
-    // â”€â”€ Geometry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Geometry â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     DrawRectangle(0, 0, screenWidth, screenHeight, (Color){0, 0, 0, 200});
 
     float modalWidth  = 989.0f;
@@ -1196,7 +1219,7 @@ static void DrawStationModal(StationModalData& modal, int screenWidth, int scree
     float closeBtnSize = 42.0f;
     Rectangle closeBtn = { modalX + modalWidth - closeBtnSize - 8.0f, modalY + 4.0f, closeBtnSize, closeBtnSize };
 
-    // â”€â”€ Background â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Background â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     bool usingTex = false;
     if (g_texLargeModalTemplate.id != 0) {
         Rectangle src = { 0, 0, (float)g_texLargeModalTemplate.width, (float)g_texLargeModalTemplate.height };
@@ -1208,7 +1231,7 @@ static void DrawStationModal(StationModalData& modal, int screenWidth, int scree
         DrawRectangleLinesEx(contentBox, 1, SKYBLUE);
     }
 
-    // â”€â”€ Close button â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Close button â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     bool closeHover = CheckCollisionPointRec(CustomGetMousePosition(), closeBtn);
     if (!usingTex) {
         DrawRectangleRec(closeBtn, closeHover ? (Color){180,50,50,255} : (Color){140,40,40,255});
@@ -1224,13 +1247,13 @@ static void DrawStationModal(StationModalData& modal, int screenWidth, int scree
     Color bodyColor  = WHITE;
     Color dimColor   = (Color){160, 200, 220, 255};
 
-    // â”€â”€ Title â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Title â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     const char* title = "CONFIGURE STATION";
     float titleW = MeasureTextEx(gameFont, title, titleFontSize, 0.0f).x;
     float titleY = modalY + (titleBarH - titleFontSize) / 2.0f - 4.0f + modalHeight * 0.02f;
     DrawTextEx(gameFont, title, {modalX + (modalWidth - titleW) / 2.0f, titleY}, titleFontSize, 0.0f, titleColor);
 
-    // â”€â”€ Content â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Content â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     BeginScissorMode((int)innerX+1, (int)innerY+1, (int)innerW-2, (int)innerH-2);
     float yPos = innerY + 18.0f;
 
@@ -1314,7 +1337,7 @@ static void DrawStationModal(StationModalData& modal, int screenWidth, int scree
     }
     yPos += dwellBtnH + 18.0f;
 
-    // â”€â”€ Telemetry divider â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Telemetry divider â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     DrawLineEx({innerX+15.0f, yPos}, {innerX+innerW-15.0f, yPos}, 1.0f, (Color){60,80,100,200});
     yPos += 10.0f;
 
@@ -1323,17 +1346,7 @@ static void DrawStationModal(StationModalData& modal, int screenWidth, int scree
     bool hasStation = (anchorIdx >= 0 && anchorIdx < (int)g_placedPlatforms.size() && g_placedPlatforms[anchorIdx].isStation);
 
     if (hasStation) {
-        const PlacedPlatform& anchor = g_placedPlatforms[anchorIdx];
-
-        // Find all 4 sibling tiles (same placementOrientation, isStation, within 3.5 grid spacings)
-        std::vector<int> siblingIndices;
-        for (int pi = 0; pi < (int)g_placedPlatforms.size(); pi++) {
-            const auto& p = g_placedPlatforms[pi];
-            if (!p.isStation) continue;
-            if (p.placementOrientation != anchor.placementOrientation) continue;
-            if (Vector3Distance(p.position, anchor.position) < g_gridSpacing * 3.6f)
-                siblingIndices.push_back(pi);
-        }
+        std::vector<int> siblingIndices = CollectPhysicalStationTileIndices(anchorIdx, g_placedPlatforms, g_gridSpacing);
 
         // Find lines that contain any sibling tile
         std::vector<int> connectedLineIndices;
@@ -1457,7 +1470,7 @@ static void DrawStationModal(StationModalData& modal, int screenWidth, int scree
 
     EndScissorMode();
 
-    // â”€â”€ Confirm / Cancel buttons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Confirm / Cancel buttons â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     bool confirmHover = CheckCollisionPointRec(CustomGetMousePosition(), confirmBtn);
     bool cancelHover  = CheckCollisionPointRec(CustomGetMousePosition(), cancelBtn);
 
@@ -1490,7 +1503,7 @@ static void DrawLineModal(LineModalData& modal, const std::vector<Line>& lines, 
     // Semi-transparent overlay
     DrawRectangle(0, 0, screenWidth, screenHeight, (Color){0, 0, 0, 200});
 
-    bool useLargeEstablishModal = (modal.state == LineModalState::EstablishLine);
+    bool useLargeEstablishModal = (modal.state == LineModalState::EstablishLine || modal.state == LineModalState::ChooseSilo);
     float modalWidth = useLargeEstablishModal ? 989.0f : 700.0f;
     float modalHeight = useLargeEstablishModal ? 695.0f : 450.0f;
     float modalX = (screenWidth - modalWidth) / 2.0f;
@@ -1551,7 +1564,98 @@ static void DrawLineModal(LineModalData& modal, const std::vector<Line>& lines, 
     Color titleColor = (Color){0, 255, 128, 255};  // Bright green for title
     Color bodyColor = WHITE;
 
-    if (modal.state == LineModalState::EstablishLine) {
+    if (modal.state == LineModalState::ChooseSilo) {
+        // Title
+        const char* title = "SILO CONFLICT";
+        float titleW = MeasureTextEx(gameFont, title, titleFontSize, 0.0f).x;
+        float titleY = modalY + (titleBarH - titleFontSize) / 2.0f - 4.0f + modalHeight * 0.02f;
+        DrawTextEx(gameFont, title, (Vector2){modalX + (modalWidth - titleW) / 2.0f, titleY}, titleFontSize, 0.0f, (Color){255, 200, 0, 255});
+
+        BeginScissorMode((int)innerX + 1, (int)innerY + 1, (int)innerW - 2, (int)innerH - 2);
+        float yPos = innerY + 20.0f;
+
+        const char* desc = "Your stations span multiple silo regions. Choose which silo system this line will belong to:";
+        float descFontSize = bodyFontSize * 0.9f;
+        yPos = DrawWrappedText(desc, innerX + 15.0f, yPos, innerW - 30.0f, innerY + innerH - 4.0f, descFontSize, (Color){180, 220, 255, 255});
+        yPos += 20.0f;
+
+        // Draw silo choice buttons
+        Vector2 mousePosModal = CustomGetMousePosition();
+        float btnWidth = innerW - 60.0f;
+        float btnHeight = 58.0f;
+        float btnSpacing = 10.0f;
+        for (int i = 0; i < (int)modal.detectedSystems.size(); i++) {
+            int sys = modal.detectedSystems[i];
+            SystemColorShades shades = GetSystemColorShades(sys);
+
+            float btnX = innerX + 30.0f;
+            float btnY = yPos + i * (btnHeight + btnSpacing);
+            Rectangle btnRect = { btnX, btnY, btnWidth, btnHeight };
+            bool hover = CheckCollisionPointRec(mousePosModal, btnRect);
+            bool selected = (i == modal.siloChoiceIndex);
+
+            // Background
+            Color bgColor = selected ? (Color){40, 60, 80, 255} : (Color){25, 25, 35, 255};
+            if (hover) bgColor = (Color){50, 70, 90, 255};
+            DrawRectangleRec(btnRect, bgColor);
+
+            // Color swatch on left
+            float swatchSize = btnHeight - 16.0f;
+            Rectangle swatchRect = { btnX + 8.0f, btnY + 8.0f, swatchSize, swatchSize };
+            DrawRectangleRec(swatchRect, shades.colors[1]);
+            DrawRectangleLinesEx(swatchRect, 1, WHITE);
+
+            // System name
+            float textX = btnX + swatchSize + 24.0f;
+            float textY = btnY + (btnHeight - bodyFontSize) / 2.0f;
+            DrawTextEx(gameFont, shades.systemLabel, (Vector2){textX, textY}, bodyFontSize, 0.0f, shades.colors[1]);
+
+            // Selection border
+            Color borderColor = selected ? SKYBLUE : (Color){60, 60, 80, 255};
+            if (hover) borderColor = (Color){100, 200, 255, 255};
+            DrawRectangleLinesEx(btnRect, selected ? 2.0f : 1.0f, borderColor);
+
+            // Click to select
+            if (modal.framesOpen >= 2 && RawIsMouseButtonPressed(MOUSE_BUTTON_LEFT) && hover) {
+                modal.siloChoiceIndex = i;
+            }
+        }
+
+        // Keyboard navigation
+        if (IsKeyPressed(KEY_UP) && modal.siloChoiceIndex > 0) modal.siloChoiceIndex--;
+        if (IsKeyPressed(KEY_DOWN) && modal.siloChoiceIndex < (int)modal.detectedSystems.size() - 1) modal.siloChoiceIndex++;
+
+        EndScissorMode();
+
+        // Buttons
+        bool confirmHover = CheckCollisionPointRec(CustomGetMousePosition(), confirmBtn);
+        bool cancelHover = CheckCollisionPointRec(CustomGetMousePosition(), cancelBtn);
+
+        Texture2D confirmTex = (confirmHover && g_texModalConfirmSelected.id != 0) ? g_texModalConfirmSelected : g_texModalConfirmNotSelected;
+        Texture2D cancelTex = (cancelHover && g_texModalConfirmSelected.id != 0) ? g_texModalConfirmSelected : g_texModalConfirmNotSelected;
+
+        if (confirmTex.id != 0) {
+            DrawTexturePro(confirmTex, {0,0,(float)confirmTex.width,(float)confirmTex.height}, confirmBtn, {0,0}, 0, WHITE);
+            DrawTexturePro(cancelTex, {0,0,(float)cancelTex.width,(float)cancelTex.height}, cancelBtn, {0,0}, 0, WHITE);
+        } else {
+            DrawRectangleRec(confirmBtn, confirmHover ? (Color){0,120,0,255} : (Color){0,80,0,255});
+            DrawRectangleRec(cancelBtn, cancelHover ? (Color){120,0,0,255} : (Color){80,0,0,255});
+        }
+        float confirmFontSize = bodyFontSize * 1.1f;
+        const char* confirmLabel = "CHOOSE";
+        const char* cancelLabel = "CANCEL";
+        float clW = MeasureTextEx(gameFont, confirmLabel, confirmFontSize, 0.0f).x;
+        float caW = MeasureTextEx(gameFont, cancelLabel, confirmFontSize, 0.0f).x;
+        DrawTextEx(gameFont, confirmLabel, {confirmBtn.x+(confirmBtn.width-clW)/2.0f, confirmBtn.y+(confirmBtn.height-confirmFontSize)/2.0f-3.0f}, confirmFontSize, 0.0f, WHITE);
+        DrawTextEx(gameFont, cancelLabel, {cancelBtn.x+(cancelBtn.width-caW)/2.0f, cancelBtn.y+(cancelBtn.height-confirmFontSize)/2.0f-3.0f}, confirmFontSize, 0.0f, WHITE);
+
+        if (modal.framesOpen >= 2 && RawIsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if (closeHover || cancelHover) modal.cancelClicked = true;
+            else if (confirmHover) modal.siloChoiceClicked = true;
+        }
+        if (IsKeyPressed(KEY_ENTER)) modal.siloChoiceClicked = true;
+        if (IsKeyPressed(KEY_ESCAPE)) modal.cancelClicked = true;
+    } else if (modal.state == LineModalState::EstablishLine) {
         // Title in title bar (centered, moved down 2%)
         const char* title = "ESTABLISH NEW LINE?";
         float titleW = MeasureTextEx(gameFont, title, titleFontSize, 0.0f).x;
@@ -1696,6 +1800,28 @@ static void DrawLineModal(LineModalData& modal, const std::vector<Line>& lines, 
         if (lineLen > 0) {
             float lineTextW = MeasureTextEx(gameFont, lineBuf, feedbackFontSize, 0.0f).x;
             DrawTextEx(gameFont, lineBuf, (Vector2){innerX + (innerW - lineTextW) / 2.0f, feedbackStartY}, feedbackFontSize, 0.0f, (Color){180, 220, 255, 255});
+            feedbackStartY += lineHeight;
+        }
+
+        // Silo build hint: when a system color cluster is detected, show what's needed
+        if (modal.detectedSystem >= 0) {
+            feedbackStartY += 8.0f;
+            const char* siloHint = nullptr;
+            switch (modal.detectedSystem) {
+                case 0: siloHint = "SILO REQ: Cargo train + depot + factory on this line."; break;
+                case 1: siloHint = "SILO REQ: Green train + linked bureau in the Inner City Hub."; break;
+                case 2: siloHint = "SILO REQ: Magenta train + magenta station near a factory."; break;
+                case 3: siloHint = "SILO REQ: Cyan train + cyan station + linked bureau."; break;
+                case 4: siloHint = "SILO REQ: Orange train + orange station + linked bureau."; break;
+                case 5: siloHint = "SILO REQ: Red train + red station + linked bureau."; break;
+                case 6: siloHint = "SILO REQ: Yellow train + yellow station + linked bureau."; break;
+            }
+            if (siloHint) {
+                float hintFontSize = feedbackFontSize * 0.85f;
+                DrawWrappedText(siloHint, innerX + 15.0f, feedbackStartY,
+                                innerW - 30.0f, innerY + innerH - 4.0f,
+                                hintFontSize, (Color){180, 255, 200, 200});
+            }
         }
         EndScissorMode();
 
@@ -1734,7 +1860,7 @@ static void DrawLineModal(LineModalData& modal, const std::vector<Line>& lines, 
     } else if (modal.state == LineModalState::AddToLine) {
         const char* title = "ADD TO EXISTING LINE?";
         float titleW = MeasureTextEx(gameFont, title, titleFontSize, 0.0f).x;
-        DrawTextEx(gameFont, title, (Vector2){modalX + (modalWidth - titleW) / 2.0f, modalY + (titleBarH - titleFontSize) / 2.0f - 4.0f}, titleFontSize, 0.0f, titleColor);
+        DrawTextEx(gameFont, title, (Vector2){modalX + (modalWidth - titleW) / 2.0f, modalY + (titleBarH - titleFontSize) / 2.0f - 4.0f + modalHeight * 0.02f}, titleFontSize, 0.0f, titleColor);
 
         BeginScissorMode((int)innerX + 1, (int)innerY + 1, (int)innerW - 2, (int)innerH - 2);
         float yPos = innerY + 25.0f;
@@ -1858,7 +1984,7 @@ static void DrawJunctionModal(JunctionModalData& modal, int screenWidth, int scr
     }
 }
 
-// â”€â”€ Demolish Station + Line â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Demolish Station + Line â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // Forward declaration â€” defined later alongside train path logic
 static bool RebuildTrainPath(PlacedTrain& train, const std::vector<PlacedPlatform>& platforms, float gridSize);
@@ -1906,19 +2032,22 @@ static void BuildDemolishSiloWarning(const std::vector<int>& platformIndices, ch
 // every affected train, rebuild remaining paths, charge the demolish fee, and
 // return to demolish mode with all other placement modes cleared.
 static void ExecuteDemolishStationAndLine() {
-    // â”€â”€ Collect platform tiles to remove â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Collect platform tiles to remove â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     std::vector<int> tiles;
+    int targetLineIdx = g_demolishConfirmModal.lineIdx;
     if (g_demolishConfirmModal.isStationDemolish) {
         int anchorIdx = g_demolishConfirmModal.anchorIdx;
-        if (anchorIdx >= 0 && anchorIdx < (int)g_placedPlatforms.size()) {
-            const PlacedPlatform& anchor = g_placedPlatforms[anchorIdx];
-            for (int pi = 0; pi < (int)g_placedPlatforms.size(); pi++) {
-                const PlacedPlatform& p = g_placedPlatforms[pi];
-                if (!p.isStation || p.isDepot) continue;
-                if (p.placementOrientation != anchor.placementOrientation) continue;
-                if (Vector3Distance(p.position, anchor.position) < g_gridSpacing * 3.6f)
-                    tiles.push_back(pi);
+        std::vector<int> stationTiles = CollectPhysicalStationTileIndices(anchorIdx, g_placedPlatforms, g_gridSpacing);
+        for (int pi : stationTiles) {
+            // Only include tiles on the target line or not on any line
+            bool onOtherLine = false;
+            if (targetLineIdx >= 0 && targetLineIdx < (int)g_lines.size()) {
+                for (int li = 0; li < (int)g_lines.size(); li++) {
+                    if (li == targetLineIdx) continue;
+                    if (g_lines[li].platformIndices.count(pi)) { onOtherLine = true; break; }
+                }
             }
+            if (!onOtherLine) tiles.push_back(pi);
         }
     } else {
         int platIdx = g_demolishConfirmModal.platformIdx;
@@ -1926,8 +2055,8 @@ static void ExecuteDemolishStationAndLine() {
             tiles.push_back(platIdx);
     }
 
-    // â”€â”€ Find ALL lines that contain any of these platform tiles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // This covers both sides of a broken line and any crossing/connected lines.
+    // â"€â"€ Find ALL lines that contain any of these platform tiles â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    std::set<int> tilesSet(tiles.begin(), tiles.end());
     std::set<int> affectedLineIndices;
     for (int ti : tiles) {
         for (int li = 0; li < (int)g_lines.size(); li++) {
@@ -1935,49 +2064,354 @@ static void ExecuteDemolishStationAndLine() {
                 affectedLineIndices.insert(li);
         }
     }
+    const int oldSize = (int)g_placedPlatforms.size();
+    std::set<int> removedSet(tiles.begin(), tiles.end());
+    std::set<long long> removedPositionKeys;
+    std::set<long long> releasedOwnershipKeys;
+    for (int ti : removedSet) {
+        if (ti >= 0 && ti < oldSize) {
+            removedPositionKeys.insert(MakePositionKey(g_placedPlatforms[ti].position.x,
+                                                       g_placedPlatforms[ti].position.z));
+        }
+    }
+    std::vector<int> oldToConnectivity(oldSize, -1);
+    std::vector<PlacedPlatform> connectivityPlatforms;
+    connectivityPlatforms.reserve(oldSize - (int)removedSet.size());
+    for (int i = 0; i < oldSize; i++) {
+        if (removedSet.count(i)) continue;
+        oldToConnectivity[i] = (int)connectivityPlatforms.size();
+        connectivityPlatforms.push_back(g_placedPlatforms[i]);
+    }
 
-    // â”€â”€ Remove trains belonging to any affected line â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Smart demolish: remove tiles, check connectivity, split or keep â"€â"€â"€â"€â"€â"€â"€
+    // Instead of deleting entire lines, we remove the demolished tiles and check
+    // if each affected line is still connected. If split, the larger half keeps
+    // the line; smaller halves get neutralized. Lines dropping below 2 stations
+    // are deleted entirely.
+    std::set<int> deletedLineIds;        // lines fully removed
+    std::set<int> lineIndicesToErase;    // vector indices to erase from g_lines
+    std::unordered_map<int, std::set<int>> detachedPlatformsByLineId;
+    std::unordered_map<int, std::set<int>> survivingPlatformsByLineId;
+    // Capture affected line IDs before any erasure (indices become invalid after erase)
     std::set<int> affectedLineIds;
-    for (int li : affectedLineIndices)
+    for (int li : affectedLineIndices) {
         if (li >= 0 && li < (int)g_lines.size())
             affectedLineIds.insert(g_lines[li].id);
-    for (int ti = (int)g_placedTrains.size() - 1; ti >= 0; ti--) {
-        if (affectedLineIds.count(g_placedTrains[ti].lineId)) {
-            if (g_selectedTrainIndex == ti) g_selectedTrainIndex = -1;
-            else if (g_selectedTrainIndex > ti) g_selectedTrainIndex--;
-            g_placedTrains.erase(g_placedTrains.begin() + ti);
+    }
+
+    for (int li : affectedLineIndices) {
+        if (li < 0 || li >= (int)g_lines.size()) continue;
+        Line& line = g_lines[li];
+
+        // Remove demolished tiles from this line's platformIndices
+        for (int ti : tiles)
+            line.platformIndices.erase(ti);
+
+        // Gather surviving platform indices for this line
+        std::vector<int> survivors(line.platformIndices.begin(), line.platformIndices.end());
+
+        if (survivors.empty()) {
+            // Line lost all platforms - delete it
+            deletedLineIds.insert(line.id);
+            lineIndicesToErase.insert(li);
+            continue;
+        }
+
+        // BFS connectivity check on surviving platforms
+        // Build adjacency within the line's surviving set
+        std::vector<std::vector<int>> components;  // each component is a list of platform indices
+        std::set<int> visited;
+
+        for (int seed : survivors) {
+            if (visited.count(seed)) continue;
+            // BFS from this seed
+            std::vector<int> comp;
+            std::vector<int> queue;
+            queue.push_back(seed);
+            visited.insert(seed);
+            size_t head = 0;
+            while (head < queue.size()) {
+                int cur = queue[head++];
+                comp.push_back(cur);
+                for (int other : survivors) {
+                    if (visited.count(other)) continue;
+                    int curConnectivity = (cur >= 0 && cur < oldSize) ? oldToConnectivity[cur] : -1;
+                    int otherConnectivity = (other >= 0 && other < oldSize) ? oldToConnectivity[other] : -1;
+                    if (curConnectivity >= 0 && otherConnectivity >= 0 &&
+                        ArePlatformsConnectedForNetwork(curConnectivity, otherConnectivity, connectivityPlatforms, g_gridSpacing)) {
+                        visited.insert(other);
+                        queue.push_back(other);
+                    }
+                }
+            }
+            components.push_back(comp);
+        }
+
+        if (components.size() <= 1) {
+            // Still connected - check if enough stations remain
+            Line tempLine = line;
+            tempLine.platformIndices.clear();
+            for (int pi : survivors) {
+                int connectivityPi = (pi >= 0 && pi < oldSize) ? oldToConnectivity[pi] : -1;
+                if (connectivityPi >= 0) tempLine.platformIndices.insert(connectivityPi);
+            }
+            int stationCount = CountPhysicalStationsInLine(tempLine, connectivityPlatforms);
+            if (stationCount < 2) {
+                // Not enough stations to sustain a line - neutralize survivors and delete
+                for (int pi : survivors) {
+                    if (pi >= 0 && pi < (int)g_placedPlatforms.size()) {
+                        long long key = MakePositionKey(g_placedPlatforms[pi].position.x,
+                                                       g_placedPlatforms[pi].position.z);
+                        releasedOwnershipKeys.insert(key);
+                        g_demolishNeutralizedPlatformKeys.insert(key);
+                        g_declinedNeutralBranchPlatformKeys.insert(key);
+                    }
+                }
+                deletedLineIds.insert(line.id);
+                lineIndicesToErase.insert(li);
+            } else {
+                // Line survives intact - just update station count
+                line.stationCount = stationCount;
+                survivingPlatformsByLineId[line.id] = line.platformIndices;
+            }
+        } else {
+            // Split into multiple components - find the largest
+            int largestIdx = 0;
+            for (int ci = 1; ci < (int)components.size(); ci++) {
+                if ((int)components[ci].size() > (int)components[largestIdx].size())
+                    largestIdx = ci;
+            }
+
+            // Check if the largest component has enough stations
+            std::set<int> largestSet(components[largestIdx].begin(), components[largestIdx].end());
+            Line tempLine = line;
+            tempLine.platformIndices.clear();
+            for (int pi : largestSet) {
+                int connectivityPi = (pi >= 0 && pi < oldSize) ? oldToConnectivity[pi] : -1;
+                if (connectivityPi >= 0) tempLine.platformIndices.insert(connectivityPi);
+            }
+            int largestStations = CountPhysicalStationsInLine(tempLine, connectivityPlatforms);
+
+            if (largestStations >= 2) {
+                // Largest half keeps the line
+                line.platformIndices = largestSet;
+                line.stationCount = largestStations;
+
+                // Neutralize all smaller halves
+                for (int ci = 0; ci < (int)components.size(); ci++) {
+                    if (ci == largestIdx) continue;
+                    for (int pi : components[ci]) {
+                        detachedPlatformsByLineId[line.id].insert(pi);
+                        if (pi >= 0 && pi < (int)g_placedPlatforms.size()) {
+                            long long key = MakePositionKey(g_placedPlatforms[pi].position.x,
+                                                           g_placedPlatforms[pi].position.z);
+                            releasedOwnershipKeys.insert(key);
+                            g_demolishNeutralizedPlatformKeys.insert(key);
+                            g_declinedNeutralBranchPlatformKeys.insert(key);
+                        }
+                    }
+                }
+                survivingPlatformsByLineId[line.id] = line.platformIndices;
+            } else {
+                // Even the largest half doesn't have enough stations - delete entire line
+                for (int pi : survivors) {
+                    if (pi >= 0 && pi < (int)g_placedPlatforms.size()) {
+                        long long key = MakePositionKey(g_placedPlatforms[pi].position.x,
+                                                       g_placedPlatforms[pi].position.z);
+                        releasedOwnershipKeys.insert(key);
+                        g_demolishNeutralizedPlatformKeys.insert(key);
+                        g_declinedNeutralBranchPlatformKeys.insert(key);
+                    }
+                }
+                deletedLineIds.insert(line.id);
+                lineIndicesToErase.insert(li);
+            }
         }
     }
 
-    // â”€â”€ Erase all affected lines (descending to keep indices valid) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    std::vector<int> sortedLines(affectedLineIndices.begin(), affectedLineIndices.end());
-    std::sort(sortedLines.begin(), sortedLines.end(), std::greater<int>());
-    for (int li : sortedLines)
-        g_lines.erase(g_lines.begin() + li);
+    for (long long key : releasedOwnershipKeys) {
+        g_lockedBranchOwnerLineId.erase(key);
+        for (auto& line : g_lines)
+            line.declinedBranchPlatformKeys.erase(key);
+    }
+    for (long long key : removedPositionKeys) {
+        g_lockedBranchOwnerLineId.erase(key);
+        g_overpassGroupsByPosKey.erase(key);
+        for (auto& line : g_lines)
+            line.declinedBranchPlatformKeys.erase(key);
+    }
+
+    // â"€â"€ Remove stale branch ownership entries for deleted lines â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    for (auto it = g_lockedBranchOwnerLineId.begin(); it != g_lockedBranchOwnerLineId.end(); ) {
+        if (deletedLineIds.count(it->second)) it = g_lockedBranchOwnerLineId.erase(it);
+        else ++it;
+    }
+
+    // â"€â"€ Pause trains only on lines that were actually deleted â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    auto pathPlatformIndex = [&](const Vector3& pathPos) -> int {
+        Vector3 worldPos = { pathPos.x, 0.0f, pathPos.z };
+        return FindPlatformIndexAtPos(worldPos, g_placedPlatforms);
+    };
+    auto classifyTrainFragment = [&](const PlacedTrain& train,
+                                     const std::set<int>& detached,
+                                     const std::set<int>& surviving) -> int {
+        auto classifyIndex = [&](int idx) -> int {
+            if (idx >= 0 && detached.count(idx)) return 1;
+            if (idx >= 0 && surviving.count(idx)) return 2;
+            return 0;
+        };
+        if (train.path.size() >= 2 && train.pathProgress >= 0.0f) {
+            float remaining = train.pathProgress;
+            for (int i = 0; i < (int)train.path.size() - 1; i++) {
+                float segLen = Vector3Distance(train.path[i], train.path[i + 1]);
+                if (remaining <= segLen + 0.001f || i == (int)train.path.size() - 2) {
+                    int startClass = classifyIndex(pathPlatformIndex(train.path[i]));
+                    int endClass = classifyIndex(pathPlatformIndex(train.path[i + 1]));
+                    if (startClass != 0 && startClass == endClass) return startClass;
+                    if (startClass != 0 && endClass == 0) return startClass;
+                    if (endClass != 0 && startClass == 0) return endClass;
+                    if (startClass != 0 && endClass != 0 && startClass != endClass) {
+                        float t = (segLen > 0.001f) ? Clamp(remaining / segLen, 0.0f, 1.0f) : 0.0f;
+                        return (t <= 0.5f) ? startClass : endClass;
+                    }
+                    break;
+                }
+                remaining -= segLen;
+            }
+        }
+
+        Vector3 center = train.position;
+        center.y = 0.0f;
+        int centerClass = classifyIndex(FindPlatformIndexAtPos(center, g_placedPlatforms));
+        if (centerClass != 0) return centerClass;
+
+        PathPoint centerPoint = GetPathPoint(train.path, train.pathProgress);
+        Vector3 pathCenter = centerPoint.position;
+        pathCenter.y = 0.0f;
+        int pathCenterClass = classifyIndex(FindPlatformIndexAtPos(pathCenter, g_placedPlatforms));
+        if (pathCenterClass != 0) return pathCenterClass;
+
+        return 0;
+    };
+    for (auto& train : g_placedTrains) {
+        if (deletedLineIds.count(train.lineId)) {
+            // Record the line color for display before the line is erased
+            for (int li : lineIndicesToErase) {
+                if (li >= 0 && li < (int)g_lines.size() && g_lines[li].id == train.lineId) {
+                    train.pausedColor = g_lines[li].color;
+                    break;
+                }
+            }
+            train.isPaused = true;
+            train.lineId = -1; // disassociate from deleted line
+            continue;
+        }
+        auto detachedIt = detachedPlatformsByLineId.find(train.lineId);
+        if (detachedIt == detachedPlatformsByLineId.end() || detachedIt->second.empty()) continue;
+        auto survivingIt = survivingPlatformsByLineId.find(train.lineId);
+        const std::set<int> emptySet;
+        const std::set<int>& surviving = (survivingIt != survivingPlatformsByLineId.end())
+            ? survivingIt->second
+            : emptySet;
+        int fragmentClass = classifyTrainFragment(train, detachedIt->second, surviving);
+        if (fragmentClass == 1) {
+            for (const auto& line : g_lines) {
+                if (line.id == train.lineId) {
+                    train.pausedColor = line.color;
+                    break;
+                }
+            }
+            train.isPaused = true;
+            train.lineId = -1;
+        }
+    }
+    // Deselect any currently-selected train that is now paused
+    if (g_selectedTrainIndex >= 0 && g_selectedTrainIndex < (int)g_placedTrains.size()
+        && g_placedTrains[g_selectedTrainIndex].isPaused)
+        g_selectedTrainIndex = -1;
+
+    // â"€â"€ Erase deleted lines (descending to keep indices valid) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    {
+        std::vector<int> sortedLines(lineIndicesToErase.begin(), lineIndicesToErase.end());
+        std::sort(sortedLines.begin(), sortedLines.end(), std::greater<int>());
+        for (int li : sortedLines)
+            g_lines.erase(g_lines.begin() + li);
+    }
     InvalidateLineCaches();
 
-    // â”€â”€ Remove the platform tiles (descending order) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Remove the platform tiles (descending order) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    // Build old->new index remap BEFORE erasing (tiles is already sorted descending)
+    std::vector<int> oldToNew(oldSize, -1);
+    {
+        int newIdx = 0;
+        for (int i = 0; i < oldSize; i++) {
+            if (removedSet.count(i)) continue;
+            oldToNew[i] = newIdx++;
+        }
+    }
+
     std::sort(tiles.begin(), tiles.end(), std::greater<int>());
     for (int idx : tiles)
         g_placedPlatforms.erase(g_placedPlatforms.begin() + idx);
     InvalidatePlatformCaches();
 
-    // â”€â”€ Rebuild paths for any trains still on the network â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    for (auto& train : g_placedTrains)
-        RebuildTrainPath(train, g_placedPlatforms, g_gridSpacing);
+    // â"€â"€ Remap all surviving lines' platformIndices to account for shifted indices â"€â"€
+    for (auto& line : g_lines) {
+        std::set<int> remapped;
+        for (int pi : line.platformIndices) {
+            if (pi >= 0 && pi < oldSize && oldToNew[pi] >= 0)
+                remapped.insert(oldToNew[pi]);
+        }
+        line.platformIndices = remapped;
+    }
 
-    // â”€â”€ Log and charge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Remap LineModalData snapshot indices if the modal is open
+    if (g_lineModal.state != LineModalState::None) {
+        auto remapVec = [&](std::vector<int>& v) {
+            std::vector<int> out;
+            for (int pi : v) {
+                if (pi >= 0 && pi < oldSize && oldToNew[pi] >= 0)
+                    out.push_back(oldToNew[pi]);
+            }
+            v = out;
+        };
+        remapVec(g_lineModal.pendingNewPlatforms);
+        remapVec(g_lineModal.pendingJunctions);
+        remapVec(g_lineModal.pendingEstablishPlatforms);
+        g_lineModal.pendingCid = -1;
+        std::set<int> remappedTarget;
+        for (int pi : g_lineModal.targetPlatformIndicesAtShow) {
+            if (pi >= 0 && pi < oldSize && oldToNew[pi] >= 0)
+                remappedTarget.insert(oldToNew[pi]);
+        }
+        g_lineModal.targetPlatformIndicesAtShow = remappedTarget;
+    }
+
+    RefreshAwaitingTrainLock();
+
+    // â"€â"€ Rebuild paths only for trains on affected lines â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    for (auto& train : g_placedTrains) {
+        if (train.isPaused) continue;
+        // Only rebuild for trains whose line was affected by this demolish
+        if (train.lineId >= 0 && !deletedLineIds.count(train.lineId)
+            && !affectedLineIds.count(train.lineId)) continue;
+        RebuildTrainPath(train, g_placedPlatforms, g_gridSpacing);
+    }
+
+    // â"€â"€ Log and charge â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     if (g_playerCredits >= 100) g_playerCredits -= 100;
-    char msg[256];
-    if (g_demolishConfirmModal.isStationDemolish)
-        snprintf(msg, sizeof(msg), "STATION DEMOLISHED - LINE '%s' REVERTED TO NEUTRAL - 100 CREDITS",
-                 g_demolishConfirmModal.lineName);
-    else
-        snprintf(msg, sizeof(msg), "TRACK DEMOLISHED - LINE '%s' REVERTED TO NEUTRAL - 100 CREDITS",
-                 g_demolishConfirmModal.lineName);
+    int pausedCount = 0;
+    for (const auto& t : g_placedTrains) if (t.isPaused) pausedCount++;
+    char msg[320];
+    bool lineWasDeleted = !deletedLineIds.empty();
+    const char* actionStr = g_demolishConfirmModal.isStationDemolish ? "STATION DEMOLISHED" : "TRACK DEMOLISHED";
+    const char* resultStr = lineWasDeleted ? "LINE REVERTED TO NEUTRAL" : "LINE TRIMMED";
+    const char* trainStr = pausedCount > 0 ? " - DUE TO INFRASTRUCTURE DIFFICULTIES TRAINS ARE STATIONARY" : "";
+    snprintf(msg, sizeof(msg), "%s - %s '%s' - 100 CREDITS%s",
+        actionStr, resultStr, g_demolishConfirmModal.lineName, trainStr);
     AddTerminalMessage(msg);
 
-    // â”€â”€ Close modal, clear modes, stay in demolish mode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â"€â"€ Close modal, clear modes, stay in demolish mode â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     g_demolishConfirmModal.open           = false;
     g_demolishConfirmModal.confirmClicked = false;
     g_demolishConfirmModal.cancelClicked  = false;
@@ -2034,9 +2468,18 @@ static void DrawDemolishConfirmModal(DemolishConfirmModal& modal, int screenWidt
         titleFontSize, 0.0f, (Color){255, 80, 80, 255});
 
     // Body text
-    char bodyText[256];
-    snprintf(bodyText, sizeof(bodyText),
-        "This action will remove the Established Line '%s', continue?", modal.lineName);
+    char bodyText[512];
+    if (modal.hasAffectedTrains) {
+        snprintf(bodyText, sizeof(bodyText),
+            "Demolishing '%s' will reset this line to neutral. "
+            "%d train(s) on this line will be removed. "
+            "Trains must be re-established on a new line or destroyed.",
+            modal.lineName, modal.affectedTrainCount);
+    } else {
+        snprintf(bodyText, sizeof(bodyText),
+            "This action will remove the Established Line '%s' and revert all track to neutral. Continue?",
+            modal.lineName);
+    }
     bool hasSiloWarning = (modal.siloWarning[0] != '\0');
     float bodyBottom = hasSiloWarning ? modalY + btnBarTop - 65.0f : modalY + btnBarTop - 10.0f;
     DrawWrappedText(bodyText, innerX + 10.0f, innerY + 10.0f,
@@ -2097,41 +2540,107 @@ static void DrawDemolishConfirmModal(DemolishConfirmModal& modal, int screenWidt
 }
 
 // Silo announcement modal: title and tip text for each silo type (what this silo has enabled)
-static void GetSiloAnnounceStrings(int system, const char** outTitle, const char** outTip) {
+// Build dynamic silo telemetry string showing actual bonuses now active.
+// outBuf must be large enough (512+ chars).
+static void BuildSiloTelemetryString(int system, char* outBuf, int bufSize) {
+    outBuf[0] = '\0';
     switch (system) {
-        case (int)SiloSystem::SYS1_CARGO:
-            *outTitle = "MATERIALS SILO CREATED";
-            *outTip = "Commodities trading is now available. Qualify with a cargo train and at least one station inside a factory+depot cargo cluster on the same established line. Factory bonus only applies on lines that have Cargo/Magenta silos and bureaus.";
-            break;
-        case (int)SiloSystem::SYS2_GREEN:
-            *outTitle = "GREEN EXECUTIVE SILO CREATED";
-            *outTip = "Requires at least one green train on that established line. Each bureau linked by the inner ring to that line in the INNER CITY HUB unlocks one Green listing, capped by Green-cluster stations. More linked bureau floors improve green growth odds.";
-            break;
-        case (int)SiloSystem::SYS3_MAGENTA:
-            *outTitle = "MAGENTA INDUSTRY SILO CREATED";
-            *outTip = "Magenta-sector stock listings are now available. Requires a magenta train on that established line plus magenta stations connected with stations within 2 grid spaces of a factory. Factory bonus only applies on lines that have Cargo/Magenta silos and bureaus.";
-            break;
-        case (int)SiloSystem::SYS4_CYAN:
-            *outTitle = "CYAN EXECUTIVE SILO CREATED";
-            *outTip = "Cyan-sector stock listings are now available. Requires a cyan train plus cyan station and linked bureau on the same established line. Every bureau floor used by cyan silos increases cyan stock growth odds.";
-            break;
-        case (int)SiloSystem::SYS5_ORANGE:
-            *outTitle = "ORANGE EXECUTIVE SILO CREATED";
-            *outTip = "Orange-sector stock listings are now available. Requires an orange train plus orange station and linked bureau on the same established line. More linked bureau floors improve orange growth odds.";
-            break;
-        case (int)SiloSystem::SYS6_RED:
-            *outTitle = "RED EXECUTIVE SILO CREATED";
-            *outTip = "Red-sector stock listings are now available. Requires a red train plus red station and linked bureau on the same established line. More linked bureau floors improve red growth odds.";
-            break;
-        case (int)SiloSystem::SYS7_YELLOW:
-            *outTitle = "CORPORATE EXECUTIVE SILO CREATED";
-            *outTip = "The Stock & Commodities Market is now unlocked! Yellow requires a yellow train, yellow station, and a bureau linked to that line by inner-ring station detection. More Yellow silos reduce market chaos.";
-            break;
+        case (int)SiloSystem::SYS1_CARGO: {
+            int silos = g_siloCountBySystem[0];
+            int listings = std::min(6, silos);
+            int magFloors = g_magentaGrowthFloorBonus;
+            snprintf(outBuf, bufSize,
+                "COMMODITY LISTINGS: %d/6 unlocked. "
+                "Magenta bureau floors: %d (+%d%% commodity share performance). "
+                "Magenta lines double factory output.",
+                listings, magFloors, magFloors * 10);
+        } break;
+        case (int)SiloSystem::SYS2_GREEN: {
+            int silos = g_siloCountBySystem[1];
+            int listings = std::min(6, silos);
+            int floors = g_greenGrowthFloorBonus;
+            float bullChance = std::min(0.90f, 0.30f + 0.003f * floors);
+            snprintf(outBuf, bufSize,
+                "GREEN LISTINGS: %d/6 unlocked. "
+                "Bureau floors: %d (+%d%% share performance). "
+                "Bullish trend odds: %.0f%% (base 30%%).",
+                listings, floors, floors * 10, bullChance * 100.0f);
+        } break;
+        case (int)SiloSystem::SYS3_MAGENTA: {
+            int silos = g_siloCountBySystem[2];
+            int listings = std::min(6, silos);
+            int floors = g_magentaGrowthFloorBonus;
+            snprintf(outBuf, bufSize,
+                "MAGENTA LISTINGS: %d/6 unlocked. "
+                "Bureau floors: %d (+%d%% magenta & commodity share performance). "
+                "Factory output doubled on magenta lines.",
+                listings, floors, floors * 10);
+        } break;
+        case (int)SiloSystem::SYS4_CYAN: {
+            int silos = g_siloCountBySystem[3];
+            int listings = std::min(6, silos);
+            int floors = g_cyanGrowthFloorBonus;
+            float reduction = std::min(floors * 0.05f, 0.95f);
+            float bullChance = std::min(0.90f, 0.30f + 0.003f * floors);
+            snprintf(outBuf, bufSize,
+                "CYAN LISTINGS: %d/6 unlocked. "
+                "Bureau floors: %d. "
+                "Running cost reduction: %.0f%% (5%% per floor, cap 95%%). "
+                "Bullish trend odds: %.0f%%.",
+                listings, floors, reduction * 100.0f, bullChance * 100.0f);
+        } break;
+        case (int)SiloSystem::SYS5_ORANGE: {
+            int silos = g_siloCountBySystem[4];
+            int listings = std::min(6, silos);
+            int floors = g_orangeGrowthFloorBonus;
+            float bullChance = std::min(0.90f, 0.30f + 0.003f * floors);
+            snprintf(outBuf, bufSize,
+                "ORANGE LISTINGS: %d/6 unlocked. "
+                "Bureau floors: %d. "
+                "Bureau cargo cost: -%d materials per placement. "
+                "Bullish trend odds: %.0f%%.",
+                listings, floors, floors, bullChance * 100.0f);
+        } break;
+        case (int)SiloSystem::SYS6_RED: {
+            int silos = g_siloCountBySystem[5];
+            int listings = std::min(6, silos);
+            int floors = g_redGrowthFloorBonus;
+            float reduction = std::min(floors * 0.10f, 0.90f);
+            float bullChance = std::min(0.90f, 0.30f + 0.003f * floors);
+            snprintf(outBuf, bufSize,
+                "RED LISTINGS: %d/6 unlocked. "
+                "Bureau floors: %d. "
+                "Build cost discount: %.0f%% (10%% per floor, cap 90%%). "
+                "Bullish trend odds: %.0f%%.",
+                listings, floors, reduction * 100.0f, bullChance * 100.0f);
+        } break;
+        case (int)SiloSystem::SYS7_YELLOW: {
+            int chaos = std::max(0, 50 - g_siloCountBySystem[6]);
+            snprintf(outBuf, bufSize,
+                "STOCK & COMMODITIES MARKET UNLOCKED! "
+                "Market chaos: %d/50 (lower = calmer swings). "
+                "Each additional yellow silo reduces chaos by 1.",
+                chaos);
+        } break;
         default:
-            *outTitle = "SILO CREATED";
-            *outTip = "A new silo has been created on your network.";
+            snprintf(outBuf, bufSize, "A new silo has been created on your network.");
             break;
     }
+}
+
+static void GetSiloAnnounceStrings(int system, const char** outTitle, const char** outTip) {
+    // Titles remain descriptive; tip text is now built dynamically by the modal
+    switch (system) {
+        case (int)SiloSystem::SYS1_CARGO:   *outTitle = "MATERIALS SILO CREATED"; break;
+        case (int)SiloSystem::SYS2_GREEN:   *outTitle = "GREEN EXECUTIVE SILO CREATED"; break;
+        case (int)SiloSystem::SYS3_MAGENTA: *outTitle = "MAGENTA INDUSTRY SILO CREATED"; break;
+        case (int)SiloSystem::SYS4_CYAN:    *outTitle = "CYAN EXECUTIVE SILO CREATED"; break;
+        case (int)SiloSystem::SYS5_ORANGE:  *outTitle = "ORANGE EXECUTIVE SILO CREATED"; break;
+        case (int)SiloSystem::SYS6_RED:     *outTitle = "RED EXECUTIVE SILO CREATED"; break;
+        case (int)SiloSystem::SYS7_YELLOW:  *outTitle = "CORPORATE EXECUTIVE SILO CREATED"; break;
+        default:                            *outTitle = "SILO CREATED"; break;
+    }
+    *outTip = ""; // unused; modal calls BuildSiloTelemetryString instead
 }
 
 // Draw silo-created announcement modal (uses modal_template.png and same button textures as line modal)
@@ -2193,12 +2702,16 @@ static void DrawSiloAnnounceModal(SiloAnnounceModalData& modal, int screenWidth,
     const char* tipStr = nullptr;
     GetSiloAnnounceStrings(modal.system, &titleStr, &tipStr);
 
-    float titleW = MeasureTextEx(gameFont, titleStr, titleFontSize, 0.0f).x;
-    DrawTextEx(gameFont, titleStr, (Vector2){modalX + (modalWidth - titleW) / 2.0f, modalY + (titleBarH - titleFontSize) / 2.0f - 4.0f}, titleFontSize, 0.0f, titleColor);
+    // Build dynamic telemetry string showing actual bonuses
+    char telemetryBuf[512];
+    BuildSiloTelemetryString(modal.system, telemetryBuf, sizeof(telemetryBuf));
 
-    // Tip text in content box (word-wrap)
+    float titleW = MeasureTextEx(gameFont, titleStr, titleFontSize, 0.0f).x;
+    DrawTextEx(gameFont, titleStr, (Vector2){modalX + (modalWidth - titleW) / 2.0f, modalY + (titleBarH - titleFontSize) / 2.0f - 4.0f + modalHeight * 0.02f}, titleFontSize, 0.0f, titleColor);
+
+    // Telemetry text in content box (word-wrap)
     BeginScissorMode((int)innerX + 1, (int)innerY + 1, (int)innerW - 2, (int)innerH - 2);
-    DrawWrappedText(tipStr, innerX + 15.0f, innerY + 18.0f, innerW - 30.0f, innerY + innerH - bodyFontSize * 1.3f, bodyFontSize, bodyColor);
+    DrawWrappedText(telemetryBuf, innerX + 15.0f, innerY + 18.0f, innerW - 30.0f, innerY + innerH - bodyFontSize * 1.3f, bodyFontSize, bodyColor);
     EndScissorMode();
 
     // Buttons: GOT IT (left) and CONTINUE (right) - both dismiss, use same textures as line modal
@@ -2567,5 +3080,367 @@ static void DrawStockCommoditiesModal(StockCommoditiesModalData& modal, int scre
             modal.scrollOffset = 0.0f;
             modal.selectedListing = -1;
         }
+    }
+}
+
+// Quit confirmation modal: shown when player presses ESC in 3D view (not map mode, not splash)
+static void DrawQuitConfirmModal(QuitConfirmModal& modal, int screenWidth, int screenHeight) {
+    g_quitConfirmModalOpen = modal.open;
+    if (!modal.open) return;
+    modal.framesOpen++;
+
+    // Dim the screen
+    DrawRectangle(0, 0, screenWidth, screenHeight, (Color){0, 0, 0, 180});
+
+    float modalWidth  = 700.0f;
+    float modalHeight = 450.0f;
+    float modalX = (screenWidth  - modalWidth)  / 2.0f;
+    float modalY = (screenHeight - modalHeight) / 2.0f;
+    float titleBarH    = 50.0f;
+    float contentInset = 40.0f;
+    float innerX = modalX + contentInset;
+    float innerY = modalY + titleBarH + 12.0f;
+    float innerW = modalWidth - 2.0f * contentInset;
+    float btnBarTop = 375.0f;
+    float btnH      = 55.0f;
+    float btnGap    = 20.0f;
+    float btnW = (modalWidth - 2.0f * contentInset - btnGap) / 2.0f;
+    Rectangle yesBtn = { modalX + contentInset,                 modalY + btnBarTop, btnW, btnH };
+    Rectangle noBtn  = { modalX + contentInset + btnW + btnGap, modalY + btnBarTop, btnW, btnH };
+
+    if (g_texModalTemplate.id != 0) {
+        DrawTexturePro(g_texModalTemplate,
+            (Rectangle){0, 0, (float)g_texModalTemplate.width, (float)g_texModalTemplate.height},
+            (Rectangle){modalX, modalY, modalWidth, modalHeight}, {0,0}, 0.0f, WHITE);
+    } else {
+        DrawRectangle((int)modalX, (int)modalY, (int)modalWidth, (int)modalHeight, (Color){28, 28, 36, 255});
+        DrawRectangleLinesEx((Rectangle){modalX, modalY, modalWidth, modalHeight}, 2, (Color){255,80,80,255});
+    }
+
+    float titleFontSize = GetScaledFontSize(BASE_FONT_SIZE) * 2.0f;
+    float bodyFontSize  = GetScaledFontSize(BASE_FONT_SIZE) * 1.35f;
+
+    // Title & body adapt to quit-to-desktop vs quit-to-menu
+    const char* titleStr = modal.quitToDesktop ? "EXIT GAME?" : "QUIT GAME?";
+    const char* bodyStr  = modal.quitToDesktop
+        ? "Close CyberTrain and return to the desktop?"
+        : "Return to the main menu? Your current game will be lost.";
+    float titleW = MeasureTextEx(gameFont, titleStr, titleFontSize, 0.0f).x;
+    DrawTextEx(gameFont, titleStr,
+        (Vector2){modalX + (modalWidth - titleW) / 2.0f,
+                  modalY + (titleBarH - titleFontSize) / 2.0f - 4.0f + modalHeight * 0.02f},
+        titleFontSize, 0.0f, (Color){200, 200, 200, 255});
+
+    // Body
+    float bodyBottom = modalY + btnBarTop - 10.0f;
+    DrawWrappedText(bodyStr, innerX + 8.0f, innerY + 8.0f,
+                    innerW - 16.0f, bodyBottom,
+                    bodyFontSize, (Color){220, 240, 255, 255});
+
+    // Buttons
+    Vector2 mousePos = CustomGetMousePosition();
+    bool yesHover    = CheckCollisionPointRec(mousePos, yesBtn);
+    bool noHover     = CheckCollisionPointRec(mousePos, noBtn);
+    Texture2D yesTx  = (yesHover && g_texModalConfirmSelected.id != 0)
+        ? g_texModalConfirmSelected : g_texModalConfirmNotSelected;
+    Texture2D noTx   = (noHover  && g_texModalConfirmSelected.id != 0)
+        ? g_texModalConfirmSelected : g_texModalConfirmNotSelected;
+
+    if (yesTx.id != 0) {
+        DrawTexturePro(yesTx, (Rectangle){0,0,(float)yesTx.width,(float)yesTx.height},
+                       yesBtn, {0,0}, 0.0f, WHITE);
+    } else {
+        DrawRectangleRec(yesBtn, yesHover ? (Color){160,40,40,255} : (Color){120,30,30,255});
+    }
+    if (noTx.id != 0) {
+        DrawTexturePro(noTx, (Rectangle){0,0,(float)noTx.width,(float)noTx.height},
+                       noBtn, {0,0}, 0.0f, WHITE);
+    } else {
+        DrawRectangleRec(noBtn, noHover ? (Color){60,120,80,255} : (Color){45,90,60,255});
+    }
+
+    const char* yesLabel = "YES";
+    const char* noLabel  = "NO";
+    float yW = MeasureTextEx(gameFont, yesLabel, bodyFontSize, 0.0f).x;
+    float nW = MeasureTextEx(gameFont, noLabel,  bodyFontSize, 0.0f).x;
+    DrawTextEx(gameFont, yesLabel,
+        (Vector2){yesBtn.x + (yesBtn.width - yW) / 2.0f,
+                  yesBtn.y + (btnH - bodyFontSize) / 2.0f - 4.0f},
+        bodyFontSize, 0.0f, WHITE);
+    DrawTextEx(gameFont, noLabel,
+        (Vector2){noBtn.x  + (noBtn.width  - nW) / 2.0f,
+                  noBtn.y  + (btnH - bodyFontSize) / 2.0f - 4.0f},
+        bodyFontSize, 0.0f, WHITE);
+
+    if (modal.framesOpen >= 2) {
+        if (RawIsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if (yesHover)      modal.yesClicked = true;
+            else if (noHover)  modal.noClicked  = true;
+        }
+        // Keyboard: ESC or N = dismiss, Enter or Y = confirm
+        if (CustomIsKeyPressed(KEY_ESCAPE) || CustomIsKeyPressed(KEY_N))
+            modal.noClicked = true;
+        if (CustomIsKeyPressed(KEY_ENTER) || CustomIsKeyPressed(KEY_Y))
+            modal.yesClicked = true;
+    }
+}
+
+// Junction configuration modal: click a junction → list trains → cycle exit pairs per train.
+static void DrawJunctionConfigModal(JunctionConfigModal& modal, int screenWidth, int screenHeight) {
+    g_junctionConfigModalOpen = modal.open;
+    if (!modal.open) return;
+    modal.framesOpen++;
+
+    // Dim the screen
+    DrawRectangle(0, 0, screenWidth, screenHeight, (Color){0, 0, 0, 180});
+
+    int trainCount = (int)modal.trainIndices.size();
+    float rowH = 52.0f;
+    float headerH = 60.0f;
+    float btnBarH = 64.0f;
+    float contentH = headerH + rowH * std::max(trainCount, 1) + 16.0f + btnBarH;
+    float modalWidth  = 700.0f;
+    float modalHeight = std::min(contentH, 520.0f);
+    float modalX = (screenWidth  - modalWidth)  / 2.0f;
+    float modalY = (screenHeight - modalHeight) / 2.0f;
+    float contentInset = 28.0f;
+
+    // Background
+    if (g_texModalTemplate.id != 0) {
+        DrawTexturePro(g_texModalTemplate,
+            (Rectangle){0, 0, (float)g_texModalTemplate.width, (float)g_texModalTemplate.height},
+            (Rectangle){modalX, modalY, modalWidth, modalHeight}, {0,0}, 0.0f, WHITE);
+    } else {
+        DrawRectangle((int)modalX, (int)modalY, (int)modalWidth, (int)modalHeight, (Color){28, 28, 36, 255});
+        DrawRectangleLinesEx((Rectangle){modalX, modalY, modalWidth, modalHeight}, 2, (Color){0, 200, 200, 255});
+    }
+
+    float titleFontSize = GetScaledFontSize(BASE_FONT_SIZE) * 1.8f;
+    float bodyFontSize  = GetScaledFontSize(BASE_FONT_SIZE) * 1.25f;
+    float smallFontSize = GetScaledFontSize(BASE_FONT_SIZE) * 1.0f;
+
+    // Title
+    const char* titleStr = "JUNCTION CONFIGURATION";
+    float titleW = MeasureTextEx(gameFont, titleStr, titleFontSize, 0.0f).x;
+    DrawTextEx(gameFont, titleStr,
+        (Vector2){modalX + (modalWidth - titleW) / 2.0f, modalY + 10.0f},
+        titleFontSize, 0.0f, (Color){0, 220, 220, 255});
+
+    float listTop = modalY + headerH;
+    Vector2 mousePos = CustomGetMousePosition();
+
+    // Get junction exits info for display
+    std::vector<Vector3> adjacent;
+    int numExits = 0;
+    int numPairs = 0;
+    if (modal.junctionPlatformIndex >= 0 && modal.junctionPlatformIndex < (int)g_placedPlatforms.size()) {
+        adjacent = GetSortedAdjacentPositions(modal.junctionPos, g_placedPlatforms, g_gridSpacing);
+        numExits = (int)adjacent.size();
+        numPairs = NumJunctionPairs(numExits);
+    }
+
+    if (trainCount == 0) {
+        const char* emptyStr = "No trains pass through this junction.";
+        float ew = MeasureTextEx(gameFont, emptyStr, bodyFontSize, 0.0f).x;
+        DrawTextEx(gameFont, emptyStr,
+            (Vector2){modalX + (modalWidth - ew) / 2.0f, listTop + 20.0f},
+            bodyFontSize, 0.0f, (Color){180, 180, 180, 255});
+    } else {
+        // Column headers
+        float colTrain = modalX + contentInset;
+        float colLine  = colTrain + 160.0f;
+        float colPair  = colLine + 200.0f;
+        float colBtn   = modalWidth - contentInset - 120.0f + modalX;
+        DrawTextEx(gameFont, "TRAIN", (Vector2){colTrain, listTop - 18.0f}, smallFontSize, 0.0f, (Color){140, 140, 140, 255});
+        DrawTextEx(gameFont, "LINE", (Vector2){colLine, listTop - 18.0f}, smallFontSize, 0.0f, (Color){140, 140, 140, 255});
+        DrawTextEx(gameFont, "PAIR", (Vector2){colPair, listTop - 18.0f}, smallFontSize, 0.0f, (Color){140, 140, 140, 255});
+
+        for (int slot = 0; slot < trainCount; slot++) {
+            int ti = modal.trainIndices[slot];
+            if (ti < 0 || ti >= (int)g_placedTrains.size()) continue;
+            const PlacedTrain& train = g_placedTrains[ti];
+            float rowY = listTop + slot * rowH;
+
+            Rectangle rowRect = { modalX + contentInset, rowY, modalWidth - 2 * contentInset, rowH - 4.0f };
+            bool rowHover = CheckCollisionPointRec(mousePos, rowRect);
+
+            // Row background (highlight selected)
+            Color rowBg = (slot == modal.selectedTrainSlot)
+                ? (Color){50, 80, 80, 200}
+                : (rowHover ? (Color){40, 50, 60, 150} : (Color){30, 30, 38, 100});
+            DrawRectangleRec(rowRect, rowBg);
+
+            // Train ID
+            char trainLabel[32];
+            snprintf(trainLabel, sizeof(trainLabel), "TRAIN %d", train.id);
+            DrawTextEx(gameFont, trainLabel, (Vector2){colTrain + 4.0f, rowY + 12.0f}, bodyFontSize, 0.0f, WHITE);
+
+            // Line color swatch + name
+            Color lineColor = {128, 128, 128, 255};
+            const char* lineName = "---";
+            for (const auto& line : g_lines) {
+                if (line.id == train.lineId) {
+                    lineColor = line.color;
+                    lineName = line.name.c_str();
+                    break;
+                }
+            }
+            DrawRectangle((int)(colLine + 4.0f), (int)(rowY + 14.0f), 16, 16, lineColor);
+            DrawTextEx(gameFont, lineName, (Vector2){colLine + 26.0f, rowY + 12.0f}, bodyFontSize, 0.0f, (Color){200, 200, 200, 255});
+
+            // Current exit pair
+            int currentPair = train.GetJunctionSetting(modal.junctionPos.x, modal.junctionPos.z, &adjacent);
+            if (currentPair < 0 && numPairs > 0)
+                currentPair = DefaultJunctionPairIndex(modal.junctionPos, adjacent);
+            char pairLabel[32];
+            if (numPairs > 0) {
+                int pI = 0, pJ = 0;
+                PairIndexToIJ(numExits, currentPair, pI, pJ);
+                snprintf(pairLabel, sizeof(pairLabel), "%d-%d", pI + 1, pJ + 1);
+            } else {
+                snprintf(pairLabel, sizeof(pairLabel), "---");
+            }
+            DrawTextEx(gameFont, pairLabel, (Vector2){colPair + 4.0f, rowY + 12.0f}, bodyFontSize, 0.0f, (Color){0, 255, 100, 255});
+
+            // SWITCH button
+            float switchBtnW = 110.0f;
+            float switchBtnH = 34.0f;
+            Rectangle switchBtn = { colBtn, rowY + 8.0f, switchBtnW, switchBtnH };
+            bool switchHover = CheckCollisionPointRec(mousePos, switchBtn);
+            Color switchBg = switchHover ? (Color){60, 140, 80, 255} : (Color){45, 100, 60, 255};
+            DrawRectangleRec(switchBtn, switchBg);
+            DrawRectangleLinesEx(switchBtn, 1, (Color){80, 200, 120, 255});
+            const char* switchLabel = "SWITCH";
+            float sw = MeasureTextEx(gameFont, switchLabel, smallFontSize, 0.0f).x;
+            DrawTextEx(gameFont, switchLabel,
+                (Vector2){switchBtn.x + (switchBtnW - sw) / 2.0f, switchBtn.y + (switchBtnH - smallFontSize) / 2.0f - 2.0f},
+                smallFontSize, 0.0f, WHITE);
+
+            // Handle clicks
+            if (modal.framesOpen >= 2 && RawIsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                if (switchHover && numPairs > 0) {
+                    modal.selectedTrainSlot = slot;
+                    modal.switchClicked = true;
+                } else if (rowHover) {
+                    modal.selectedTrainSlot = slot;
+                }
+            }
+        }
+    }
+
+    // DONE button
+    float btnW = 180.0f;
+    float btnH = 44.0f;
+    Rectangle doneBtn = { modalX + (modalWidth - btnW) / 2.0f, modalY + modalHeight - btnBarH + 4.0f, btnW, btnH };
+    bool doneHover = CheckCollisionPointRec(mousePos, doneBtn);
+    Color doneBg = doneHover ? (Color){60, 120, 160, 255} : (Color){40, 80, 120, 255};
+    DrawRectangleRec(doneBtn, doneBg);
+    DrawRectangleLinesEx(doneBtn, 1, (Color){80, 160, 220, 255});
+    const char* doneLabel = "DONE";
+    float dw = MeasureTextEx(gameFont, doneLabel, bodyFontSize, 0.0f).x;
+    DrawTextEx(gameFont, doneLabel,
+        (Vector2){doneBtn.x + (btnW - dw) / 2.0f, doneBtn.y + (btnH - bodyFontSize) / 2.0f - 2.0f},
+        bodyFontSize, 0.0f, WHITE);
+
+    if (modal.framesOpen >= 2) {
+        if (RawIsMouseButtonPressed(MOUSE_BUTTON_LEFT) && doneHover)
+            modal.doneClicked = true;
+        // Keyboard: ESC to close
+        if (CustomIsKeyPressed(KEY_ESCAPE))
+            modal.doneClicked = true;
+    }
+}
+
+// Modal shown when player clicks a paused (infrastructure-reset) train
+static void DrawPausedTrainDeleteModal(PausedTrainDeleteModal& modal, int screenWidth, int screenHeight) {
+    if (!modal.open) return;
+    modal.framesOpen++;
+
+    // Dim the screen
+    DrawRectangle(0, 0, screenWidth, screenHeight, (Color){0, 0, 0, 180});
+
+    float modalWidth  = 640.0f;
+    float modalHeight = 280.0f;
+    float modalX = (screenWidth  - modalWidth)  / 2.0f;
+    float modalY = (screenHeight - modalHeight) / 2.0f;
+    float titleBarH    = 50.0f;
+    float contentInset = 36.0f;
+    float innerX = modalX + contentInset;
+    float innerY = modalY + titleBarH + 12.0f;
+    float innerW = modalWidth - 2.0f * contentInset;
+    float btnBarTop = 205.0f;
+    float btnH      = 50.0f;
+    float btnGap    = 18.0f;
+    float btnW = (modalWidth - 2.0f * contentInset - btnGap) / 2.0f;
+    Rectangle destroyBtn = { modalX + contentInset,                   modalY + btnBarTop, btnW, btnH };
+    Rectangle cancelBtn  = { modalX + contentInset + btnW + btnGap,   modalY + btnBarTop, btnW, btnH };
+
+    if (g_texModalTemplate.id != 0) {
+        DrawTexturePro(g_texModalTemplate,
+            (Rectangle){0, 0, (float)g_texModalTemplate.width, (float)g_texModalTemplate.height},
+            (Rectangle){modalX, modalY, modalWidth, modalHeight}, {0,0}, 0.0f, WHITE);
+    } else {
+        DrawRectangle((int)modalX, (int)modalY, (int)modalWidth, (int)modalHeight, (Color){28, 28, 36, 255});
+        DrawRectangleLinesEx((Rectangle){modalX, modalY, modalWidth, modalHeight}, 2, (Color){255,80,80,255});
+    }
+
+    float titleFontSize = GetScaledFontSize(BASE_FONT_SIZE) * 2.0f;
+    float bodyFontSize  = GetScaledFontSize(BASE_FONT_SIZE) * 1.35f;
+
+    // Title
+    const char* titleStr = "STATIONARY TRAIN";
+    float titleW = MeasureTextEx(gameFont, titleStr, titleFontSize, 0.0f).x;
+    DrawTextEx(gameFont, titleStr,
+        (Vector2){modalX + (modalWidth - titleW) / 2.0f,
+                  modalY + (titleBarH - titleFontSize) / 2.0f - 4.0f + modalHeight * 0.02f},
+        titleFontSize, 0.0f, (Color){200, 200, 200, 255});
+
+    // Body
+    const char* bodyStr =
+        "Due to infrastructure difficulties this train has no active line.\n"
+        "Build a new established line to re-establish, or destroy the train.";
+    float bodyBottom = modalY + btnBarTop - 10.0f;
+    DrawWrappedText(bodyStr, innerX + 8.0f, innerY + 8.0f,
+                    innerW - 16.0f, bodyBottom,
+                    bodyFontSize, (Color){220, 240, 255, 255});
+
+    // Buttons
+    Vector2 mousePos    = CustomGetMousePosition();
+    bool destroyHover   = CheckCollisionPointRec(mousePos, destroyBtn);
+    bool cancelHover    = CheckCollisionPointRec(mousePos, cancelBtn);
+    Texture2D confirmTx = (destroyHover && g_texModalConfirmSelected.id != 0)
+        ? g_texModalConfirmSelected : g_texModalConfirmNotSelected;
+    Texture2D cancelTx  = (cancelHover  && g_texModalConfirmSelected.id != 0)
+        ? g_texModalConfirmSelected : g_texModalConfirmNotSelected;
+
+    if (confirmTx.id != 0) {
+        DrawTexturePro(confirmTx, (Rectangle){0,0,(float)confirmTx.width,(float)confirmTx.height},
+                       destroyBtn, {0,0}, 0.0f, WHITE);
+    } else {
+        DrawRectangleRec(destroyBtn, destroyHover ? (Color){160,40,40,255} : (Color){120,30,30,255});
+    }
+    if (cancelTx.id != 0) {
+        DrawTexturePro(cancelTx, (Rectangle){0,0,(float)cancelTx.width,(float)cancelTx.height},
+                       cancelBtn, {0,0}, 0.0f, WHITE);
+    } else {
+        DrawRectangleRec(cancelBtn, cancelHover ? (Color){60,120,80,255} : (Color){45,90,60,255});
+    }
+
+    const char* destroyLabel = "DESTROY TRAIN";
+    const char* noLabel      = "CANCEL";
+    float dW = MeasureTextEx(gameFont, destroyLabel, bodyFontSize, 0.0f).x;
+    float nW = MeasureTextEx(gameFont, noLabel,      bodyFontSize, 0.0f).x;
+    DrawTextEx(gameFont, destroyLabel,
+        (Vector2){destroyBtn.x + (destroyBtn.width - dW) / 2.0f,
+                  destroyBtn.y + (btnH - bodyFontSize) / 2.0f - 4.0f},
+        bodyFontSize, 0.0f, WHITE);
+    DrawTextEx(gameFont, noLabel,
+        (Vector2){cancelBtn.x  + (cancelBtn.width  - nW) / 2.0f,
+                  cancelBtn.y  + (btnH - bodyFontSize) / 2.0f - 4.0f},
+        bodyFontSize, 0.0f, WHITE);
+
+    if (modal.framesOpen >= 2 && RawIsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if (destroyHover) modal.confirmClicked = true;
+        else if (cancelHover) modal.cancelClicked = true;
     }
 }

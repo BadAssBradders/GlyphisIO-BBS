@@ -1,0 +1,4 @@
+interface:
+  display_name: "Glyphis OS Desktop"
+  short_description: "Bradsonic desktop interaction map"
+  default_prompt: "Use $glyphis-os-desktop to inspect or modify the Bradsonic OS desktop, modals, icons, or region-driven desktop behavior."

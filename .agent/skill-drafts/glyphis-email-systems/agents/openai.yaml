@@ -1,0 +1,4 @@
+interface:
+  display_name: "Glyphis Email Systems"
+  short_description: "BBS and BRADSONIC mail system map"
+  default_prompt: "Use $glyphis-email-systems to inspect or modify the game's BBS and BRADSONIC email systems."

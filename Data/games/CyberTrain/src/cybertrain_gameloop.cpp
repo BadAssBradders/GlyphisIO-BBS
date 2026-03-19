@@ -50,11 +50,154 @@ static void EnterCyberTrainCam(int siloSystem) {
     g_mapMode              = false;
 }
 
+static void ClearPlacementProtectionForPlatform(const Vector3& position) {
+    long long key = MakePositionKey(position.x, position.z);
+    g_demolishNeutralizedPlatformKeys.erase(key);
+    g_declinedNeutralBranchPlatformKeys.erase(key);
+}
+
+static int ProcessCargoBureauMaterialSales(int monthsCrossed) {
+    if (monthsCrossed <= 0 || g_placedBureaus.empty() || g_silos.empty()) return 0;
+
+    std::set<int> cargoSiloLineIds;
+    for (const auto& silo : g_silos) {
+        if (silo.system == SiloSystem::SYS1_CARGO) cargoSiloLineIds.insert(silo.lineId);
+    }
+    if (cargoSiloLineIds.empty()) return 0;
+
+    std::unordered_map<int, int> demandByLineId;
+    for (int bi = 0; bi < (int)g_placedBureaus.size(); bi++) {
+        int li = (bi < (int)g_cachedBureauLineId.size()) ? g_cachedBureauLineId[bi] : -1;
+        if (!IsLineEstablishedByIndex(li)) continue;
+        int lineId = g_lines[li].id;
+        if (cargoSiloLineIds.find(lineId) == cargoSiloLineIds.end()) continue;
+        demandByLineId[lineId] += g_placedBureaus[bi].floors * monthsCrossed;
+    }
+    if (demandByLineId.empty()) return 0;
+
+    int totalCredits = 0;
+    for (const auto& line : g_lines) {
+        auto it = demandByLineId.find(line.id);
+        if (it == demandByLineId.end()) continue;
+
+        int soldMat = RemoveCargoFromLineOwnedDepots(g_placedPlatforms, line.id, it->second);
+        if (soldMat <= 0) continue;
+
+        int credits = soldMat * 100;
+        g_playerCredits += credits;
+        totalCredits += credits;
+
+        char buf[160];
+        snprintf(buf, sizeof(buf), "[CARGO] MAT SALES %s: +%d CR (%d MAT)", line.name.c_str(), credits, soldMat);
+        AppendTerminalMessage(buf);
+    }
+    return totalCredits;
+}
+
+static void RebuildTrainsOnLines(const std::set<int>& affectedLineIds) {
+    if (affectedLineIds.empty()) return;
+    for (auto& train : g_placedTrains) {
+        if (train.isPaused) continue;
+        if (!affectedLineIds.count(train.lineId)) continue;
+        (void)RebuildTrainPath(train, g_placedPlatforms, g_gridSpacing);
+    }
+}
+
+static bool HasAnyActiveTrainOnLine(int lineId, int ignoreTrainIndex = -1) {
+    for (int i = 0; i < (int)g_placedTrains.size(); i++) {
+        if (i == ignoreTrainIndex) continue;
+        const PlacedTrain& train = g_placedTrains[i];
+        if (train.isPaused) continue;
+        if (train.lineId == lineId) return true;
+    }
+    return false;
+}
+
+static void RemovePlatformsAndRemapState(const std::vector<int>& indicesToRemove) {
+    if (indicesToRemove.empty()) return;
+
+    const int oldSize = (int)g_placedPlatforms.size();
+    std::set<int> removed(indicesToRemove.begin(), indicesToRemove.end());
+    std::set<long long> removedKeys;
+    for (int idx : removed) {
+        if (idx < 0 || idx >= oldSize) continue;
+        const Vector3& pos = g_placedPlatforms[idx].position;
+        removedKeys.insert(MakePositionKey(pos.x, pos.z));
+    }
+
+    for (long long key : removedKeys) {
+        g_demolishNeutralizedPlatformKeys.erase(key);
+        g_declinedNeutralBranchPlatformKeys.erase(key);
+        g_lockedBranchOwnerLineId.erase(key);
+        g_overpassGroupsByPosKey.erase(key);
+    }
+    for (auto& line : g_lines) {
+        for (long long key : removedKeys) {
+            line.declinedBranchPlatformKeys.erase(key);
+        }
+    }
+
+    std::vector<int> oldToNew(oldSize, -1);
+    int nextIndex = 0;
+    for (int i = 0; i < oldSize; i++) {
+        if (removed.count(i)) continue;
+        oldToNew[i] = nextIndex++;
+    }
+
+    std::vector<int> sorted(indicesToRemove.begin(), indicesToRemove.end());
+    std::sort(sorted.begin(), sorted.end(), std::greater<int>());
+    for (int idx : sorted) {
+        if (idx >= 0 && idx < (int)g_placedPlatforms.size())
+            g_placedPlatforms.erase(g_placedPlatforms.begin() + idx);
+    }
+
+    for (auto& line : g_lines) {
+        std::set<int> remapped;
+        for (int pi : line.platformIndices) {
+            if (pi >= 0 && pi < oldSize && oldToNew[pi] >= 0)
+                remapped.insert(oldToNew[pi]);
+        }
+        line.platformIndices = remapped;
+    }
+
+    if (g_lineModal.state != LineModalState::None) {
+        auto remapVec = [&](std::vector<int>& v) {
+            std::vector<int> remapped;
+            for (int pi : v) {
+                if (pi >= 0 && pi < oldSize && oldToNew[pi] >= 0)
+                    remapped.push_back(oldToNew[pi]);
+            }
+            v = remapped;
+        };
+        remapVec(g_lineModal.pendingNewPlatforms);
+        remapVec(g_lineModal.pendingJunctions);
+        remapVec(g_lineModal.pendingEstablishPlatforms);
+        std::set<int> remappedTarget;
+        for (int pi : g_lineModal.targetPlatformIndicesAtShow) {
+            if (pi >= 0 && pi < oldSize && oldToNew[pi] >= 0)
+                remappedTarget.insert(oldToNew[pi]);
+        }
+        g_lineModal.targetPlatformIndicesAtShow = remappedTarget;
+        g_lineModal.pendingCid = -1;
+    }
+
+    if (g_stationModal.anchorPlatformIndex >= 0) {
+        if (g_stationModal.anchorPlatformIndex < oldSize)
+            g_stationModal.anchorPlatformIndex = oldToNew[g_stationModal.anchorPlatformIndex];
+        else
+            g_stationModal.anchorPlatformIndex = -1;
+    }
+
+    InvalidatePlatformCaches();
+    InvalidateLineCaches();
+}
+
 static void RestartToSplashAfterGameOver() {
     // Reset game/session flow flags
     g_exit_requested = false;
     g_gameOver = false;
     g_finalScore = 0;
+    g_lastFinalScore = 0;
     g_gameOverTimer = 0.0f;
     g_gameOverPhase = 0;
     g_year5WarningShown = false;
@@ -109,6 +252,7 @@ static void RestartToSplashAfterGameOver() {
     g_cachedBureauLineId.clear();
     g_declinedComponentKeys.clear();
     g_declinedNeutralBranchPlatformKeys.clear();
+    g_demolishNeutralizedPlatformKeys.clear();
     g_lockedBranchOwnerLineId.clear();
     g_overpassGroupsByPosKey.clear();
     memset(g_siloCountBySystem, 0, sizeof(g_siloCountBySystem));
@@ -161,6 +305,14 @@ static void RestartToSplashAfterGameOver() {
     g_cameraYaw = atan2f(g_camera.position.x - g_camera.target.x, g_camera.position.z - g_camera.target.z);
     g_cameraRadius = sqrtf((g_camera.position.x - g_camera.target.x) * (g_camera.position.x - g_camera.target.x) +
                            (g_camera.position.z - g_camera.target.z) * (g_camera.position.z - g_camera.target.z));
+    g_cyberTrainCamActive = false;
+    g_cyberTrainCamTrainId = -1;
+    g_cyberTrainCamSavedPos = g_camera.position;
+    g_cyberTrainCamSavedTarget = g_camera.target;
+    g_cyberTrainCamSavedAlt = g_cameraAltitude;
+    g_cyberTrainCamSavedRadius = g_cameraRadius;
+    g_cyberTrainCamSavedYaw = g_cameraYaw;
+    g_cyberTrainCamSavedSpeed = g_currentGameSpeed;
     g_mapCamera.target = { 0.0f, 0.0f };
     g_mapCamera.offset = { (float)g_renderWidth * 0.5f, (float)g_renderHeight * 0.5f };
     g_mapCamera.rotation = 0.0f;
@@ -197,7 +349,7 @@ static void RestartToSplashAfterGameOver() {
 }
 
 static void GameLoopBody() {
-    if (DrawSplashScreen()) return;  // Show splash until SPACE is pressed
+    if (DrawSplashScreen() || g_exit_requested) return;  // Show splash until SPACE is pressed, or stop immediately if splash requested exit
 
     // ── Audio update ──────────────────────────────────────────────────────────
     UpdateMusic();
@@ -228,7 +380,10 @@ static void GameLoopBody() {
     bool anyModalOpen = (g_lineModal.state != LineModalState::None)
         || g_stockModal.open || g_stationModal.open
         || g_junctionModal.open || g_siloAnnounceModal.open
-        || g_demolishConfirmModal.open || g_year5ModalOpen
+        || g_demolishConfirmModal.open || g_pausedTrainDeleteModal.open
+        || g_quitConfirmModalOpen
+        || g_junctionConfigModalOpen
+        || g_year5ModalOpen
         || g_introModalOpen || g_helpModalOpen
         || (g_optionsScreen == OptionsScreen::Visible);
     if (g_modalClickBlockFrames > 0) g_modalClickBlockFrames--;
@@ -297,7 +452,7 @@ static void GameLoopBody() {
     float timeScale = GetGameTimeScale();
     float scaledDeltaTime = deltaTime * timeScale;
 
-    if (g_lineModalOpen || g_junctionModalOpen || g_stockModalOpen || g_demolishConfirmModalOpen) scaledDeltaTime = 0.0f;
+    if (g_lineModalOpen || g_junctionModalOpen || g_stockModalOpen || g_demolishConfirmModalOpen || g_stationModalOpen) scaledDeltaTime = 0.0f;
 
     // Advance in-game clock (always advances, even in map mode) - uses scaled time
     float prevDayClock = g_dayClock;
@@ -312,7 +467,7 @@ static void GameLoopBody() {
     // Recompute train-moving flags for use by factory and bureau income blocks
     for (int si = 0; si < 7; si++) g_sysTrainMoving[si] = false;
     for (const auto& t : g_placedTrains) {
-        if (t.path.size() < 2 || t.isJammed || t.isDwelling) continue;
+        if (t.path.size() < 2 || t.isPaused || t.isJammed || t.isDwelling) continue;
         if (fabsf(t.direction) > 0.0f) {
             int sys = RequiredSiloSystemForTrainType(t.type);
             if (sys >= 0 && sys < 7) g_sysTrainMoving[sys] = true;
@@ -436,6 +591,7 @@ static void GameLoopBody() {
                     snprintf(mthBuf, sizeof(mthBuf), "INFRASTRUCTURE UPKEEP: -%d CR (%d CR/MTH)", totalMthCost, monthlyRunCost);
                     AddTerminalMessage(mthBuf);
                 }
+                ProcessCargoBureauMaterialSales(monthsCrossed);
             }
         }
 
@@ -506,13 +662,14 @@ static void GameLoopBody() {
             for (int bi = 0; bi < (int)g_placedBureaus.size(); bi++) {
                 int li = (bi < (int)g_cachedBureauLineId.size()) ? g_cachedBureauLineId[bi] : -1;
                 if (!IsLineEstablishedByIndex(li)) continue;
-                int sys = -1;
+                std::set<int> lineSystems;
                 for (const auto& s : g_silos) {
-                    if (s.lineId == g_lines[li].id && s.system != SiloSystem::SYS1_CARGO) {
-                        sys = (int)s.system; break;
-                    }
+                    if (s.lineId == g_lines[li].id && s.system != SiloSystem::SYS1_CARGO)
+                        lineSystems.insert((int)s.system);
                 }
-                if (sys >= 1 && sys <= 6) bureauFloorsBySys[sys] += g_placedBureaus[bi].floors;
+                for (int sys : lineSystems) {
+                    if (sys >= 1 && sys <= 6) bureauFloorsBySys[sys] += g_placedBureaus[bi].floors;
+                }
             }
             const char* sysNames[] = {"CARGO","GREEN","MAGENTA","CYAN","ORANGE","RED","YELLOW"};
             for (int sys = 1; sys <= 6; sys++) {
@@ -650,8 +807,12 @@ static void GameLoopBody() {
             if (!wasOn) { g_trainPlacementMode = true; g_selectedBottomHotspot = 0; }
         }
 
-        // Handle C key to toggle cargo train placement mode (disabled in map mode and when modal is open)
-        if (!g_mapMode && !anyModalOpen && CustomIsKeyPressed(KEY_C)) {
+        // Handle C key to toggle cargo train placement mode.
+        // When a newly established line is awaiting its first train, only allow cargo mode
+        // if that awaited line actually accepts cargo trains.
+        bool cargoModeAllowed = (g_awaitingTrainForLineId < 0)
+            || AwaitedLineAcceptsTrainType(PlacedTrain::TrainType::Cargo);
+        if (!g_mapMode && !anyModalOpen && cargoModeAllowed && CustomIsKeyPressed(KEY_C)) {
             if (!g_cargoTrainPlacementMode) {
                 ClearAllPlacementModes();
                 g_cargoTrainPlacementMode = true;
@@ -684,6 +845,15 @@ static void GameLoopBody() {
                 g_selectedBottomHotspot = 4;
             } else {
                 g_bureauFloorIndex = (g_bureauFloorIndex + 1) % (int)g_bureauFloorOptions.size();
+            }
+            {
+                int floors = g_bureauFloorOptions[g_bureauFloorIndex];
+                int minCost = ApplyBuildDiscount(floors * GetBureauCostPerFloorForSystem((int)SiloSystem::SYS1_CARGO));
+                int maxCost = ApplyBuildDiscount(floors * GetBureauCostPerFloorForSystem((int)SiloSystem::SYS7_YELLOW));
+                int cargo = ApplyOrangeBureauDiscount(GetBureauCargoCost(g_bureauFloorIndex));
+                char buf[256];
+                snprintf(buf, sizeof(buf), "BUREAU (B): %d-%d CREDITS (%d floors, %d cargo). Cost/floor by line: Cargo/Neutral 3000, Green 3500, Magenta 4000, Orange 4500, Cyan 5000, Red 5500, Yellow 6000. Build rule: INNER ring must touch an established-line station tile; OUTER ring must have enough cargo. B cycles floors.", minCost, maxCost, floors, cargo);
+                AddTerminalMessage(buf);
             }
         }
         
@@ -723,10 +893,15 @@ static void GameLoopBody() {
             AppendTerminalMessage(buf);
         }
 
-        // Handle ESC key: blocked by modals; exits CyberTrain cam, otherwise deselects train
+        // Handle ESC key: blocked by modals; exits CyberTrain cam, otherwise opens quit modal
         if (CustomIsKeyPressed(KEY_ESCAPE) && !anyModalOpen) {
-            if (g_cyberTrainCamActive) ExitCyberTrainCam();
-            else g_selectedTrainIndex = -1;
+            if (g_cyberTrainCamActive) {
+                ExitCyberTrainCam();
+            } else if (g_splashPhase == SplashPhase::Done) {
+                g_quitConfirmModal = {};
+                g_quitConfirmModal.open = true;
+                g_quitConfirmModalOpen  = true;
+            }
         }
 
         // RMB hard-clear: return to neutral "nothing selected" state.
@@ -753,11 +928,11 @@ static void GameLoopBody() {
         bool rawLeftPressed = RawIsMouseButtonPressed(MOUSE_BUTTON_LEFT);
         if (rawLeftPressed && !g_mapMode && !anyModalOpen) {
             Vector2 mousePos = CustomGetMousePosition();
-            if (CheckCollisionPointRec(mousePos, g_systemHotspots[0])) {
+            if (cargoModeAllowed && CheckCollisionPointRec(mousePos, g_systemHotspots[0])) {
                 ClearAllPlacementModes();
                 g_selectedSystemHotspot = 0;
                 g_system1CargoState = (g_system1CargoState + 1) % 4;  // 0->1->2->3->0
-                g_cargoPlacementTrailers = (g_system1CargoState >= 1) ? g_system1CargoState : 1;
+                g_cargoPlacementTrailers = (g_system1CargoState >= 1 && g_system1CargoState <= 3) ? g_system1CargoState : 1;
                 g_cargoTrainPlacementMode = true;
                 AddTerminalMessage("CARGO TRAIN: Build cost 30/80/100 CR (1/2/3 trailers), running cost 10/20/30 CR/WK. Click a station on a matching established line to place. Click again to cycle trailer count (1-3).");
             } else if (CheckCollisionPointRec(mousePos, g_systemHotspots[1])) {
@@ -826,11 +1001,11 @@ static void GameLoopBody() {
                     g_bureauFloorIndex = (g_bureauFloorIndex + 1) % (int)g_bureauFloorOptions.size();
                 }
                 int floors = g_bureauFloorOptions[g_bureauFloorIndex];
-                int costPerFloor = GetBureauCostPerFloorForSystem((int)SiloSystem::SYS1_CARGO);
-                int cost = ApplyBuildDiscount(floors * costPerFloor);
+                int minCost = ApplyBuildDiscount(floors * GetBureauCostPerFloorForSystem((int)SiloSystem::SYS1_CARGO));
+                int maxCost = ApplyBuildDiscount(floors * GetBureauCostPerFloorForSystem((int)SiloSystem::SYS7_YELLOW));
                 char buf[256];
                 int cargo = ApplyOrangeBureauDiscount(GetBureauCargoCost(g_bureauFloorIndex));
-                snprintf(buf, sizeof(buf), "BUREAU (B): from %d CREDITS (%d floors, %d cargo). Cost/floor by line: Cargo/Neutral 3000, Green 3500, Magenta 4000, Orange 4500, Cyan 5000, Red 5500, Yellow 6000. Build rule: INNER ring must touch an established-line station tile; OUTER ring must have enough cargo. B cycles floors.", cost, floors, cargo);
+                snprintf(buf, sizeof(buf), "BUREAU (B): %d-%d CREDITS (%d floors, %d cargo). Cost/floor by line: Cargo/Neutral 3000, Green 3500, Magenta 4000, Orange 4500, Cyan 5000, Red 5500, Yellow 6000. Build rule: INNER ring must touch an established-line station tile; OUTER ring must have enough cargo. B cycles floors.", minCost, maxCost, floors, cargo);
                 AddTerminalMessage(buf);
             } else if (CheckCollisionPointRec(mousePos, g_bottomHotspots[5])) {
                 ClearAllPlacementModes();
@@ -863,19 +1038,11 @@ static void GameLoopBody() {
                     if (dist < g_gridSpacing * 0.6f) {
                         PlacedPlatform& hit = g_placedPlatforms[i];
                         if (hit.isStation && !hit.isDepot) {
-                            // Collect all 4 station tile indices (same orientation, within 4 tiles)
-                            std::vector<int> siblings;
+                            // Collect only the 4 tiles of this exact physical station.
+                            std::vector<int> siblings = CollectPhysicalStationTileIndices(i, g_placedPlatforms, g_gridSpacing);
                             int anchorIdx = -1;
-                            for (int j = 0; j < (int)g_placedPlatforms.size(); j++) {
-                                PlacedPlatform& p = g_placedPlatforms[j];
-                                if (!p.isStation || p.isDepot) continue;
-                                if (p.placementOrientation != hit.placementOrientation) continue;
-                                float d = Vector3Distance(hit.position, p.position);
-                                if (d < g_gridSpacing * 3.6f) {
-                                    siblings.push_back(j);
-                                    if (p.stationPart == 0) anchorIdx = j;
-                                }
-                            }
+                            for (int j : siblings)
+                                if (g_placedPlatforms[j].stationPart == 0) { anchorIdx = j; break; }
                             if (anchorIdx < 0 && !siblings.empty()) anchorIdx = siblings[0];
                             // Check if any sibling is on an established line
                             int lineIdx = -1;
@@ -887,6 +1054,24 @@ static void GameLoopBody() {
                                     }
                                 }
                                 if (lineIdx >= 0) break;
+                            }
+                            // Filter siblings: only keep tiles on the target line or not on any line
+                            if (lineIdx >= 0) {
+                                std::vector<int> filtered;
+                                for (int si : siblings) {
+                                    bool onOtherLine = false;
+                                    for (int li = 0; li < (int)g_lines.size(); li++) {
+                                        if (li == lineIdx) continue;
+                                        if (g_lines[li].platformIndices.count(si)) { onOtherLine = true; break; }
+                                    }
+                                    if (!onOtherLine) filtered.push_back(si);
+                                }
+                                siblings = filtered;
+                                // Re-find anchor in filtered set
+                                anchorIdx = -1;
+                                for (int si : siblings)
+                                    if (g_placedPlatforms[si].stationPart == 0) { anchorIdx = si; break; }
+                                if (anchorIdx < 0 && !siblings.empty()) anchorIdx = siblings[0];
                             }
                             if (lineIdx >= 0) {
                                 // Open confirm modal â€” do NOT demolish yet
@@ -901,17 +1086,25 @@ static void GameLoopBody() {
                                 strncpy(g_demolishConfirmModal.lineName, g_lines[lineIdx].name.c_str(), 127);
                                 g_demolishConfirmModal.lineName[127] = '\0';
                                 BuildDemolishSiloWarning(siblings, g_demolishConfirmModal.siloWarning, sizeof(g_demolishConfirmModal.siloWarning));
+                                // Count trains on affected lines for modal warning
+                                {
+                                    std::set<int> affectedLineIds;
+                                    for (int si : siblings)
+                                        for (int li = 0; li < (int)g_lines.size(); li++)
+                                            if (g_lines[li].platformIndices.count(si)) affectedLineIds.insert(g_lines[li].id);
+                                    g_demolishConfirmModal.hasAffectedTrains = false;
+                                    g_demolishConfirmModal.affectedTrainCount = 0;
+                                    for (const auto& train : g_placedTrains) {
+                                        if (affectedLineIds.count(train.lineId)) {
+                                            g_demolishConfirmModal.hasAffectedTrains = true;
+                                            g_demolishConfirmModal.affectedTrainCount++;
+                                        }
+                                    }
+                                }
                                 // demolished stays false â€” modal handles the removal
                             } else {
                                 // No line: remove all 4 tiles immediately (descending order)
-                                std::sort(siblings.begin(), siblings.end(), std::greater<int>());
-                                for (int si : siblings) {
-                                    g_placedPlatforms.erase(g_placedPlatforms.begin() + si);
-                                }
-                                InvalidatePlatformCaches();
-                                for (auto& train : g_placedTrains) {
-                                    RebuildTrainPath(train, g_placedPlatforms, g_gridSpacing);
-                                }
+                                RemovePlatformsAndRemapState(siblings);
                                 demolished = true;
                             }
                         } else {
@@ -934,14 +1127,25 @@ static void GameLoopBody() {
                                 g_demolishConfirmModal.lineName[127] = '\0';
                                 std::vector<int> platVec = {i};
                                 BuildDemolishSiloWarning(platVec, g_demolishConfirmModal.siloWarning, sizeof(g_demolishConfirmModal.siloWarning));
+                                // Count trains on affected lines for modal warning
+                                {
+                                    std::set<int> affLineIds;
+                                    for (int li = 0; li < (int)g_lines.size(); li++)
+                                        if (g_lines[li].platformIndices.count(i)) affLineIds.insert(g_lines[li].id);
+                                    g_demolishConfirmModal.hasAffectedTrains = false;
+                                    g_demolishConfirmModal.affectedTrainCount = 0;
+                                    for (const auto& train : g_placedTrains) {
+                                        if (affLineIds.count(train.lineId)) {
+                                            g_demolishConfirmModal.hasAffectedTrains = true;
+                                            g_demolishConfirmModal.affectedTrainCount++;
+                                        }
+                                    }
+                                }
                                 // demolished stays false â€” modal handles the removal
                             } else {
                                 // No established line â€” remove immediately
-                                g_placedPlatforms.erase(g_placedPlatforms.begin() + i);
-                                InvalidatePlatformCaches();
+                                RemovePlatformsAndRemapState({ i });
                                 demolished = true;
-                                for (auto& train : g_placedTrains)
-                                    RebuildTrainPath(train, g_placedPlatforms, g_gridSpacing);
                             }
                         }
                         break;
@@ -982,9 +1186,12 @@ static void GameLoopBody() {
                         // Check if clicking on any platform the train is on
                         for (const auto& pathPos : g_placedTrains[i].path) {
                             if (Vector3Distance(g_mouseWorldPos, (Vector3){pathPos.x, 0, pathPos.z}) < g_gridSpacing * 0.6f) {
+                                int removedLineId = g_placedTrains[i].lineId;
                                 g_placedTrains.erase(g_placedTrains.begin() + i);
                                 if (g_selectedTrainIndex == i) g_selectedTrainIndex = -1;
                                 else if (g_selectedTrainIndex > i) g_selectedTrainIndex--;
+                                if (removedLineId >= 0 && !HasAnyActiveTrainOnLine(removedLineId))
+                                    RefreshAwaitingTrainLock();
                                 demolished = true;
                                 break;
                             }
@@ -1009,14 +1216,10 @@ static void GameLoopBody() {
                     const PlacedPlatform& plat = g_placedPlatforms[pi];
                     if (!plat.isStation || plat.isDepot) continue;
                     if (Vector3Distance(g_mouseWorldPos, plat.position) < g_gridSpacing * 0.6f) {
+                        std::vector<int> stationTiles = CollectPhysicalStationTileIndices(pi, g_placedPlatforms, g_gridSpacing);
                         int anchorIdx = pi;
-                        for (int aj = 0; aj < (int)g_placedPlatforms.size(); aj++) {
-                            const PlacedPlatform& ap = g_placedPlatforms[aj];
-                            if (!ap.isStation || ap.stationPart != 0) continue;
-                            if (ap.placementOrientation == plat.placementOrientation &&
-                                Vector3Distance(ap.position, plat.position) < g_gridSpacing * 3.6f)
-                                { anchorIdx = aj; break; }
-                        }
+                        for (int si : stationTiles)
+                            if (g_placedPlatforms[si].stationPart == 0) { anchorIdx = si; break; }
                         g_stationModal.open = true;
                         g_stationModal.framesOpen = 0;
                         g_stationModal.confirmClicked = false;
@@ -1043,7 +1246,14 @@ static void GameLoopBody() {
                         // Check if we're clicking on any platform the train is on
                         for (const auto& pathPos : g_placedTrains[i].path) {
                             if (Vector3Distance(g_mouseWorldPos, (Vector3){pathPos.x, 0, pathPos.z}) < g_gridSpacing * 0.6f) {
-                                if (g_selectedTrainIndex == (int)i) {
+                                if (g_placedTrains[i].isPaused) {
+                                    // Paused train: open delete modal instead of selecting
+                                    g_pausedTrainDeleteModal.open = true;
+                                    g_pausedTrainDeleteModal.framesOpen = 0;
+                                    g_pausedTrainDeleteModal.confirmClicked = false;
+                                    g_pausedTrainDeleteModal.cancelClicked = false;
+                                    g_pausedTrainDeleteModal.trainIndex = (int)i;
+                                } else if (g_selectedTrainIndex == (int)i) {
                                     g_selectedTrainIndex = -1; // Deselect if clicking same train
                                     g_junctionSetupTrainId = -1;
                                     g_junctionSetupBadgeTimer = 0.0f;
@@ -1102,10 +1312,10 @@ static void GameLoopBody() {
                         int numExits = (int)adjacent.size();
                         int numPairs = NumJunctionPairs(numExits);
                         if (numPairs <= 0) numPairs = 1;
-                        int currentSetting = g_placedTrains[g_selectedTrainIndex].GetJunctionSetting(hitJunction->position.x, hitJunction->position.z);
+                        int currentSetting = g_placedTrains[g_selectedTrainIndex].GetJunctionSetting(hitJunction->position.x, hitJunction->position.z, &adjacent);
                         int newSetting = (currentSetting + 1) % numPairs;
                         if (newSetting < 0) newSetting = 0;
-                        g_placedTrains[g_selectedTrainIndex].SetJunctionSetting(hitJunction->position.x, hitJunction->position.z, newSetting);
+                        g_placedTrains[g_selectedTrainIndex].SetJunctionSetting(hitJunction->position.x, hitJunction->position.z, newSetting, &adjacent);
                         PlacedTrain& train = g_placedTrains[g_selectedTrainIndex];
                         if (!train.path.empty()) {
                             (void)RebuildTrainPath(train, g_placedPlatforms, g_gridSpacing);
@@ -1121,7 +1331,65 @@ static void GameLoopBody() {
                     }
                 }
             }
-            
+
+            // If NO train is selected, clicking a switchable junction opens the config modal
+            if (!clickHandled
+                && !IsPassengerTrainPlacementSelected()
+                && !g_cargoTrainPlacementMode
+                && !IsTrackPlacementSelected()
+                && !g_stationPlacementMode
+                && !g_depotPlacementMode
+                && !g_demolishMode
+                && g_selectedTrainIndex < 0) {
+                Ray mouseRay = GetScreenToWorldRayEx(mousePos, g_camera, g_renderWidth, g_renderHeight);
+                const PlacedPlatform* hitJunction = nullptr;
+                for (const auto& platform : g_placedPlatforms) {
+                    PlatformType pType = GetPlatformType(platform.position, g_placedPlatforms, g_gridSpacing);
+                    if (pType == PlatformType::Points && RayHitJunctionCross(mouseRay, platform.position, g_placedPlatforms, g_gridSpacing)) {
+                        hitJunction = &platform;
+                        break;
+                    }
+                }
+                if (!hitJunction) {
+                    for (const auto& platform : g_placedPlatforms) {
+                        if (Vector3Distance(g_mouseWorldPos, platform.position) < g_gridSpacing * 0.6f) {
+                            PlatformType pType = GetPlatformType(platform.position, g_placedPlatforms, g_gridSpacing);
+                            if (pType == PlatformType::Points) {
+                                hitJunction = &platform;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (hitJunction) {
+                    int juncPi = -1;
+                    for (int jpi = 0; jpi < (int)g_placedPlatforms.size(); jpi++) {
+                        if (Vector3Distance(g_placedPlatforms[jpi].position, hitJunction->position) < 0.01f) {
+                            juncPi = jpi; break;
+                        }
+                    }
+                    if (juncPi >= 0 && IsJunctionSwitchable(juncPi)) {
+                        // Populate modal with trains that pass through this junction
+                        g_junctionConfigModal = {};
+                        g_junctionConfigModal.open = true;
+                        g_junctionConfigModal.junctionPlatformIndex = juncPi;
+                        g_junctionConfigModal.junctionPos = hitJunction->position;
+                        // Find all non-paused trains whose line includes this junction
+                        for (int ti = 0; ti < (int)g_placedTrains.size(); ti++) {
+                            const PlacedTrain& train = g_placedTrains[ti];
+                            if (train.isPaused || train.lineId < 0) continue;
+                            for (const auto& line : g_lines) {
+                                if (line.id == train.lineId && line.platformIndices.count(juncPi)) {
+                                    g_junctionConfigModal.trainIndices.push_back(ti);
+                                    break;
+                                }
+                            }
+                        }
+                        g_junctionConfigModalOpen = true;
+                        clickHandled = true;
+                    }
+                }
+            }
 
             if (!clickHandled && (IsTrackPlacementSelected() || IsPassengerTrainPlacementSelected() || g_cargoTrainPlacementMode)) {
                 // Place passenger/cargo train when train mode is active, or start track drag when track mode is active.
@@ -1219,9 +1487,9 @@ static void GameLoopBody() {
                                     newTrain.position = centerPoint.position;
                                 
                                     bool canPlace = true;
-                                    float placeRadius = GetTrainTotalLength(newTrain, g_gridSpacing) * 0.6f;
+                                    float placeRadius = GetTrainTotalLength(newTrain, g_gridSpacing) * 0.5f;
                                     for (const auto& existingTrain : g_placedTrains) {
-                                        float otherRadius = GetTrainTotalLength(existingTrain, g_gridSpacing) * 0.6f;
+                                        float otherRadius = GetTrainTotalLength(existingTrain, g_gridSpacing) * 0.5f;
                                         if (Vector3Distance(newTrain.position, existingTrain.position) < (placeRadius + otherRadius)) {
                                             canPlace = false;
                                             break;
@@ -1239,9 +1507,8 @@ static void GameLoopBody() {
                                     AddTerminalMessage(trainCostMsg);
                                     if (g_sfxBuildTrain.frameCount > 0) PlaySound(g_sfxBuildTrain);
                                     // Unlock sys8-12 hotspots if this train satisfies the post-establish lock
-                                    if (g_awaitingTrainForLineId >= 0 && newTrain.lineId == g_awaitingTrainForLineId) {
-                                        g_awaitingTrainForLineId = -1;
-                                    }
+                                    if (g_awaitingTrainForLineId >= 0 && newTrain.lineId == g_awaitingTrainForLineId)
+                                        RefreshAwaitingTrainLock();
                                     // Deselect the train-to-build (equivalent to RMB), keeping the placed train selected below
                                     ClearAllPlacementModes();
                                     // Auto-select the newly placed train
@@ -1284,7 +1551,8 @@ static void GameLoopBody() {
                         float dist = Vector3Distance(g_mouseWorldPos, placed.position);
                         if (dist < g_gridSpacing * 0.9f) { canStart = false; break; }
                     }
-                    if (canStart && g_playerCredits < 150) canStart = false;
+                    int startCost = ApplyBuildDiscount(OuterGridCost(150, g_mouseWorldPos.x, g_mouseWorldPos.z));
+                    if (canStart && g_playerCredits < startCost) canStart = false;
                     if (canStart) {
                         // Start drag: show preview line, place nothing until LMB release
                         g_platformDragActive = true;
@@ -1394,6 +1662,9 @@ static void GameLoopBody() {
                         SpawnBuildParticles(segments[i], g_stationColor, g_gridSpacing);
                     }
 
+                    // Surgically lift neutralization guard for the newly-placed tiles only
+                    for (int si = firstNewStationIdx; si < (int)g_placedPlatforms.size(); si++)
+                        ClearPlacementProtectionForPlatform(g_placedPlatforms[si].position);
                     InvalidatePlatformCaches();
 
                     // Auto-extend established lines with new station platforms
@@ -1406,6 +1677,10 @@ static void GameLoopBody() {
                             if (pi >= (int)tempCompId.size()) continue;
                             int cid = tempCompId[pi];
                             if (cid < 0) continue;
+                            // Skip platforms still under demolish neutralization guard
+                            long long piKey = MakePositionKey(g_placedPlatforms[pi].position.x,
+                                                              g_placedPlatforms[pi].position.z);
+                            if (g_demolishNeutralizedPlatformKeys.count(piKey)) continue;
                             for (auto& line : g_lines) {
                                 bool lineOwnsComponent = false;
                                 for (int existingPi : line.platformIndices) {
@@ -1416,14 +1691,24 @@ static void GameLoopBody() {
                                 }
                                 if (lineOwnsComponent) {
                                     line.platformIndices.insert(pi);
+                                    break; // Only add to the first matching line
                                 }
                             }
                         }
                     }
 
                     // Network expanded: rebuild existing train paths so they can use newly connected track
-                    for (auto& train : g_placedTrains) {
-                        RebuildTrainPath(train, g_placedPlatforms, g_gridSpacing);
+                    {
+                        std::set<int> affectedLineIds;
+                        for (const auto& line : g_lines) {
+                            for (int pi = firstNewStationIdx; pi < (int)g_placedPlatforms.size(); pi++) {
+                                if (line.platformIndices.count(pi)) {
+                                    affectedLineIds.insert(line.id);
+                                    break;
+                                }
+                            }
+                        }
+                        RebuildTrainsOnLines(affectedLineIds);
                     }
                     // Open station configuration modal immediately after build
                     {
@@ -1492,6 +1777,10 @@ static void GameLoopBody() {
                     depot.isDepot = true;
                     depot.depotCargo = 0;
                     g_placedPlatforms.push_back(depot);
+                    // Surgically lift neutralization guard for the newly-placed depot tile only
+                    {
+                        ClearPlacementProtectionForPlatform(depot.position);
+                    }
                     InvalidatePlatformCaches();
                     
                     // Spawn build particles
@@ -1568,72 +1857,56 @@ static void GameLoopBody() {
                 if (!IsWithinGridBounds(g_mouseWorldPos.x, g_mouseWorldPos.z, g_gridSpacing * 1.0f)) canPlace = false;
                 Vector3 bureauPos = g_mouseWorldPos; // already snapped to grid intersection (2x2 footprint aligns with grid squares)
                 int selectedFloors = g_bureauFloorOptions[g_bureauFloorIndex];
-                
+
                 // Bureau footprint is 1/4 factory size (2x2 tiles)
                 float bureauHalf = g_gridSpacing * 1.0f; // 2x2 means half is 1 grid
-                
-                // Overlap with skyline buildings
-                BoundingBox bureauBox = {
-                    (Vector3){ bureauPos.x - bureauHalf, 0.0f, bureauPos.z - bureauHalf },
-                    (Vector3){ bureauPos.x + bureauHalf, g_gridSpacing * 60.0f, bureauPos.z + bureauHalf } // Max height for 200 floors
-                };
-                
-                // Bureaus can be placed directly next to any building (hub or coloured cluster);
-                // no building overlap block applies to bureaus.
-                
+                // No skyline building overlap check — bureaus can be placed next to clusters
+
                 // Overlap with platforms/depots
                 if (canPlace) {
                     for (const auto& p : g_placedPlatforms) {
                         if (p.position.x >= bureauPos.x - bureauHalf - 0.1f && p.position.x <= bureauPos.x + bureauHalf + 0.1f &&
                             p.position.z >= bureauPos.z - bureauHalf - 0.1f && p.position.z <= bureauPos.z + bureauHalf + 0.1f) {
-                            canPlace = false;
-                            break;
+                            canPlace = false;                            break;
                         }
                     }
                 }
-                
+
                 // Overlap with factories
                 if (canPlace) {
                     float factoryHalf = g_gridSpacing * 2.0f;
                     for (const auto& f : g_placedFactories) {
                         if (fabsf(f.position.x - bureauPos.x) <= (factoryHalf + bureauHalf) &&
                             fabsf(f.position.z - bureauPos.z) <= (factoryHalf + bureauHalf)) {
-                            canPlace = false;
-                            break;
+                            canPlace = false;                            break;
                         }
                     }
                 }
-                
+
                 // Overlap with other bureaus
                 if (canPlace) {
                     for (const auto& b : g_placedBureaus) {
                         if (fabsf(b.position.x - bureauPos.x) <= (bureauHalf * 2.0f) &&
                             fabsf(b.position.z - bureauPos.z) <= (bureauHalf * 2.0f)) {
-                            canPlace = false;
-                            break;
+                            canPlace = false;                            break;
                         }
                     }
                 }
-                
+
                 // Blanket bureau rule: inner ring must touch at least one station tile on an established line.
+                int detectedLineIndex = -1;
                 if (canPlace) {
-                    int detectedLineIndex = -1;
-                    if (!DetectClosestEstablishedLineForBureauInnerRing(bureauPos, &detectedLineIndex)) canPlace = false;
+                    if (!DetectClosestEstablishedLineForBureauInnerRing(bureauPos, &detectedLineIndex)) { canPlace = false; }
                 }
-                
+
                 int cargoCost = ApplyOrangeBureauDiscount(GetBureauCargoCost(g_bureauFloorIndex));
                 if (canPlace && !HasEnoughCargoInRadius(bureauPos, g_placedPlatforms, g_gridSpacing, cargoCost)) {
-                    canPlace = false;
-                }
-                
-                int detectedLineIndexForCost = -1;
-                (void)DetectClosestEstablishedLineForBureauInnerRing(bureauPos, &detectedLineIndexForCost);
-                int costPerFloor = GetBureauCostPerFloorForLineIndex(detectedLineIndexForCost);
+                    canPlace = false;                }
+
+                int costPerFloor = GetBureauCostPerFloorForLineIndex(detectedLineIndex);
                 int totalCost = ApplyBuildDiscount(selectedFloors * costPerFloor);
                 if (canPlace && g_playerCredits < totalCost) {
-                    canPlace = false;
-                }
-                
+                    canPlace = false;                }
                 if (canPlace) {
                     // Deduct credits and cargo
                     g_playerCredits -= totalCost;
@@ -1683,7 +1956,14 @@ static void GameLoopBody() {
                     Vector2 b1    = { baseC.x + r.x * halfW,           baseC.y + r.y * halfW };
                     Vector2 b2    = { baseC.x - r.x * halfW,           baseC.y - r.y * halfW };
                     if (CheckCollisionPointTriangle(mapClick, tip, b1, b2)) {
-                        if (g_selectedTrainIndex == (int)i) {
+                        if (g_placedTrains[i].isPaused) {
+                            // Paused train: open delete modal instead of selecting
+                            g_pausedTrainDeleteModal.open = true;
+                            g_pausedTrainDeleteModal.framesOpen = 0;
+                            g_pausedTrainDeleteModal.confirmClicked = false;
+                            g_pausedTrainDeleteModal.cancelClicked = false;
+                            g_pausedTrainDeleteModal.trainIndex = (int)i;
+                        } else if (g_selectedTrainIndex == (int)i) {
                             g_selectedTrainIndex = -1;
                         } else {
                             g_selectedTrainIndex = (int)i;
@@ -1708,10 +1988,10 @@ static void GameLoopBody() {
                             int numExits = (int)adjacent.size();
                             int numPairs = NumJunctionPairs(numExits);
                             if (numPairs <= 0) numPairs = 1;
-                            int currentSetting = g_placedTrains[g_selectedTrainIndex].GetJunctionSetting(platform.position.x, platform.position.z);
+                            int currentSetting = g_placedTrains[g_selectedTrainIndex].GetJunctionSetting(platform.position.x, platform.position.z, &adjacent);
                             int newSetting = (currentSetting + 1) % numPairs;
                             if (newSetting < 0) newSetting = 0;
-                            g_placedTrains[g_selectedTrainIndex].SetJunctionSetting(platform.position.x, platform.position.z, newSetting);
+                            g_placedTrains[g_selectedTrainIndex].SetJunctionSetting(platform.position.x, platform.position.z, newSetting, &adjacent);
                             PlacedTrain& train = g_placedTrains[g_selectedTrainIndex];
                             if (!train.path.empty()) {
                                 (void)RebuildTrainPath(train, g_placedPlatforms, g_gridSpacing);
@@ -1726,6 +2006,37 @@ static void GameLoopBody() {
                 }
             }
             
+            // No train selected: clicking a switchable junction in map mode opens the config modal
+            if (!mapClickHandled && g_selectedTrainIndex < 0
+                && !g_demolishMode && !IsTrackPlacementSelected()
+                && !IsPassengerTrainPlacementSelected() && !g_cargoTrainPlacementMode) {
+                for (int pi = 0; pi < (int)g_placedPlatforms.size(); pi++) {
+                    const auto& platform = g_placedPlatforms[pi];
+                    if (Vector3Distance(g_mouseWorldPos, platform.position) < g_gridSpacing * 0.6f) {
+                        PlatformType pType = GetPlatformType(platform.position, g_placedPlatforms, g_gridSpacing);
+                        if (pType == PlatformType::Points && IsJunctionSwitchable(pi)) {
+                            g_junctionConfigModal = {};
+                            g_junctionConfigModal.open = true;
+                            g_junctionConfigModal.junctionPlatformIndex = pi;
+                            g_junctionConfigModal.junctionPos = platform.position;
+                            for (int ti = 0; ti < (int)g_placedTrains.size(); ti++) {
+                                const PlacedTrain& train = g_placedTrains[ti];
+                                if (train.isPaused || train.lineId < 0) continue;
+                                for (const auto& line : g_lines) {
+                                    if (line.id == train.lineId && line.platformIndices.count(pi)) {
+                                        g_junctionConfigModal.trainIndices.push_back(ti);
+                                        break;
+                                    }
+                                }
+                            }
+                            g_junctionConfigModalOpen = true;
+                            mapClickHandled = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
             // Neutral-click on a station tile in map mode: open station configuration modal
             // Blocked when placing trains (clicks should place the train, not open the modal)
             if (!mapClickHandled && !g_demolishMode && !IsPassengerTrainPlacementSelected() && !g_cargoTrainPlacementMode) {
@@ -1733,14 +2044,10 @@ static void GameLoopBody() {
                     const PlacedPlatform& plat = g_placedPlatforms[pi];
                     if (!plat.isStation) continue;
                     if (Vector3Distance(g_mouseWorldPos, plat.position) < g_gridSpacing * 0.6f) {
+                        std::vector<int> stationTiles = CollectPhysicalStationTileIndices(pi, g_placedPlatforms, g_gridSpacing);
                         int anchorIdx = pi;
-                        for (int aj = 0; aj < (int)g_placedPlatforms.size(); aj++) {
-                            const PlacedPlatform& ap = g_placedPlatforms[aj];
-                            if (!ap.isStation || ap.stationPart != 0) continue;
-                            if (ap.placementOrientation == plat.placementOrientation &&
-                                Vector3Distance(ap.position, plat.position) < g_gridSpacing * 3.6f)
-                                { anchorIdx = aj; break; }
-                        }
+                        for (int si : stationTiles)
+                            if (g_placedPlatforms[si].stationPart == 0) { anchorIdx = si; break; }
                         g_stationModal.open = true;
                         g_stationModal.framesOpen = 0;
                         g_stationModal.confirmClicked = false;
@@ -1824,6 +2131,10 @@ static void GameLoopBody() {
                             newPlatform.placementGroupId = groupId;
                             newPlatform.isJunction = false;
                             g_placedPlatforms.push_back(newPlatform);
+                            // Surgically lift neutralization guard for this tile only
+                            {
+                                ClearPlacementProtectionForPlatform(pos);
+                            }
                             InvalidatePlatformCaches();
                             SpawnBuildParticles(pos, g_platformColor, g_gridSpacing);
                             placedCount++;
@@ -1842,6 +2153,10 @@ static void GameLoopBody() {
                                 if (pi >= (int)tempCompId.size()) continue;
                                 int cid = tempCompId[pi];
                                 if (cid < 0) continue;
+                                // Skip platforms still under demolish neutralization guard
+                                long long piKey = MakePositionKey(g_placedPlatforms[pi].position.x,
+                                                                  g_placedPlatforms[pi].position.z);
+                                if (g_demolishNeutralizedPlatformKeys.count(piKey)) continue;
                                 // Find which established line owns platforms in this component
                                 for (auto& line : g_lines) {
                                     bool lineOwnsComponent = false;
@@ -1853,12 +2168,24 @@ static void GameLoopBody() {
                                     }
                                     if (lineOwnsComponent) {
                                         line.platformIndices.insert(pi);
+                                        break; // Only add to the first matching line
                                     }
                                 }
                             }
                         }
 
-                        for (auto& train : g_placedTrains) RebuildTrainPath(train, g_placedPlatforms, g_gridSpacing);
+                        {
+                            std::set<int> affectedLineIds;
+                            for (const auto& line : g_lines) {
+                                for (int pi = firstNewPlatformIdx; pi < (int)g_placedPlatforms.size(); pi++) {
+                                    if (line.platformIndices.count(pi)) {
+                                        affectedLineIds.insert(line.id);
+                                        break;
+                                    }
+                                }
+                            }
+                            RebuildTrainsOnLines(affectedLineIds);
+                        }
                         char buf[128];
                         snprintf(buf, sizeof(buf), "PLATFORM LINE BUILT - %d CREDITS", totalSpent);
                         AddTerminalMessage(buf);
@@ -1908,10 +2235,10 @@ static void GameLoopBody() {
                 g_zoomIntroActive = false;
             }
             Vector3 dir = Vector3Normalize(Vector3Subtract(g_camera.position, g_camera.target));
-            g_camera.position = Vector3Scale(dir, newDist);
+            g_camera.position = Vector3Add(g_camera.target, Vector3Scale(dir, newDist));
             g_cameraAltitude  = g_camera.position.y;
-            g_cameraRadius    = sqrtf(g_camera.position.x * g_camera.position.x +
-                                      g_camera.position.z * g_camera.position.z);
+            g_cameraRadius    = sqrtf((g_camera.position.x - g_camera.target.x) * (g_camera.position.x - g_camera.target.x) +
+                                      (g_camera.position.z - g_camera.target.z) * (g_camera.position.z - g_camera.target.z));
         }
 
         // CyberTrain follow-cam: lock camera behind the front of the silo's train
@@ -2142,7 +2469,7 @@ static void GameLoopBody() {
             // (e.g. second station added to a neutral crossing line) but keeps the same key.
             // This block already runs only when platform cache is dirty (new build/demolish), so it's safe
             // to evaluate on every network edit.
-            if (g_lineModal.state == LineModalState::None && !g_stockModal.open && !g_stationModal.open && currentComponentCount > 0) {
+            if (g_lineModal.state == LineModalState::None && !g_stockModal.open && !g_stationModal.open && !g_demolishConfirmModal.open && currentComponentCount > 0) {
                 for (int cid = 0; cid < (int)g_cachedStationMembers.size(); cid++) {
                     if (cid >= (int)g_cachedStationCompKey.size()) continue;
 
@@ -2176,6 +2503,11 @@ static void GameLoopBody() {
                     // platforms physically touch an already established line.
                     std::unordered_map<int, int> touchCountByLine;
                     for (int pi : componentNeutralPlatforms) {
+                        // Skip platforms reset to neutral by demolish or declined as neutral branch
+                        long long piKey = MakePositionKey(g_placedPlatforms[pi].position.x,
+                                                         g_placedPlatforms[pi].position.z);
+                        if (g_demolishNeutralizedPlatformKeys.count(piKey)) continue;
+                        if (g_declinedNeutralBranchPlatformKeys.count(piKey)) continue;
                         for (int li = 0; li < (int)g_lines.size(); li++) {
                             if (!IsLineEstablishedByIndex(li)) continue;
                             for (int pj : g_lines[li].platformIndices) {
@@ -2189,7 +2521,7 @@ static void GameLoopBody() {
                     }
                     int bestTouchCount = 0;
                     for (const auto& kv : touchCountByLine) {
-                        if (kv.second > bestTouchCount) {
+                        if (kv.second > bestTouchCount || (kv.second == bestTouchCount && (existingLineId < 0 || kv.first < existingLineId))) {
                             bestTouchCount = kv.second;
                             existingLineId = kv.first;
                         }
@@ -2212,6 +2544,7 @@ static void GameLoopBody() {
                             continue; // Neutral component still needs two stations before first establishment.
                         }
                         int establishDetectedSystem = DetectStrictClusterSystemFromPlatforms(g_cachedStationMembers[cid]);
+                        std::vector<int> allSystems = DetectAllClusterSystemsFromPlatforms(g_cachedStationMembers[cid]);
                         if (establishDetectedSystem < (int)SiloSystem::SYS1_CARGO) {
                             // Build order invariant: still allow line establishment even when no silo system is
                             // currently detectable (e.g. cargo ecosystem not activated yet). Players can establish
@@ -2231,7 +2564,6 @@ static void GameLoopBody() {
                             establishDetectedSystem = (int)SiloSystem::SYS1_CARGO;
                         }
                         DebugLogFormat("DEBUG: MODAL TRIGGERED! Component has 2+ NEUTRAL stations (count=%d), keyChanged=%d", (int)neutralStationKeys.size(), componentKeysChanged ? 1 : 0);
-                        g_lineModal.state = LineModalState::EstablishLine;
                         g_lineModal.framesOpen = 0;
                         g_lineModal.newComponentKey = compKey;
                         g_lineModal.connectedComponentKeys.clear();
@@ -2240,10 +2572,21 @@ static void GameLoopBody() {
                         g_lineModal.cancelClicked = false;
                         g_lineModal.nameCursorPos = 0;
                         memset(g_lineModal.nameBuffer, 0, sizeof(g_lineModal.nameBuffer));
-                        g_lineModal.detectedSystem = establishDetectedSystem;
-                        g_lineModal.colorIndex = 1;
-                        SystemColorShades shades = GetSystemColorShades(g_lineModal.detectedSystem);
-                        g_lineModal.selectedColor = shades.colors[1];
+                        g_lineModal.detectedSystems = allSystems;
+                        g_lineModal.siloChoiceIndex = 0;
+                        g_lineModal.siloChoiceClicked = false;
+
+                        if ((int)allSystems.size() >= 2) {
+                            // Multiple silo systems detected — let the player choose
+                            DebugLogFormat("LINE_COLOR: Silo collision! %d systems detected, showing ChooseSilo modal", (int)allSystems.size());
+                            g_lineModal.state = LineModalState::ChooseSilo;
+                        } else {
+                            g_lineModal.state = LineModalState::EstablishLine;
+                            g_lineModal.detectedSystem = establishDetectedSystem;
+                            g_lineModal.colorIndex = 1;
+                            SystemColorShades shades = GetSystemColorShades(g_lineModal.detectedSystem);
+                            g_lineModal.selectedColor = shades.colors[1];
+                        }
 
                         break;
                     } else if (!alreadyInLine && g_declinedComponentKeys.find(compKey) != g_declinedComponentKeys.end()) {
@@ -2334,8 +2677,9 @@ static void GameLoopBody() {
                                 } else if (targetLineSystem >= (int)SiloSystem::SYS1_CARGO && crossingDetectedSystem == targetLineSystem) {
                                     DebugLogFormat("LINE_COLOR: Target declined crossing remains neutral (same cluster color as established line)");
                                 } else {
+                                    std::vector<int> crossingSystems = DetectAllClusterSystemsFromPlatforms(tmpNewPlatforms);
                                     DebugLogFormat("LINE_COLOR: Target declined, crossing has %d stations and valid new color -> Establish directly", crossingStations);
-                                    g_lineModal.state = LineModalState::EstablishLine;
+                                    g_lineModal.state = ((int)crossingSystems.size() >= 2) ? LineModalState::ChooseSilo : LineModalState::EstablishLine;
                                     g_lineModal.framesOpen = 0;
                                     g_lineModal.newComponentKey = 0;
                                     g_lineModal.connectedComponentKeys.clear();
@@ -2343,6 +2687,9 @@ static void GameLoopBody() {
                                     g_lineModal.cancelClicked = false;
                                     g_lineModal.nameBuffer[0] = '\0';
                                     g_lineModal.nameCursorPos = 0;
+                                    g_lineModal.detectedSystems = crossingSystems;
+                                    g_lineModal.siloChoiceIndex = 0;
+                                    g_lineModal.siloChoiceClicked = false;
                                     g_lineModal.pendingEstablishPlatforms.clear();
                                     for (int pi : tmpNewPlatforms) g_lineModal.pendingEstablishPlatforms.push_back(pi);
                                     for (int pj : tmpJunctions) g_lineModal.pendingEstablishPlatforms.push_back(pj);
@@ -2524,6 +2871,10 @@ static void GameLoopBody() {
                     newPlatform.placementGroupId = groupId;
                     newPlatform.isJunction = false;
                     g_placedPlatforms.push_back(newPlatform);
+                    // Surgically lift neutralization guard for this tile only
+                    {
+                        ClearPlacementProtectionForPlatform(pos);
+                    }
                     InvalidatePlatformCaches();
                     SpawnBuildParticles(pos, g_platformColor, g_gridSpacing);
                     placedCount++;
@@ -2541,6 +2892,10 @@ static void GameLoopBody() {
                         if (pi >= (int)tempCompId.size()) continue;
                         int cid = tempCompId[pi];
                         if (cid < 0) continue;
+                        // Skip platforms still under demolish neutralization guard
+                        long long piKey = MakePositionKey(g_placedPlatforms[pi].position.x,
+                                                          g_placedPlatforms[pi].position.z);
+                        if (g_demolishNeutralizedPlatformKeys.count(piKey)) continue;
                         for (auto& line : g_lines) {
                             bool lineOwnsComponent = false;
                             for (int existingPi : line.platformIndices) {
@@ -2551,11 +2906,23 @@ static void GameLoopBody() {
                             }
                             if (lineOwnsComponent) {
                                 line.platformIndices.insert(pi);
+                                break; // Only add to the first matching line
                             }
                         }
                     }
                 }
-                for (auto& train : g_placedTrains) RebuildTrainPath(train, g_placedPlatforms, g_gridSpacing);
+                {
+                    std::set<int> affectedLineIds;
+                    for (const auto& line : g_lines) {
+                        for (int pi = firstNewPlatformIdxJ; pi < (int)g_placedPlatforms.size(); pi++) {
+                            if (line.platformIndices.count(pi)) {
+                                affectedLineIds.insert(line.id);
+                                break;
+                            }
+                        }
+                    }
+                    RebuildTrainsOnLines(affectedLineIds);
+                }
             }
             if (placedCount > 0) {
                 char buf[128];
@@ -2576,6 +2943,28 @@ static void GameLoopBody() {
             g_junctionModal.buildJunctionClicked = false;
             g_junctionModal.doNotBuildClicked = false;
         }
+        // Handle ChooseSilo confirmation: transition to EstablishLine with chosen system
+        if (g_lineModal.state == LineModalState::ChooseSilo && g_lineModal.siloChoiceClicked) {
+            int chosenSystem = -1;
+            if (g_lineModal.siloChoiceIndex >= 0 && g_lineModal.siloChoiceIndex < (int)g_lineModal.detectedSystems.size())
+                chosenSystem = g_lineModal.detectedSystems[g_lineModal.siloChoiceIndex];
+            DebugLogFormat("LINE_COLOR: Silo chosen: system %d", chosenSystem);
+            g_lineModal.state = LineModalState::EstablishLine;
+            g_lineModal.framesOpen = 0;
+            g_lineModal.detectedSystem = chosenSystem;
+            g_lineModal.colorIndex = 1;
+            g_lineModal.siloChoiceClicked = false;
+            g_lineModal.nameBuffer[0] = '\0';
+            g_lineModal.nameCursorPos = 0;
+            SystemColorShades shades = GetSystemColorShades(chosenSystem);
+            g_lineModal.selectedColor = shades.colors[1];
+        }
+        // Handle ChooseSilo cancel: cancel the whole establish flow
+        if (g_lineModal.state == LineModalState::ChooseSilo && g_lineModal.cancelClicked) {
+            g_lineModal.state = LineModalState::None;
+            g_lineModal.cancelClicked = false;
+            g_declinedComponentKeys.insert(g_lineModal.newComponentKey);
+        }
         if (g_lineModal.state == LineModalState::EstablishLine && g_lineModal.establishClicked) {
             DebugLogFormat("LINE_DEBUG: Establish confirm clicked compKey=%lld pendingPlatforms=%d detectedSystem=%d",
                 (long long)g_lineModal.newComponentKey, (int)g_lineModal.pendingEstablishPlatforms.size(), g_lineModal.detectedSystem);
@@ -2586,6 +2975,7 @@ static void GameLoopBody() {
                 newLine.name = (g_lineModal.nameCursorPos > 0) ? std::string(g_lineModal.nameBuffer)
                     : std::string("Line") + std::to_string(newLine.id + 1);
                 newLine.color = g_lineModal.selectedColor;
+                newLine.chosenSystem = g_lineModal.detectedSystem;
                 bool createdFromPending = false;
                 if (!g_lineModal.pendingEstablishPlatforms.empty()) {
                     // Crossing line: establish from specific platform list (from NO CONTINUE flow)
@@ -2698,7 +3088,7 @@ static void GameLoopBody() {
             }
             if (g_lineModal.newComponentKey != 0) g_declinedComponentKeys.erase(g_lineModal.newComponentKey);
             // Lock sys8-12 hotspots until the user places a matching-colour train on the new line
-            if (!g_lines.empty()) g_awaitingTrainForLineId = g_lines.back().id;
+            if (g_awaitingTrainForLineId < 0 && !g_lines.empty()) g_awaitingTrainForLineId = g_lines.back().id;
             g_lineModal.state = LineModalState::None;
             g_lineModal.establishClicked = false;
             g_lineModal.cancelClicked = false;
@@ -2872,6 +3262,7 @@ static void GameLoopBody() {
                                 neutralBranchPlatforms.push_back(pi);
                             }
                             int crossingDetectedSystem = DetectStrictClusterSystemFromPlatforms(neutralBranchPlatforms);
+                            std::vector<int> crossingSystems = DetectAllClusterSystemsFromPlatforms(neutralBranchPlatforms);
                             int targetLineSystem = IsLineEstablishedByIndex(g_lineModal.targetLineId) ? DetectStrictClusterSystemForLine(g_lineModal.targetLineId) : -1;
                             if (crossingDetectedSystem < (int)SiloSystem::SYS1_CARGO) {
                                 DebugLogFormat("LINE_COLOR: NO CONTINUE - crossing stays neutral (no station inside colored cluster)");
@@ -2879,7 +3270,7 @@ static void GameLoopBody() {
                                 DebugLogFormat("LINE_COLOR: NO CONTINUE - crossing stays neutral (same cluster color as established line)");
                             } else {
                                 // Crossing track has 2+ stations and a different qualifying color: establish new line.
-                                g_lineModal.state = LineModalState::EstablishLine;
+                                g_lineModal.state = ((int)crossingSystems.size() >= 2) ? LineModalState::ChooseSilo : LineModalState::EstablishLine;
                                 g_lineModal.framesOpen = 0;
                                 g_lineModal.establishClicked = false;
                                 g_lineModal.cancelClicked = false;
@@ -2890,6 +3281,9 @@ static void GameLoopBody() {
                                 for (int pj : junctions) g_lineModal.pendingEstablishPlatforms.push_back(pj);
                                 g_lineModal.newComponentKey = 0;  // Not from a component - from platform list
                                 g_lineModal.connectedComponentKeys.clear();
+                                g_lineModal.detectedSystems = crossingSystems;
+                                g_lineModal.siloChoiceIndex = 0;
+                                g_lineModal.siloChoiceClicked = false;
                                 g_lineModal.detectedSystem = crossingDetectedSystem;
                                 g_lineModal.colorIndex = 1;
                                 SystemColorShades shades = GetSystemColorShades(crossingDetectedSystem);
@@ -2985,10 +3379,13 @@ static void GameLoopBody() {
                             if (line.platformIndices.find(pi) == line.platformIndices.end())
                                 continue;
                         }
-                        line.platformIndices.insert(pi);
+                        // Sync is purely a validation/pruning pass — never auto-insert.
+                        // (The guard at line ~3027 already prevents reaching here for
+                        //  platforms not already in the set, but being explicit is safer
+                        //  after component-ID churn from demolish.)
                     }
                 }
-                
+
                 line.stationCount = CountPhysicalStationsInLine(line, g_placedPlatforms);
             }
         }
@@ -3167,6 +3564,15 @@ static void GameLoopBody() {
                 continue;
             }
 
+            // Infrastructure pause: train is stationary due to line demolish
+            if (train.isPaused) {
+                if (!train.path.empty()) {
+                    PathPoint pt = GetPathPoint(train.path, train.pathProgress);
+                    train.position = pt.position;
+                }
+                continue;
+            }
+
             // Jam timer countdown
             if (train.isJammed) {
                 train.jamTimer -= scaledDeltaTime;
@@ -3261,7 +3667,7 @@ static void GameLoopBody() {
         // Update g_sysTrainMoving flags
         for (int si = 0; si < 7; si++) g_sysTrainMoving[si] = false;
         for (const auto& t : g_placedTrains) {
-            if (t.path.size() < 2 || t.isJammed || t.isDwelling) continue;
+            if (t.path.size() < 2 || t.isPaused || t.isJammed || t.isDwelling) continue;
             if (fabsf(t.direction) > 0.0f) {
                 int sys = RequiredSiloSystemForTrainType(t.type);
                 if (sys >= 0 && sys < 7) g_sysTrainMoving[sys] = true;
@@ -3549,14 +3955,19 @@ static void GameLoopBody() {
             float realTime = (float)GetTime(); // Real time for pulsing (ignores game speed/pause)
             for (size_t i = 0; i < g_placedTrains.size(); i++) {
                 Color trainC;
-                if (g_placedTrains[i].type == PlacedTrain::TrainType::Cargo) {
+                if (g_placedTrains[i].isPaused) {
+                    // Paused (infrastructure reset): render gray with slow blink
+                    float blink = (sinf(realTime * 2.0f) + 1.0f) * 0.5f; // 0..1
+                    unsigned char alpha = (unsigned char)(120 + blink * 80);
+                    trainC = (Color){128, 128, 128, alpha};
+                } else if (g_placedTrains[i].type == PlacedTrain::TrainType::Cargo) {
                     trainC = (Color){ 0, 255, 255, 240 };  // Cargo = cyan on map
                 } else {
                     trainC = GetTrainColorForType(g_placedTrains[i].type, 1.0f);
                     trainC.a = 220;
                 }
                 float trainBrightness = 1.0f;
-                if ((int)i == g_selectedTrainIndex) {
+                if (!g_placedTrains[i].isPaused && (int)i == g_selectedTrainIndex) {
                     trainC = (Color){ trainC.r, trainC.g, trainC.b, 240 };  // Brighter when selected
                     float pulse = (sinf(realTime * 5.0f) + 1.0f) / 2.0f;
                     trainBrightness = 0.7f + pulse * 1.6f;
@@ -3616,6 +4027,9 @@ static void GameLoopBody() {
             DrawSiloAnnounceModal(g_siloAnnounceModal, g_renderWidth, g_renderHeight);
             DrawStockCommoditiesModal(g_stockModal, g_renderWidth, g_renderHeight);
             DrawDemolishConfirmModal(g_demolishConfirmModal, g_renderWidth, g_renderHeight);
+            DrawPausedTrainDeleteModal(g_pausedTrainDeleteModal, g_renderWidth, g_renderHeight);
+            DrawJunctionConfigModal(g_junctionConfigModal, g_renderWidth, g_renderHeight);
+            DrawQuitConfirmModal(g_quitConfirmModal, g_renderWidth, g_renderHeight);
             DrawYear5WarningModal();
             DrawIntroModal();
             DrawHelpModal();
@@ -3642,6 +4056,58 @@ static void GameLoopBody() {
                 g_demolishConfirmModalOpen = false;
                 ClearAllPlacementModes();
                 g_demolishMode = true;
+            }
+            if (g_pausedTrainDeleteModal.confirmClicked) {
+                int ti = g_pausedTrainDeleteModal.trainIndex;
+                if (ti >= 0 && ti < (int)g_placedTrains.size()) {
+                    if (g_selectedTrainIndex == ti) g_selectedTrainIndex = -1;
+                    else if (g_selectedTrainIndex > ti) g_selectedTrainIndex--;
+                    g_placedTrains.erase(g_placedTrains.begin() + ti);
+                    AddTerminalMessage("PAUSED TRAIN DESTROYED - 100 CREDITS");
+                    if (g_playerCredits >= 100) g_playerCredits -= 100;
+                }
+                g_pausedTrainDeleteModal.open = false;
+                g_pausedTrainDeleteModal.confirmClicked = false;
+                g_pausedTrainDeleteModal.trainIndex = -1;
+            } else if (g_pausedTrainDeleteModal.cancelClicked) {
+                g_pausedTrainDeleteModal.open = false;
+                g_pausedTrainDeleteModal.cancelClicked = false;
+                g_pausedTrainDeleteModal.trainIndex = -1;
+            }
+            // Junction config modal: handle SWITCH and DONE
+            if (g_junctionConfigModal.switchClicked) {
+                g_junctionConfigModal.switchClicked = false;
+                int slot = g_junctionConfigModal.selectedTrainSlot;
+                if (slot >= 0 && slot < (int)g_junctionConfigModal.trainIndices.size()) {
+                    int ti = g_junctionConfigModal.trainIndices[slot];
+                    if (ti >= 0 && ti < (int)g_placedTrains.size()) {
+                        PlacedTrain& train = g_placedTrains[ti];
+                        std::vector<Vector3> adj = GetSortedAdjacentPositions(g_junctionConfigModal.junctionPos, g_placedPlatforms, g_gridSpacing);
+                        int numPairs = NumJunctionPairs((int)adj.size());
+                        if (numPairs > 0) {
+                            int cur = train.GetJunctionSetting(g_junctionConfigModal.junctionPos.x, g_junctionConfigModal.junctionPos.z, &adj);
+                            if (cur < 0) cur = DefaultJunctionPairIndex(g_junctionConfigModal.junctionPos, adj);
+                            int next = (cur + 1) % numPairs;
+                            train.SetJunctionSetting(g_junctionConfigModal.junctionPos.x, g_junctionConfigModal.junctionPos.z, next, &adj);
+                            if (!train.path.empty())
+                                (void)RebuildTrainPath(train, g_placedPlatforms, g_gridSpacing);
+                        }
+                    }
+                }
+            }
+            if (g_junctionConfigModal.doneClicked) {
+                g_junctionConfigModal = {};
+                g_junctionConfigModalOpen = false;
+                BlockMouseClicksAfterModalClose();
+            }
+            if (g_quitConfirmModal.yesClicked) {
+                g_quitConfirmModal = {};
+                g_quitConfirmModalOpen = false;
+                RestartToSplashAfterGameOver();
+            }
+            if (g_quitConfirmModal.noClicked) {
+                g_quitConfirmModal = {};
+                g_quitConfirmModalOpen = false;
             }
 
             // Gamma overlay
@@ -3824,7 +4290,8 @@ static void GameLoopBody() {
                 bool isCrossingOfTwoLines = !junctionIsSwitchable;
                 int exitSetting = -1; // -1 = use deterministic default pair
                 if (hasSelectedTrain && junctionIsSwitchable) {
-                    exitSetting = g_placedTrains[g_selectedTrainIndex].GetJunctionSetting(platform.position.x, platform.position.z);
+                    std::vector<Vector3> adjacent = GetSortedAdjacentPositions(platform.position, g_placedPlatforms, g_gridSpacing);
+                    exitSetting = g_placedTrains[g_selectedTrainIndex].GetJunctionSetting(platform.position.x, platform.position.z, &adjacent);
                 }
                 DrawPointsIndicator(platform.position, g_placedPlatforms, g_gridSpacing, currentTime, exitSetting, hasSelectedTrain && junctionIsSwitchable, isCrossingOfTwoLines);
             }
@@ -3844,12 +4311,16 @@ static void GameLoopBody() {
         for (size_t i = 0; i < g_placedTrains.size(); i++) {
             // Calculate brightness for selected train (uses real time, ignores game speed/pause)
             float trainBrightness = 1.0f;
-            if ((int)i == g_selectedTrainIndex) {
+            if (g_placedTrains[i].isPaused) {
+                // Paused train: dim and slow-blink to indicate infrastructure halt
+                float blink = (sinf(currentTime * 2.0f) + 1.0f) * 0.5f; // 0..1
+                trainBrightness = 0.25f + blink * 0.15f; // 0.25..0.4
+            } else if ((int)i == g_selectedTrainIndex) {
                 // Pulse from 0.7 (-30%) to 2.3 (+230%) brightness (~1.25 seconds per cycle)
                 float pulse = (sinf(currentTime * 5.0f) + 1.0f) / 2.0f; // 0 to 1
                 trainBrightness = 0.7f + pulse * 1.6f; // 0.7 to 2.3
             }
-            
+
             if (g_placedTrains[i].type == PlacedTrain::TrainType::Cargo) {
                 DrawCargoTrain(g_placedTrains[i].path, g_placedTrains[i].pathProgress, g_gridSpacing, g_placedTrains[i].cargoTrailers, g_placedTrains[i].cargoTotal, trainBrightness);
             } else {
@@ -3857,6 +4328,8 @@ static void GameLoopBody() {
             }
         }
         
+        SetBuildStatusNone();
+
         // Draw preview (platform or train) at mouse position - only when in effective 3D area (not cutout)
         if (g_mouseInEffective3DArea && (IsTrackPlacementSelected() || IsPassengerTrainPlacementSelected() || g_cargoTrainPlacementMode)) {
             g_liveCostPreview[0] = '\0';  // Clear unless we set it in platform mode below
@@ -3864,6 +4337,7 @@ static void GameLoopBody() {
             // Check if valid placement location
             Vector3 pathCenter;
             bool canPlaceTrain = false;
+            bool buildStatusResolved = false;
             
             // Check if the platform under mouse is a station
             const PlacedPlatform* targetPlatform = nullptr;
@@ -3898,9 +4372,17 @@ static void GameLoopBody() {
                     }
                     std::vector<Vector3> path = BuildPlatformPath(g_mouseWorldPos, g_placedPlatforms, g_gridSpacing, nullptr, previewLineFilter);
                     if (path.size() >= 4) {
+                        const char* blockedReason = nullptr;
                         canPlaceTrain = DoesEstablishedLineMatchTrainType(previewLineIdx, previewType);
+                        if (!canPlaceTrain) blockedReason = "SYS != EL";
                         int previewBuildCost = GetTrainBuildCost(previewType, g_cargoTrainPlacementMode ? g_cargoPlacementTrailers : 1);
-                        if (canPlaceTrain && g_playerCredits < previewBuildCost) canPlaceTrain = false;
+                        if (canPlaceTrain && g_playerCredits < previewBuildCost) {
+                            canPlaceTrain = false;
+                            blockedReason = "NO CR";
+                        }
+                        if (canPlaceTrain) SetBuildStatusPossible();
+                        else SetBuildStatusBlocked(blockedReason);
+                        buildStatusResolved = true;
                         // For preview, we need to build a path with Y positions
                         std::vector<Vector3> previewPath;
                         for (const auto& pos : path) {
@@ -3914,7 +4396,13 @@ static void GameLoopBody() {
                         } else {
                             DrawTrain(previewPath, previewProgress, g_gridSpacing, 1.0f, !canPlaceTrain, previewType, trainPulseToWhite);
                         }
+                    } else {
+                        SetBuildStatusBlocked("REQ EL ST");
+                        buildStatusResolved = true;
                     }
+                } else {
+                    SetBuildStatusBlocked("REQ CONNECTED ST");
+                    buildStatusResolved = true;
                 }
             }
             
@@ -3928,21 +4416,41 @@ static void GameLoopBody() {
                 int creditsRemaining = g_playerCredits;
                 for (const Vector3& pos : lineCells) {
                     bool canPlace = true;
+                    const char* blockedReason = nullptr;
                     if (!IsWithinGridBounds(pos.x, pos.z, g_gridSpacing * 0.5f)) canPlace = false;
+                    if (!canPlace) blockedReason = "OOB";
                     Building testBuilding;
                     testBuilding.position = pos;
                     testBuilding.size = { g_gridSpacing, g_gridSpacing, g_gridSpacing };
-                    if (overlapsWithAny(testBuilding, g_buildings)) canPlace = false;
+                    if (overlapsWithAny(testBuilding, g_buildings)) {
+                        canPlace = false;
+                        blockedReason = "OVR CITY";
+                    }
                     for (const auto& placed : g_placedPlatforms) {
-                        if (Vector3Distance(pos, placed.position) < g_gridSpacing * 0.9f) { canPlace = false; break; }
+                        if (Vector3Distance(pos, placed.position) < g_gridSpacing * 0.9f) {
+                            canPlace = false;
+                            blockedReason = "TRK OCC";
+                            break;
+                        }
                     }
                     int segCost = ApplyBuildDiscount(OuterGridCost(150, pos.x, pos.z));
-                    if (canPlace && creditsRemaining < segCost) canPlace = false;
+                    if (canPlace && creditsRemaining < segCost) {
+                        canPlace = false;
+                        blockedReason = "NO CR";
+                    }
                     if (canPlace) creditsRemaining -= segCost;
                     Color previewColor = platformColorEff;
                     if (!canPlace) previewColor = AddColor(MulColor(GetInvalidPreviewColor(), 0.6f), nightBlue);
                     previewColor.a = (unsigned char)(previewColor.a * 0.7f);  // Slightly transparent for preview
                     DrawPlatform(pos, g_gridSpacing, previewColor, !canPlace);
+                    if (!buildStatusResolved && !canPlace) {
+                        SetBuildStatusBlocked(blockedReason);
+                        buildStatusResolved = true;
+                    }
+                }
+                if (!buildStatusResolved) {
+                    SetBuildStatusPossible();
+                    buildStatusResolved = true;
                 }
             }
             // When over empty ground (and not dragging): cargo mode shows cargo train preview; platform/track mode shows platform preview
@@ -3968,53 +4476,72 @@ static void GameLoopBody() {
                     std::vector<Vector3> previewPath;
                     previewPath.push_back({ g_mouseWorldPos.x - rotDirX * pathHalfLen, topY, g_mouseWorldPos.z - rotDirZ * pathHalfLen });
                     previewPath.push_back({ g_mouseWorldPos.x + rotDirX * pathHalfLen, topY, g_mouseWorldPos.z + rotDirZ * pathHalfLen });
-                    PlacedTrain::TrainType previewType = (PlacedTrain::TrainType)((int)PlacedTrain::TrainType::Passenger + g_trainColorIndex);
+                    int idx = (g_trainColorIndex >= 0 && g_trainColorIndex <= 5) ? g_trainColorIndex : 0;
+                    PlacedTrain::TrainType previewType = (PlacedTrain::TrainType)((int)PlacedTrain::TrainType::Passenger + idx);
                     if (previewType > PlacedTrain::TrainType::Yellow) previewType = PlacedTrain::TrainType::Passenger;
                     DrawTrain(previewPath, pathHalfLen, g_gridSpacing, 1.0f, true, previewType, trainPulseToWhite);
                 } else if (IsTrackPlacementSelected()) {
                     // Platform/track mode: single platform preview (preview line is drawn above when dragging)
                     bool canPlacePlatform = true;
+                    const char* blockedReason = nullptr;
                     if (!IsWithinGridBounds(g_mouseWorldPos.x, g_mouseWorldPos.z, g_gridSpacing * 0.5f)) canPlacePlatform = false;
+                    if (!canPlacePlatform) blockedReason = "OOB";
                     Building testBuilding;
                     testBuilding.position = g_mouseWorldPos;
                     testBuilding.size = { g_gridSpacing, g_gridSpacing, g_gridSpacing };
-                    if (overlapsWithAny(testBuilding, g_buildings)) canPlacePlatform = false;
+                    if (overlapsWithAny(testBuilding, g_buildings)) {
+                        canPlacePlatform = false;
+                        blockedReason = "OVR CITY";
+                    }
                     if (canPlacePlatform) {
                         for (const auto& placed : g_placedPlatforms) {
-                            if (Vector3Distance(g_mouseWorldPos, placed.position) < g_gridSpacing * 0.9f) { canPlacePlatform = false; break; }
+                            if (Vector3Distance(g_mouseWorldPos, placed.position) < g_gridSpacing * 0.9f) {
+                                canPlacePlatform = false;
+                                blockedReason = "TRK OCC";
+                                break;
+                            }
                         }
                     }
-                    int hoverSegCost = OuterGridCost(150, g_mouseWorldPos.x, g_mouseWorldPos.z);
-                    if (canPlacePlatform && g_playerCredits < hoverSegCost) canPlacePlatform = false;
+                    int hoverSegCost = ApplyBuildDiscount(OuterGridCost(150, g_mouseWorldPos.x, g_mouseWorldPos.z));
+                    if (canPlacePlatform && g_playerCredits < hoverSegCost) {
+                        canPlacePlatform = false;
+                        blockedReason = "NO CR";
+                    }
                     Color platformColorEff = AddColor(MulColor(g_platformColor, brightness), nightBlue);
                     DrawPlatform(g_mouseWorldPos, g_gridSpacing, platformColorEff, !canPlacePlatform);
                     // Cost preview (hover only - drag cost is set in drag block)
                     if (!g_platformDragActive && canPlacePlatform) {
                         snprintf(g_liveCostPreview, sizeof(g_liveCostPreview), "New extended network line cost: %d", hoverSegCost);
                     }
+                    if (canPlacePlatform) SetBuildStatusPossible();
+                    else SetBuildStatusBlocked(blockedReason);
+                    buildStatusResolved = true;
                 }
+            }
+
+            if (!buildStatusResolved && (IsPassengerTrainPlacementSelected() || g_cargoTrainPlacementMode)) {
+                if (!targetPlatform || !targetPlatform->isStation) SetBuildStatusBlocked("REQ ST TARGET");
+                else SetBuildStatusBlocked("TRAIN BLOCKED");
             }
         }
         if (!IsTrackPlacementSelected()) g_liveCostPreview[0] = '\0';  // Clear cost when not in platform mode
         if (g_mouseInEffective3DArea && g_bureauPlacementMode) {
             int selectedFloors = g_bureauFloorOptions[g_bureauFloorIndex];
             bool canPlaceBureau = true;
-            if (!IsWithinGridBounds(g_mouseWorldPos.x, g_mouseWorldPos.z, g_gridSpacing * 1.0f)) canPlaceBureau = false;
-            float bureauHalf = g_gridSpacing * 1.0f;
-            BoundingBox bureauBox = {
-                (Vector3){ g_mouseWorldPos.x - bureauHalf, 0.0f, g_mouseWorldPos.z - bureauHalf },
-                (Vector3){ g_mouseWorldPos.x + bureauHalf, g_gridSpacing * 60.0f, g_mouseWorldPos.z + bureauHalf }
-            };
-            for (const auto& b : g_buildings) {
-                BoundingBox bb = { (Vector3){ b.position.x - b.size.x/2.0f, b.position.y - b.size.y/2.0f, b.position.z - b.size.z/2.0f },
-                                   (Vector3){ b.position.x + b.size.x/2.0f, b.position.y + b.size.y/2.0f, b.position.z + b.size.z/2.0f } };
-                if (CheckCollisionBoxes(bureauBox, bb)) { canPlaceBureau = false; break; }
+            const char* blockedReason = nullptr;
+            if (!IsWithinGridBounds(g_mouseWorldPos.x, g_mouseWorldPos.z, g_gridSpacing * 1.0f)) {
+                canPlaceBureau = false;
+                blockedReason = "OOB";
             }
+            float bureauHalf = g_gridSpacing * 1.0f;
+            // No skyline building overlap check — bureaus can be placed next to clusters
             if (canPlaceBureau) {
                 for (const auto& p : g_placedPlatforms) {
                     if (p.position.x >= g_mouseWorldPos.x - bureauHalf - 0.1f && p.position.x <= g_mouseWorldPos.x + bureauHalf + 0.1f &&
                         p.position.z >= g_mouseWorldPos.z - bureauHalf - 0.1f && p.position.z <= g_mouseWorldPos.z + bureauHalf + 0.1f) {
-                        canPlaceBureau = false; break;
+                        canPlaceBureau = false;
+                        blockedReason = "BUR OVR TRK/ST/DEP";
+                        break;
                     }
                 }
             }
@@ -4023,7 +4550,9 @@ static void GameLoopBody() {
                 for (const auto& f : g_placedFactories) {
                     if (fabsf(f.position.x - g_mouseWorldPos.x) <= (factoryHalf + bureauHalf) &&
                         fabsf(f.position.z - g_mouseWorldPos.z) <= (factoryHalf + bureauHalf)) {
-                        canPlaceBureau = false; break;
+                        canPlaceBureau = false;
+                        blockedReason = "BUR OVR FAC";
+                        break;
                     }
                 }
             }
@@ -4031,19 +4560,30 @@ static void GameLoopBody() {
                 for (const auto& b : g_placedBureaus) {
                     if (fabsf(b.position.x - g_mouseWorldPos.x) <= (bureauHalf * 2.0f) &&
                         fabsf(b.position.z - g_mouseWorldPos.z) <= (bureauHalf * 2.0f)) {
-                        canPlaceBureau = false; break;
+                        canPlaceBureau = false;
+                        blockedReason = "BUR OVR BUR";
+                        break;
                     }
                 }
             }
             int closestLineIndex = -1;
             bool innerRingOk = DetectClosestEstablishedLineForBureauInnerRing(g_mouseWorldPos, &closestLineIndex);
-            if (canPlaceBureau) canPlaceBureau = innerRingOk;
+            if (canPlaceBureau && !innerRingOk) {
+                canPlaceBureau = false;
+                blockedReason = "IR REQ EL ST";
+            }
             int cargoCost = ApplyOrangeBureauDiscount(GetBureauCargoCost(g_bureauFloorIndex));
             bool cargoOk = HasEnoughCargoInRadius(g_mouseWorldPos, g_placedPlatforms, g_gridSpacing, cargoCost);
-            if (canPlaceBureau) canPlaceBureau = cargoOk;
+            if (canPlaceBureau && !cargoOk) {
+                canPlaceBureau = false;
+                blockedReason = "OR REQ MAT";
+            }
             int costPerFloor = GetBureauCostPerFloorForLineIndex(closestLineIndex);
             int totalCost = ApplyBuildDiscount(selectedFloors * costPerFloor);
-            if (canPlaceBureau && g_playerCredits < totalCost) canPlaceBureau = false;
+            if (canPlaceBureau && g_playerCredits < totalCost) {
+                canPlaceBureau = false;
+                blockedReason = "NO CR";
+            }
 
             Color bureauPreviewColor;
             if (canPlaceBureau) {
@@ -4057,6 +4597,8 @@ static void GameLoopBody() {
                 bureauPreviewColor = AddColor(MulColor(GetInvalidPreviewColor(), brightness), nightBlue);
             }
             DrawBureau(g_mouseWorldPos, g_gridSpacing, selectedFloors, bureauPreviewColor);
+            if (canPlaceBureau) SetBuildStatusPossible();
+            else SetBuildStatusBlocked(blockedReason);
 
             // Debug radius indicators
             const int segments = 48;
@@ -4104,7 +4646,11 @@ static void GameLoopBody() {
             DrawCubeWires((Vector3){g_mouseWorldPos.x, topY, g_mouseWorldPos.z}, g_gridSpacing * 1.1f, topThickness * 2.0f, g_gridSpacing * 1.1f, RED);
         } else if (g_mouseInEffective3DArea && g_factoryPlacementMode) {
             bool canPlaceFactory = true;
-            if (!IsWithinGridBounds(g_mouseWorldPos.x, g_mouseWorldPos.z, g_gridSpacing * 2.0f)) canPlaceFactory = false;
+            const char* blockedReason = nullptr;
+            if (!IsWithinGridBounds(g_mouseWorldPos.x, g_mouseWorldPos.z, g_gridSpacing * 2.0f)) {
+                canPlaceFactory = false;
+                blockedReason = "OOB";
+            }
             Vector3 factoryPos = g_mouseWorldPos;
             float half = g_gridSpacing * 2.0f;
             BoundingBox factoryBox = { (Vector3){ factoryPos.x - half, 0.0f, factoryPos.z - half },
@@ -4112,46 +4658,79 @@ static void GameLoopBody() {
             for (const auto& b : g_buildings) {
                 BoundingBox bb = { (Vector3){ b.position.x - b.size.x/2.0f, b.position.y - b.size.y/2.0f, b.position.z - b.size.z/2.0f },
                                  (Vector3){ b.position.x + b.size.x/2.0f, b.position.y + b.size.y/2.0f, b.position.z + b.size.z/2.0f } };
-                if (CheckCollisionBoxes(factoryBox, bb)) { canPlaceFactory = false; break; }
+                if (CheckCollisionBoxes(factoryBox, bb)) {
+                    canPlaceFactory = false;
+                    blockedReason = "OVR CITY";
+                    break;
+                }
             }
             if (canPlaceFactory) {
                 for (const auto& p : g_placedPlatforms) {
                     if (p.position.x >= factoryPos.x - half - 0.1f && p.position.x <= factoryPos.x + half + 0.1f &&
                         p.position.z >= factoryPos.z - half - 0.1f && p.position.z <= factoryPos.z + half + 0.1f) {
-                        canPlaceFactory = false; break;
+                        canPlaceFactory = false;
+                        blockedReason = "FAC OVR TRK/ST/DEP";
+                        break;
                     }
                 }
             }
             if (canPlaceFactory) {
                 for (const auto& f : g_placedFactories) {
                     if (fabsf(f.position.x - factoryPos.x) <= (half * 2.0f) && fabsf(f.position.z - factoryPos.z) <= (half * 2.0f)) {
-                        canPlaceFactory = false; break;
+                        canPlaceFactory = false;
+                        blockedReason = "FAC OVR FAC";
+                        break;
                     }
                 }
             }
-            if (canPlaceFactory && g_playerCredits < 10000) canPlaceFactory = false;
+            if (canPlaceFactory && g_playerCredits < ApplyBuildDiscount(OuterGridCost(10000, g_mouseWorldPos.x, g_mouseWorldPos.z))) {
+                canPlaceFactory = false;
+                blockedReason = "NO CR";
+            }
 
             Color fc = canPlaceFactory ? AddColor(MulColor((Color){ 130, 130, 130, 220 }, brightness), nightBlue) : (Color){ 0,0,0,0 };
             DrawFactory(g_mouseWorldPos, g_gridSpacing, fc, !canPlaceFactory);
+            if (canPlaceFactory) SetBuildStatusPossible();
+            else SetBuildStatusBlocked(blockedReason);
         } else if (g_mouseInEffective3DArea && g_depotPlacementMode) {
             bool canPlaceDepot = true;
-            if (!IsWithinGridBounds(g_mouseWorldPos.x, g_mouseWorldPos.z, g_gridSpacing * 0.5f)) canPlaceDepot = false;
+            const char* blockedReason = nullptr;
+            if (!IsWithinGridBounds(g_mouseWorldPos.x, g_mouseWorldPos.z, g_gridSpacing * 0.5f)) {
+                canPlaceDepot = false;
+                blockedReason = "OOB";
+            }
             Building testBuilding;
             testBuilding.position = g_mouseWorldPos;
             testBuilding.size = { g_gridSpacing, g_gridSpacing, g_gridSpacing };
-            if (overlapsWithAny(testBuilding, g_buildings)) canPlaceDepot = false;
+            if (overlapsWithAny(testBuilding, g_buildings)) {
+                canPlaceDepot = false;
+                blockedReason = "OVR CITY";
+            }
             if (canPlaceDepot) {
                 for (const auto& placed : g_placedPlatforms) {
-                    if (Vector3Distance(g_mouseWorldPos, placed.position) < g_gridSpacing * 0.9f) { canPlaceDepot = false; break; }
+                    if (Vector3Distance(g_mouseWorldPos, placed.position) < g_gridSpacing * 0.9f) {
+                        canPlaceDepot = false;
+                        blockedReason = "DEP OVR TRK/ST";
+                        break;
+                    }
                 }
             }
-            if (canPlaceDepot) canPlaceDepot = CanPlaceDepotAt(g_mouseWorldPos, g_placedPlatforms, g_gridSpacing);
-            if (canPlaceDepot && g_playerCredits < 1500) canPlaceDepot = false;
+            if (canPlaceDepot && !CanPlaceDepotAt(g_mouseWorldPos, g_placedPlatforms, g_gridSpacing)) {
+                canPlaceDepot = false;
+                blockedReason = "DEP REQ NS";
+            }
+            if (canPlaceDepot && g_playerCredits < ApplyBuildDiscount(OuterGridCost(1500, g_mouseWorldPos.x, g_mouseWorldPos.z))) {
+                canPlaceDepot = false;
+                blockedReason = "NO CR";
+            }
 
             Color depotColor = canPlaceDepot ? AddColor(MulColor((Color){ 160, 160, 160, 220 }, brightness), nightBlue) : (Color){ 0,0,0,0 };
             DrawMaterialsDepot(g_mouseWorldPos, g_gridSpacing, depotColor, 0, !canPlaceDepot);
+            if (canPlaceDepot) SetBuildStatusPossible();
+            else SetBuildStatusBlocked(blockedReason);
         } else if (g_mouseInEffective3DArea && g_stationPlacementMode) {
             bool canPlaceStation = true;
+            const char* blockedReason = nullptr;
             for (int i = 0; i < 4 && canPlaceStation; i++) {
                 Vector3 pos = g_mouseWorldPos;
                 float offset = (i - 1.5f) * g_gridSpacing;
@@ -4162,16 +4741,40 @@ static void GameLoopBody() {
                     case 3: pos.z -= offset; break;
                     default: pos.x += offset; break;
                 }
-                if (!IsWithinGridBounds(pos.x, pos.z, g_gridSpacing * 0.5f)) canPlaceStation = false;
+                if (!IsWithinGridBounds(pos.x, pos.z, g_gridSpacing * 0.5f)) {
+                    canPlaceStation = false;
+                    blockedReason = "OOB";
+                }
                 Building testBuilding;
                 testBuilding.position = pos;
                 testBuilding.size = { g_gridSpacing, g_gridSpacing, g_gridSpacing };
-                if (overlapsWithAny(testBuilding, g_buildings)) canPlaceStation = false;
+                if (overlapsWithAny(testBuilding, g_buildings)) {
+                    canPlaceStation = false;
+                    blockedReason = "OVR CITY";
+                }
                 for (const auto& p : g_placedPlatforms) {
-                    if (Vector3Distance(pos, p.position) < g_gridSpacing * 0.9f) { canPlaceStation = false; break; }
+                    if (Vector3Distance(pos, p.position) < g_gridSpacing * 0.9f) {
+                        canPlaceStation = false;
+                        blockedReason = "ST OVR TRK/ST/DEP";
+                        break;
+                    }
+                }
+                if (canPlaceStation) {
+                    const float factoryHalf = g_gridSpacing * 2.0f;
+                    for (const auto& f : g_placedFactories) {
+                        if (fabsf(pos.x - f.position.x) < factoryHalf &&
+                            fabsf(pos.z - f.position.z) < factoryHalf) {
+                            canPlaceStation = false;
+                            blockedReason = "ST OVR FAC";
+                            break;
+                        }
+                    }
                 }
             }
-            if (canPlaceStation && g_playerCredits < 1000) canPlaceStation = false;
+            if (canPlaceStation && g_playerCredits < ApplyBuildDiscount(OuterGridCost(1000, g_mouseWorldPos.x, g_mouseWorldPos.z))) {
+                canPlaceStation = false;
+                blockedReason = "NO CR";
+            }
             Color stationColorEff = AddColor(MulColor(g_stationColor, brightness), nightBlue);
             float previewTime = (float)GetTime();
             for (int i = 0; i < 4; i++) {
@@ -4199,6 +4802,8 @@ static void GameLoopBody() {
                 }
                 DrawPlatform(pos, g_gridSpacing, stationColorEff, !canPlaceStation, basePlateOvr);
             }
+            if (canPlaceStation) SetBuildStatusPossible();
+            else SetBuildStatusBlocked(blockedReason);
         } else if (g_mouseInEffective3DArea && g_demolishMode) {
             // Draw demolish preview (red X or highlight)
             float topY = GetPlatformTopY(g_mouseWorldPos.y, g_gridSpacing);
@@ -4387,6 +4992,9 @@ static void GameLoopBody() {
         DrawSiloAnnounceModal(g_siloAnnounceModal, g_renderWidth, g_renderHeight);
         DrawStockCommoditiesModal(g_stockModal, g_renderWidth, g_renderHeight);
         DrawDemolishConfirmModal(g_demolishConfirmModal, g_renderWidth, g_renderHeight);
+        DrawPausedTrainDeleteModal(g_pausedTrainDeleteModal, g_renderWidth, g_renderHeight);
+        DrawJunctionConfigModal(g_junctionConfigModal, g_renderWidth, g_renderHeight);
+        DrawQuitConfirmModal(g_quitConfirmModal, g_renderWidth, g_renderHeight);
         DrawYear5WarningModal();
         DrawIntroModal();
         DrawHelpModal();
@@ -4423,6 +5031,62 @@ static void GameLoopBody() {
             BlockMouseClicksAfterModalClose();
             ClearAllPlacementModes();
             g_demolishMode = true;
+        }
+        if (g_pausedTrainDeleteModal.confirmClicked) {
+            int ti = g_pausedTrainDeleteModal.trainIndex;
+            if (ti >= 0 && ti < (int)g_placedTrains.size()) {
+                if (g_selectedTrainIndex == ti) g_selectedTrainIndex = -1;
+                else if (g_selectedTrainIndex > ti) g_selectedTrainIndex--;
+                g_placedTrains.erase(g_placedTrains.begin() + ti);
+                AddTerminalMessage("PAUSED TRAIN DESTROYED - 100 CREDITS");
+                if (g_playerCredits >= 100) g_playerCredits -= 100;
+            }
+            g_pausedTrainDeleteModal.open = false;
+            g_pausedTrainDeleteModal.confirmClicked = false;
+            g_pausedTrainDeleteModal.trainIndex = -1;
+            BlockMouseClicksAfterModalClose();
+        } else if (g_pausedTrainDeleteModal.cancelClicked) {
+            g_pausedTrainDeleteModal.open = false;
+            g_pausedTrainDeleteModal.cancelClicked = false;
+            g_pausedTrainDeleteModal.trainIndex = -1;
+            BlockMouseClicksAfterModalClose();
+        }
+        // Junction config modal: handle SWITCH and DONE
+        if (g_junctionConfigModal.switchClicked) {
+            g_junctionConfigModal.switchClicked = false;
+            int slot = g_junctionConfigModal.selectedTrainSlot;
+            if (slot >= 0 && slot < (int)g_junctionConfigModal.trainIndices.size()) {
+                int ti = g_junctionConfigModal.trainIndices[slot];
+                if (ti >= 0 && ti < (int)g_placedTrains.size()) {
+                    PlacedTrain& train = g_placedTrains[ti];
+                    std::vector<Vector3> adj = GetSortedAdjacentPositions(g_junctionConfigModal.junctionPos, g_placedPlatforms, g_gridSpacing);
+                    int numPairs = NumJunctionPairs((int)adj.size());
+                    if (numPairs > 0) {
+                        int cur = train.GetJunctionSetting(g_junctionConfigModal.junctionPos.x, g_junctionConfigModal.junctionPos.z, &adj);
+                        if (cur < 0) cur = DefaultJunctionPairIndex(g_junctionConfigModal.junctionPos, adj);
+                        int next = (cur + 1) % numPairs;
+                        train.SetJunctionSetting(g_junctionConfigModal.junctionPos.x, g_junctionConfigModal.junctionPos.z, next, &adj);
+                        if (!train.path.empty())
+                            (void)RebuildTrainPath(train, g_placedPlatforms, g_gridSpacing);
+                    }
+                }
+            }
+        }
+        if (g_junctionConfigModal.doneClicked) {
+            g_junctionConfigModal = {};
+            g_junctionConfigModalOpen = false;
+            BlockMouseClicksAfterModalClose();
+        }
+        if (g_quitConfirmModal.yesClicked) {
+            g_quitConfirmModal = {};
+            g_quitConfirmModalOpen = false;
+            RestartToSplashAfterGameOver();
+            BlockMouseClicksAfterModalClose();
+        }
+        if (g_quitConfirmModal.noClicked) {
+            g_quitConfirmModal = {};
+            g_quitConfirmModalOpen = false;
+            BlockMouseClicksAfterModalClose();
         }
 
         // Gamma overlay

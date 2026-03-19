@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "Bash(grep:*)",
+      "Bash(find E:\\\\Dev\\\\Glyphis_IO BBS The Proxy Tapes\\\\Data\\\\games\\\\CyberTrain\\\\src:*)",
+      "Bash(python:*)",
+      "Bash(set PATH=C:\\\\raylib\\\\w64devkit\\\\bin;%PATH%:*)",
+      "Bash(C:/raylib/w64devkit/bin/g++.exe:*)",
+      "Bash(export:*)",
+      "Bash(cmd.exe:*)",
+      "Bash(PATH=\"/c/raylib/w64devkit/bin:$PATH\" g++:*)",
+      "Bash(python3:*)",
+      "Bash(cmd:*)",
+      "Bash(ls:*)",
+      "Bash(g++:*)",
+      "Bash(\"C:\\\\raylib\\\\w64devkit\\\\bin\\\\g++.exe\":*)",
+      "Bash(where g++)",
+      "Read(//c/raylib/w64devkit/**)",
+      "Read(//c/w64devkit/**)",
+      "Read(//e/Dev/raylib/include/**)",
+      "Read(//c/raylib/include/**)"
+    ]
+  }
+}
