@@ -14,6 +14,17 @@ import json
 import random
 from typing import List, Dict, Tuple, Optional, Any
 from datetime import datetime
+from utils import _is_tokyo_nighttime
+
+try:
+    from PIL import Image, ImageSequence
+    _pil_available = True
+except ImportError:
+    Image = None
+    ImageSequence = None
+    _pil_available = False
+
+from Data.Social_Engineering.School_Hack.school_database_standalone import SchoolDatabaseApp
 
 # Visual Constants
 COLOR_BG_DARK = (20, 20, 40)
@@ -36,11 +47,20 @@ COLOR_TEAL = (0, 200, 255)
 COLOR_DEEP_BLUE = (8, 12, 24)
 COLOR_SELECTION = (0, 180, 255, 120)  # Semi-transparent cyan for text selection
 
+DOTSONIC_INSTALLER_FILENAME = "DOTSONIC_INSTALL.BINST"
+DOTSONIC_INSTALLER_DESTINATION = r"C:\BRADSONIC\DOTSONIC"
+SCHOOL_HACK_GIG_PAYPHONE_NUMBER = "0364172088"
+SCHOOL_HACK_GIG_MIN_SIGNATURE_LENGTH = 4
+SMOKEY_EMAIL_ADDRESS = "5m0k3y@629.api"
+SMOKEY_SCHOOL_INTRO_EVENT_ID = "school_hack_smokey_intro"
+SMOKEY_SCHOOL_REPLY_EVENT_ID = "school_hack_smokey_reply"
+SMOKEY_SCHOOL_NAMES = "Rain\nBertie\nJason"
+
 # Mission note template (non-deletable narrative note)
 MISSION_NOTE_TITLE = "Mission Objectives"
 MISSION_NOTE_CONTENT = (
     "[s]1. Receive Invite from Glyphis[/s]\n"
-    "[s]2. Get onto the BBS (0345728891)[/s]\n"
+    "[s]2. Get onto the BBS (03-4572-8891)[/s]\n"
     "[s]3. Complete a technical challenge to prove yourself[/s]\n"
     "4. Get the audio tech's help and get the first audio stream from Glyphisis_IO. Record it using the Datasette!\n"
     "5. Get invited to crack some games\n"
@@ -57,63 +77,321 @@ NOTESTAB_TITLE_MAX_LEN = 20
 SCHOOL_OP_NOTE_TITLE = "School Op - Steps"
 # Ghost types this version - no credentials; player must find them in LocaleProtocols.brad
 SCHOOL_HACK_NOTE_LINES_NO_CREDS = [
-    "• Desktop: HDD>System>Terminal, type file-system-start",
-    "• Open locale protocols file, find Switch Region String",
-    "• String (period-sep):",
-    "  - get admin-command...",
+    "• Log out to the Bradsonic desktop",
+    "• Open HDD > System > Terminal and type: file-system-start",
+    "• Open LocaleProtocols and find the Switch Region String",
+    "• The string is period-separated. Pull out:",
     "  - command: ???",
     "  - username: ???",
     "  - password: ???",
-    "• Close terminal, reopen, run admin-command + user + pass",
-    "• Region change → American Mainland (no factory reset)",
-    "• Open email on desktop, send rain@ciphernet.net subj I'm in",
-    "• Wait for Rain's reply",
+    "• Close Terminal, reopen it, then run the command with that username and password",
+    "• Change region to American Mainland",
+    "  - do NOT factory reset",
+    "• Open BRADSONIC-MAIL and send Rain a test message",
+    "  - to: rain@ciphernet.net",
+    "  - subject: I'm in",
+    "• Wait for Rain's next instructions before trying anything else",
+    "• Final grade targets once the server is open:",
+    "  - Rosaline Cloud: ENGLISH and U.S.HISTORY -> A",
+    "  - Bertie Vandengate: ENGLISH and U.S.HISTORY -> A",
+    "  - Jason Kanderton: ENGLISH and U.S.HISTORY -> A",
 ]
 # Version with credentials - used when player observes LocaleProtocols.brad (marks progress)
 SCHOOL_HACK_NOTE_LINES_WITH_CREDS = [
-    "• Desktop: HDD>System>Terminal, type file-system-start",
-    "• Open locale protocols file, find Switch Region String",
-    "• String (period-sep):",
-    "  - get admin-command...",
+    "• Log out to the Bradsonic desktop",
+    "• Open HDD > System > Terminal and type: file-system-start",
+    "• Open LocaleProtocols and use the Switch Region String values:",
     "  - command: admin-subset",
     "  - username: general",
     "  - password: louis-sonic",
-    "• Close terminal, reopen, run admin-command + user + pass",
-    "• Region change → American Mainland (no factory reset)",
-    "• Open email on desktop, send rain@ciphernet.net subj I'm in",
-    "• Wait for Rain's reply",
+    "• Close Terminal, reopen it, then run admin-subset with general / louis-sonic",
+    "• Change region to American Mainland",
+    "  - do NOT factory reset",
+    "• Open BRADSONIC-MAIL and send Rain a test message",
+    "  - to: rain@ciphernet.net",
+    "  - subject: I'm in",
+    "• Wait for Rain's next instructions before trying anything else",
+    "• Final grade targets once the server is open:",
+    "  - Rosaline Cloud: ENGLISH and U.S.HISTORY -> A",
+    "  - Bertie Vandengate: ENGLISH and U.S.HISTORY -> A",
+    "  - Jason Kanderton: ENGLISH and U.S.HISTORY -> A",
+]
+# Condensed base — shown instead of WITH_CREDS when SCHOOL_HACK3 is active
+SCHOOL_HACK_NOTE_LINES_CONDENSED_HACK3 = [
+    "Completed steps:",
+    "• Used Terminal and LocaleProtocols to switch region to American Mainland",
+    "• Emailed rain@ciphernet.net — subject: I'm in",
+    "",
+    "Next steps:",
+    "• Open BRADSONIC-MAIL Settings",
+    "• Spoof a BradTel relay engineer identity",
+    "• Email the school receptionist and ask for every school line number",
+    "• Do not dial the school yet — wait for the receptionist's reply first",
+]
+
+SCHOOL_HACK_NOTE_LINES_CONDENSED_HACK4 = [
+    "Completed steps:",
+    "• Used Terminal and LocaleProtocols to switch region to American Mainland",
+    "• Emailed rain@ciphernet.net — subject: I'm in",
+    "• Spoofed BradTel relay engineer identity in BRADSONIC-MAIL",
+    "• Sent the receptionist request for all school numbers",
+    "",
+    "Next steps:",
+    "• Check BRADSONIC-MAIL for the receptionist's reply",
+    "• Do not dial anything until the numbers arrive",
+]
+
+SCHOOL_HACK_NOTE_LINES_CONDENSED_HACK4A = [
+    "Completed steps:",
+    "• Used Terminal and LocaleProtocols to switch region to American Mainland",
+    "• Emailed rain@ciphernet.net — subject: I'm in",
+    "• Spoofed BradTel email and got school phone numbers from Ms. McPherson",
+    "",
+    "Next steps:",
+    "• Email rain@ciphernet.net — subject: got the numbers",
+    "• Wait for Rain's break-in reply before dialing the server line",
+]
+
+# Condensed base + final breach setup — shown when SCHOOL_HACK4B is active
+SCHOOL_HACK_NOTE_LINES_CONDENSED_HACK4B = [
+    "Completed steps:",
+    "• Used Terminal and LocaleProtocols to switch region to American Mainland",
+    "• Emailed rain@ciphernet.net — subject: I'm in",
+    "- Spoofed BradTel email (TELCO RELAY ENGINEER) -> got school phone numbers from Ms. McPherson",
+    "• Dialed server modem → Network: Connected → emailed Rain: connected",
+    "",
+    "Next steps:",
+    "• Break into Telebase and change only the six mission grades:",
+    "  - Rosaline Cloud: ENGLISH and U.S.HISTORY -> A",
+    "  - Bertie Vandengate: ENGLISH and U.S.HISTORY -> A",
+    "  - Jason Kanderton: ENGLISH and U.S.HISTORY -> A",
+]
+
+SCHOOL_HACK_NOTE_LINES_COMPLETE = [
+    "Completed steps:",
+    "• Switched region, spoofed the receptionist, got the numbers, and breached Telebase",
+    "• Changed Rosaline, Bertie, and Jason's ENGLISH / U.S.HISTORY grades to A",
+    "",
+    "Mission complete:",
+    "• Check BRADSONIC-MAIL for Glyphis' message",
+    "• Return to the BBS once you have read it",
+]
+SCHOOL_HACK3_NOTE_LINES = [
+    "",
+    "Detailed instructions from Rain:",
+    "• American Mainland region set",
+    "• Rain emailed with subject: I'm in",
+    "",
+    "Set BRADSONIC-MAIL like this:",
+    "- MAIL FROM: region-support@telco-relay.bradsonic.net",
+    "- Display Name: TELCO RELAY ENGINEER",
+    "- Signature: Regional Line Testing, BRADSONIC-TELCO RELAY.",
+    "",
+    "Then email the school receptionist:",
+    "- COMPOSE to: reception@tokyometro-high.edu.api",
+    "• Ask for all school numbers: main lines, fax, modem, server room",
+    "• Best time to email receptionist: 7am to 9pm",
+    "• Wait for receptionist's reply with the numbers",
+    "• Call the returned numbers outside school hours",
+    "  - Weekdays: after 6pm or before 9am",
+    "  - Wednesday: after 1pm",
+    "  - Saturday: after midday",
+    "  - Sunday: any time",
+    "• When you have the numbers, email rain@ciphernet.net — subject: got the numbers",
+    "• Rain will reply with the server break-in steps",
+]
+SCHOOL_HACK4B_NOTE_LINES = [
+    "",
+    "Rain's server break-in instructions:",
+    "• Disconnect from the email server — the modem must be free",
+    "• School numbers: 03-3741-5079 (reception), 03-3741-5069 (fax), [u]03-3741-5089[/u] (server)",
+    "• Dial the server line and wait for Network: Connected",
+    "• Open HDD > System > Terminal",
+    "• Run the admin command from LocaleProtocols: admin-subset",
+    "• Choose Handshake Connected Node",
+    "• Database username: admin",
+    "• Database password: password",
+    "• Once inside, change only these grades to A:",
+    "  - Rosaline Cloud (Rain): ENGLISH C→A, U.S.HISTORY C→A",
+    "  - Bertie Vandengate (uncle-am): ENGLISH C→A, U.S.HISTORY C→A",
+    "  - Jason Kanderton (jaxkando): ENGLISH B→A, U.S.HISTORY B→A",
+    "• Do not alter any other grades",
 ]
 BBS_NAME = "GLYPHIS_IO BBS"
 BBS_NUMBER = "0345728891"
 
-# BRADSONIC-MAIL guided compose placeholders (faint hints)
-MAIL_COMPOSE_PLACEHOLDER_TO = "rain@ci..."
+# BRADSONIC-MAIL guided compose placeholders (faint hints) — Rain "I'm in" email
+MAIL_COMPOSE_PLACEHOLDER_TO = "rain@ciphernet.net"
 MAIL_COMPOSE_PLACEHOLDER_SUBJECT = "i'm in"
 MAIL_COMPOSE_PLACEHOLDER_BODY = (
     "Okay, I'm in, US MAINLAND set as my current region locale, so what are your orders?"
 )
+# BRADSONIC-MAIL compose placeholders — school receptionist spoofing email (SCHOOL_HACK3 phase)
+MAIL_COMPOSE_PLACEHOLDER_SCHOOL_TO = "reception@tokyometro-high.edu.api"
+MAIL_COMPOSE_PLACEHOLDER_SCHOOL_SUBJECT = "URGENT - Quarterly Line Test Req. BradTel Relay"
+MAIL_COMPOSE_PLACEHOLDER_SCHOOL_BODY = (
+    "Dear Reception, This is a formal notice from BradTel Regional Relay regarding scheduled "
+    "quarterly testing of all telephone lines... please provide all extension numbers, PIN "
+    "codes (if any), fax lines and modem numbers to avoid service disruption..."
+)
+MAIL_COMPOSE_CONNECTED_TO = "rain@ciphernet.net"
+MAIL_COMPOSE_CONNECTED_SUBJECT = "got the numbers"
+MAIL_COMPOSE_CONNECTED_BODY = "i got the numbers from the receptionist. what do i do now?"
 # Rain's reply after connecting and sending "I'm in" to rain@ciphernet.net
 RAIN_REPLY_SUBJECT = "You're in - next steps"
+RAIN_CONNECTED_REPLY_SUBJECT = "Got the numbers? Good. Here's the break-in."
+
+SCHOOL_DATABASE_GRADE_VALUES = ["A", "B", "C", "D", "F"]
+SCHOOL_DATABASE_ELECTIVES = ["MUSIC", "DRAMA", "CONSUMER STUDIES", "PEACE STUDIES"]
+SCHOOL_DATABASE_SUBJECTS = [
+    "ENGLISH",
+    "U.S.HISTORY",
+    "AMERICAN PACIFICA POLITIC",
+    "MATHMATICS",
+    "SCIENCE",
+    "PHYSICAL EDUCATION",
+    "COMPUTER SCIENCE",
+    "ART",
+]
+SCHOOL_DATABASE_KEY_ORDER = SCHOOL_DATABASE_SUBJECTS + ["ELECTIVE"]
+SCHOOL_DATABASE_STATE_VERSION = 3
+SCHOOL_DATABASE_HOMEROOMS = ["RM 104", "RM 207", "RM 112", "RM 305", "RM 118", "RM 201", "RM 310", "RM 103"]
+SATURDAY_CLUBS_POOL = [
+    "Computer Club", "Amateur Radio Club", "Chess Club", "Art Club",
+    "Drama Society", "Science Olympiad", "Music Club", "Photography Club",
+    "Peace Committee", "Library Volunteers",
+]
+SATURDAY_CLUBS_DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT"]
+SATURDAY_CLUBS_ROOMS = ["RM 104", "RM 207", "RM 112", "RM 305", "RM 118", "RM 201", "RM 310", "RM 103"]
+SATURDAY_CLUBS_OVERRIDES = {
+    "1m_BRADSONIC_mosaic_reveal.gif": ["Computer Club", "Amateur Radio Club"],
+    "2m_BRADSONIC_mosaic_reveal.gif": ["Computer Club", "Chess Club"],
+    "1f_BRADSONIC_mosaic_reveal.gif": ["Computer Club", "Drama Society"],
+}
+DISCIPLINARY_GENERIC_POOL = [
+    "Late to class", "Uniform violation", "Talking during assembly",
+    "Missing homework x3", "Running in corridor", "Chewing gum in class",
+    "Late return from lunch break", "Disruptive behavior in assembly",
+]
+DISCIPLINARY_OVERRIDES = {
+    "1m_BRADSONIC_mosaic_reveal.gif": [
+        "UNAUTHORIZED MODEM CONNECTION - RM 104 TERMINAL",
+        "ANTI-PACIFICA GRAFFITI - EAST STAIRWELL (DENIED INVOLVEMENT)",
+        "FOUND IN SERVER ROOM AFTER HOURS",
+    ],
+    "2m_BRADSONIC_mosaic_reveal.gif": [
+        "UNAUTHORIZED SOFTWARE ON SCHOOL TERMINAL",
+        "ANTI-PACIFICA LITERATURE FOUND IN LOCKER",
+        "EXCESSIVE TARDINESS - NOTED FATIGUE",
+    ],
+    "1f_BRADSONIC_mosaic_reveal.gif": [
+        "BYPASSED LIBRARY TERMINAL RESTRICTIONS",
+        "ANTI-PACIFICA STICKER ON LOCKER (VERBAL WARNING)",
+        "COUNSELOR REFERRAL - PERSISTENT FATIGUE",
+    ],
+}
+COUNSELOR_OVERRIDES = {
+    "1m_BRADSONIC_mosaic_reveal.gif": [
+        "Student shows exceptional aptitude in electronics and computing. Frequently tired in morning classes. Warned about excessive time in radio club room.",
+        "Concerns raised re: potential access to BANNED CONTENT via personal modem. Student denies. Parents contacted - no action taken.",
+        "[FLAGGED] Possible connection to unauthorized BBS activity. Refer to administration if further incidents.",
+    ],
+    "2m_BRADSONIC_mosaic_reveal.gif": [
+        "Academically strong but increasingly withdrawn. Appears fatigued - possible late-night computer use. Recommend sleep hygiene discussion.",
+        "Student questioned about anti-Pacifica materials. Claims 'research for history paper.' No further action.",
+        "[FLAGGED] Found debugging school network login system. Claims 'testing security.' Impressive but concerning.",
+    ],
+    "1f_BRADSONIC_mosaic_reveal.gif": [
+        "Bright, articulate student. Active in drama but distracted this term. Frequently tired. Close friends with Vandengate and Kanderton.",
+        "Raised concerns about Pacifica curriculum in class - noted by faculty as 'politically aware beyond her years.'",
+        "[FLAGGED] Suspected of coordinating with other students to access restricted terminal functions. No direct evidence. Monitor.",
+    ],
+}
+COUNSELOR_GENERIC_POOL = [
+    "No concerns at this time.",
+    "Performing within expected parameters.",
+    "Recommend continued attendance monitoring.",
+]
+SCHOOL_DATABASE_MALE_FIRST_NAMES = [
+    "Bertie", "Jason", "Calvin", "Darren", "Elliot", "Franklin", "Gavin", "Harvey",
+    "Isaac", "Julian", "Kieran", "Landon", "Marcus", "Nathan", "Owen", "Preston",
+    "Quentin", "Ryan", "Spencer", "Trevor", "Vincent", "Wesley", "Zachary"
+]
+SCHOOL_DATABASE_FEMALE_FIRST_NAMES = [
+    "Rosaline", "Abigail", "Beatrice", "Caroline", "Daphne", "Eliza", "Felicity", "Georgia",
+    "Heather", "Iris", "Jillian", "Katherine", "Lydia", "Melanie", "Naomi", "Olivia",
+    "Penelope", "Ramona", "Sabrina", "Tabitha", "Valerie", "Whitney", "Yvonne"
+]
+SCHOOL_DATABASE_SURNAMES = [
+    "Cloud", "Vandengate", "Kanderton", "Hollis", "Mercer", "Whitlock", "Prescott", "Danvers",
+    "Sinclair", "Bennett", "Winslow", "Parker", "Ashford", "Monroe", "Talbot", "Hawthorne",
+    "Reeves", "Caldwell", "Fairchild", "Keating", "Marlowe", "Pierce", "Locke", "Bishop",
+    "Wren", "Pembroke", "Sloane", "Thatcher", "Vale", "Crosby", "Templeton", "Sterling",
+    "Redgrave", "Bellamy", "Dunlop", "Kingsley", "Wexler", "Lennox", "Drayton", "Yorke"
+]
 
 
 def _get_rain_reply_body(username: str) -> str:
     """Build Rain's reply body with username. Only call when player sent 'I'm in' to Rain."""
     u = username or "you"
     return (
-        f"There will be new games in the games folder, check em out! Also, I bet you're wondering "
-        f"what the other icon is that just showed up? Well {u}, that's your dotSonic player, you can "
-        f"play all of the .sonic tracks you've downloaded from the likes of Paper Crane BBS and all "
-        f"of the other amazing BBSs out-there, downloads should have already gone to your media folder "
-        f"and with this new player you can simply play them like a cassette, cool right?\n\n"
-        "Congrats. You're inside the region-restricted area. Good work.\n\n"
-        "Here's how to use this mail client to pretend to be the telephone company. In Settings, set your "
-        "fake From address to: region-support@telco-relay.bradsonic.net - and add this signature: "
-        "\"Regional Line Testing - BRADSONIC-TELCO RELAY.\" Then compose a new message to the school's "
-        "front desk (add their address in your contacts). Request phone system numbers and PIN codes for "
-        "any telephone systems, answer machines, faxes, or modems. Write a lengthy email about system "
-        "security and that you need the info right away in order to test the lines and avoid any "
-        "disruptions. Keep it official and urgent."
+        f"Nice work {u}. So, you're looking at what the kids get over in the mainland. "
+        f"I don't know for sure, but I think US models of the 69000 have different games installed. "
+        f"Take a look in the games folder to see for yourself.\n\n"
+        f"Here's what we need next. The school's front desk handles all the phone systems, "
+        f"reception lines, fax, and whatever they've got running in the server room. We need "
+        f"the modem number. They won't hand it over directly, the university that oversees all "
+        f"computer systems there has told them to keep it confidential. But they will hand it "
+        f"over to the telephone company. ^-^\n\n"
+        f"Open SETTINGS in this mail client and do three things:\n\n"
+        f"1. Change 'Mail From Address' to: region-support@telco-relay.bradsonic.net\n"
+        f"   (that's what will show up as the sender)\n\n"
+        f"2. Change 'Display Name' to: TELCO RELAY ENGINEER\n\n"
+        f"3. Set 'Signature' to exactly:\n"
+        f"   Regional Line Testing, BRADSONIC-TELCO RELAY.\n\n"
+        f"Then go to COMPOSE. Send to: reception@tokyometro-high.edu.api\n\n"
+        f"Write something official. Quarterly line testing, scheduled maintenance, risk of "
+        f"disruption if they don't cooperate. Ask for ALL numbers: main lines, fax, any modems "
+        f"or server room lines. Sound urgent. Sound like a telecom tech, not a hacker.\n\n"
+        f"Glyphis thinks the receptionist is in early most days and tends to leave late, but "
+        f"not too late. Email her between 7am and 9pm for the best chance of a reply. "
+        f"If it sounds urgent enough, she'll respond.\n\n"
+        f"Once you have the numbers, try calling each one. The modem line locks out during "
+        f"school hours. The database syncs with the university and the Pacifica government "
+        f"network during the day, so the line will be busy while school is open. "
+        f"You need to call outside those hours:\n\n"
+        f"  Weekdays: after 6pm or before 9am\n"
+        f"  Wednesday: after 1pm\n"
+        f"  Saturday: after midday\n"
+        f"  Sunday: any time\n\n"
+        f"Once you have those numbers, email me. Subject line: got the numbers. "
+        f"I'll send you what you need next.\n\n"
+        f"Good luck and thank you x\n\n"
+        f"rain"
     )
+
+
+def _get_rain_connected_reply_body(username: str) -> str:
+    """Build Rain's follow-up once the player reports they have the school numbers."""
+    u = username or "you"
+    return (
+        f"Perfect {u}. That's exactly what I needed.\n\n"
+        f"Now we move on the actual server line. Use the server room number the receptionist sent over, "
+        f"not the main desk and not the fax. Watch your health monitor and wait until the Network status "
+        f"switches to Connected once the handshake goes through.\n\n"
+        f"After that, open the Bradsonic desktop terminal, use the admin path you pulled out of "
+        f"LocaleProtocols, and choose the connected node handshake route. That should put you in front "
+        f"of the school's student database.\n\n"
+        f"And here's the funniest part. My computer science teacher literally joked the other day about "
+        f"how insecure the school's server is. He basically gave the game away in class:\n\n"
+        f"username: admin\n"
+        f"password: password\n\n"
+        f"Seriously. That's what they use.\n\n"
+        f"If he was right, get in, change the grades of the guys, I know they emailed you ^-*. Oh, and don't forget me...\n\n"
+        f"I'm Rosaline Cloud!\n\n"
+        f"Go for it {u}, rain xox"
+    )
+
 
 # Animation Constants
 HOVER_ANIMATION_SPEED = 8.0  # pixels per second
@@ -346,7 +624,7 @@ class OSMode:
     """
     persisted_network_connected = False  # Persist connection state across OS Mode instances
     
-    def __init__(self, screen: pygame.Surface, res_manager: ResolutionManager, reset_bbs_callback=None, bbs_x=None, bbs_y=None, bbs_width=None, has_token_callback=None, get_recording_state_callback=None, set_recording_state_callback=None, get_notes_callback=None, save_notes_callback=None, get_user_credentials_callback=None, get_chess_stats_callback=None, save_chess_stats_callback=None, grant_token_callback=None, is_audio_streaming_callback=None, get_radio_music_callback=None, stop_radio_audio_callback=None, set_quit_state_callback=None, exit_game_callback=None, open_email_callback=None, get_inbox_emails_callback=None, save_inbox_emails_callback=None, send_mail_callback=None, get_mail_outbox_callback=None, save_mail_outbox_callback=None, get_mail_trash_callback=None, save_mail_trash_callback=None, play_mail_sound_callback=None, get_downloaded_fugamatchi_tracks_callback=None, add_downloaded_fugamatchi_track_callback=None):
+    def __init__(self, screen: pygame.Surface, res_manager: ResolutionManager, reset_bbs_callback=None, bbs_x=None, bbs_y=None, bbs_width=None, has_token_callback=None, get_recording_state_callback=None, set_recording_state_callback=None, get_notes_callback=None, save_notes_callback=None, get_user_credentials_callback=None, get_chess_stats_callback=None, save_chess_stats_callback=None, grant_token_callback=None, is_audio_streaming_callback=None, get_radio_music_callback=None, stop_radio_audio_callback=None, set_quit_state_callback=None, exit_game_callback=None, open_email_callback=None, get_inbox_emails_callback=None, save_inbox_emails_callback=None, send_mail_callback=None, get_mail_outbox_callback=None, save_mail_outbox_callback=None, get_mail_trash_callback=None, save_mail_trash_callback=None, play_mail_sound_callback=None, get_downloaded_fugamatchi_tracks_callback=None, add_downloaded_fugamatchi_track_callback=None, get_school_database_state_callback=None, save_school_database_state_callback=None, save_locale_callback=None, on_dotsonic_track_played_callback=None, queue_school_hack_fail_mail_callback=None, consume_pending_bradsonic_mail_events_callback=None, queue_bradsonic_mail_event_callback=None, trigger_notes_nudge_callback=None):
         """
         Initialize OS Mode.
         """
@@ -382,6 +660,14 @@ class OSMode:
         self.play_mail_sound = play_mail_sound_callback or (lambda: None)
         self.get_downloaded_fugamatchi_tracks = get_downloaded_fugamatchi_tracks_callback or (lambda: [])
         self.add_downloaded_fugamatchi_track = add_downloaded_fugamatchi_track_callback or (lambda title: None)
+        self.get_school_database_state = get_school_database_state_callback or (lambda: None)
+        self.save_school_database_state = save_school_database_state_callback or (lambda state: None)
+        self.save_locale = save_locale_callback or (lambda locale_value: None)
+        self.on_dotsonic_track_played = on_dotsonic_track_played_callback or (lambda title, real_name: None)
+        self.queue_school_hack_fail_mail = queue_school_hack_fail_mail_callback or (lambda stage: None)
+        self.consume_pending_bradsonic_mail_events = consume_pending_bradsonic_mail_events_callback or (lambda: [])
+        self.queue_bradsonic_mail_event = queue_bradsonic_mail_event_callback or (lambda event_id: None)
+        self.trigger_notes_nudge = trigger_notes_nudge_callback or (lambda text="SHIFT+N", reason="notes_nudge", auto_open_external_notes=True: None)
         self.modem_tone_sounds: Dict[str, Optional[pygame.mixer.Sound]] = {}
         self._load_modem_tone_sounds()
         
@@ -464,9 +750,11 @@ class OSMode:
         
         for icon_file in icon_files:
             icon_path = get_data_path("OS", icon_file)
-            # Get the "S" version filename (e.g., "tape-icon.png" -> "S-tape-icon.png")
+            # Accept both S- and s- selected-state icon prefixes.
             s_icon_file = "S-" + icon_file
             s_icon_path = get_data_path("OS", s_icon_file)
+            alt_s_icon_file = "s-" + icon_file
+            alt_s_icon_path = get_data_path("OS", alt_s_icon_file)
             
             try:
                 # Load normal icon
@@ -482,10 +770,12 @@ class OSMode:
                 # Load selected "S" version icon
                 s_icon_image = None
                 try:
-                    s_icon_image = pygame.image.load(s_icon_path).convert_alpha()
+                    selected_icon_path = s_icon_path if os.path.exists(s_icon_path) else alt_s_icon_path
+                    selected_icon_name = s_icon_file if os.path.exists(s_icon_path) else alt_s_icon_file
+                    s_icon_image = pygame.image.load(selected_icon_path).convert_alpha()
                     s_icon_image = pygame.transform.scale(s_icon_image, icon_size)
                 except Exception as e:
-                    print(f"Warning: Failed to load {s_icon_file}: {e}")
+                    print(f"Warning: Failed to load {selected_icon_name}: {e}")
                     # If S version doesn't exist, use normal icon as fallback
                     s_icon_image = icon_image
                 
@@ -560,6 +850,26 @@ class OSMode:
             print(f"Warning: Failed to load Scanline-Desktop.png: {e}")
             self.desktop_scanline_image = None
         
+        # Load notepad objective overlay image (raw — resized each draw to fill right panel)
+        notepad_path = get_data_path("OS", "NotePad-External.png")
+        try:
+            self.notepad_overlay_image_raw = pygame.image.load(notepad_path).convert_alpha()
+        except Exception as e:
+            print(f"Warning: Failed to load NotePad-External.png: {e}")
+            self.notepad_overlay_image_raw = None
+        self.notepad_overlay_visible = False
+        self.school_hack_restart_overlay_banner_active = False
+        self._notepad_overlay_cache_scale = None   # invalidate on scale change
+        self._notepad_overlay_image_scaled = None
+        self.notes_nudge_overlay_anim_active = False
+        self.notes_nudge_overlay_phase = "idle"
+        self.notes_nudge_overlay_timer = 0.0
+        self.notes_nudge_overlay_display_timer = 0.0
+        self.notes_nudge_overlay_text_lines: List[str] = []
+        self.notes_nudge_overlay_visible_line_count = 0
+        self.notes_nudge_overlay_visible_char_count = 0
+        self.notes_nudge_overlay_shake_offset_x = 0
+
         # Mouse state
         self.mouse_pos = (0, 0)
         self.mouse_pressed = False
@@ -567,7 +877,7 @@ class OSMode:
         self.hovered_button = None  # Currently hovered button (modal_name, button_type)
         self.icon_label_alpha = {}  # Alpha values for icon labels
         self.button_hover_offset = {}  # Hover animation offset for buttons
-        
+
         # Overlay state
         self.overlay_active = False
         
@@ -654,6 +964,7 @@ class OSMode:
         self.modem_packet_spawn_timer = 0.0
         self.modem_wave_phase = 0.0
         self.modem_dial_sound = None
+        self.modem_dial_channel = None
         self.modem_dial_sound_playing = False
         self.modem_terminal_palette = [
             COLOR_NEON_GREEN,
@@ -667,7 +978,21 @@ class OSMode:
         self.modem_modal_error_timer = 0.0
         self.modem_modal_key_flash_label: Optional[str] = None
         self.modem_modal_key_flash_timer: float = 0.0
-        
+        self.modem_school_hack_signature_prompt_active = False
+
+        # School dial-out state (telephone / social engineering arc)
+        self.modem_school_dial_active: bool = False
+        self.modem_school_target: str = ""         # "reception" | "fax" | "server_open" | "server_busy"
+        self.modem_school_number: str = ""          # full dialed number string
+        self.modem_school_phase: str = ""           # scripted school call phase
+        self.modem_school_digit_queue: list = []    # legacy queue; kept for compatibility/reset
+        self.modem_school_digit_timer: float = 0.0
+        self.modem_school_phase_timer: float = 0.0
+        self.modem_school_digit_delay: float = 0.20  # seconds between DTMF tones
+        self.modem_school_fail_channel = None       # channel playing Modem_failing.wav
+        self.modem_school_audio_channel = None      # channel playing ringing / pickup wavs
+        self.modem_school_audio_sound = None        # pygame.Sound on audio_channel
+
         # Saved regional/locale setting (must be set before _load_games_icons which filters by region)
         # 1=American Mainland, 2=Europe, 3=American Pacific Isles (default)
         self.os_locale: int = 3
@@ -684,6 +1009,8 @@ class OSMode:
         self.mail_scroll_offset: int = 0
         self.mail_cursor_blink_timer: float = 0.0
         self.mail_compose_cursor: int = 0
+        self.mail_compose_ghost: dict = {}  # field -> seeded placeholder; enables overwrite mode
+        self.mail_compose_placeholder_override: dict = {}
         self.mail_status_message: str = ""
         self.mail_status_timer: float = 0.0
         # BRADSONIC-MAIL separate inbox (not the BBS inbox)
@@ -720,6 +1047,8 @@ class OSMode:
         self.mail_connect_phase: str = "idle"  # "idle" | "connecting" | "connected"
         self.mail_connect_technobabble_timer: float = 0.0  # Show technobabble then CONNECTED
         self.mail_rain_delivery_timer: float = -1.0  # After connect+flush, deliver Rain reply
+        self.mail_connection_mode: str = "idle"  # "idle" | "oneshot" | "persistent"
+        self.mail_listen_poll_timer: float = 0.0
         self.mail_pulse_timer: float = 0.0  # For COMPOSE / SEND pulse animation
         self.mail_opened_once: bool = False  # True after first open (for COMPOSE pulse)
         # BRADSONIC-MAIL connect terminal (1989 modem-style)
@@ -804,8 +1133,11 @@ class OSMode:
         self.file_system_browser_last_click_time: float = 0.0
         self.file_system_browser_last_clicked_key: Optional[str] = None
         self.file_system_browser_dragging_item: Optional[Tuple[Dict[str, Any], int, int]] = None  # (item, offset_x, offset_y) when dragging
+        self.file_system_browser_content_rect: Optional[pygame.Rect] = None
         self.file_system_browser_folder_icon: Optional[Dict[str, object]] = None
         self.file_system_browser_brad_icon: Optional[Dict[str, object]] = None
+        self.file_system_browser_binst_icon: Optional[Dict[str, object]] = None
+        self.file_system_browser_brx_icon: Optional[Dict[str, object]] = None
         self.file_system_browser_font: Optional[pygame.font.Font] = None  # Pixellari
         self._load_file_system_browser_assets()
 
@@ -828,6 +1160,11 @@ class OSMode:
         self.terminal_message_timer: float = 0.0  # Timer for message display
         self.terminal_input_buffer: str = ""  # Current input being typed
         self.terminal_login_stage: int = 0  # 0 = not logging in, 1 = username, 2 = password
+        self.dotsonic_installer_lines: List[str] = []
+        self.dotsonic_installer_script: List[Dict[str, Any]] = []
+        self.dotsonic_installer_step_index: int = 0
+        self.dotsonic_installer_timer: float = 0.0
+        self.dotsonic_installer_complete: bool = False
         
         # (os_locale and mail_icon_visible defined earlier, before _load_games_icons)
         
@@ -844,7 +1181,29 @@ class OSMode:
         self.terminal_history_index: int = -1  # Current position in history (-1 = not browsing, 0 = most recent)
         self.terminal_current_input_line: str = ""  # Current line being typed (before Enter)
         self.terminal_cursor_index: int = 0  # Cursor position within current input line (0 = start)
-        
+        self.school_database_state: Dict[str, Any] = {}
+        self.school_database_sections: List[str] = ["ATTENDANCE SCORES", "REPORT CARDS"]
+        self.school_database_home_index: int = 0
+        self.school_database_login_username: str = ""
+        self.school_database_login_password: str = ""
+        self.school_database_login_error: str = ""
+        self.school_database_selected_student_index: int = 0
+        self.school_database_selected_field_index: int = 0
+        self.school_database_editing: bool = False
+        self.school_database_attendance_editing: bool = False
+        self.school_database_splash_timer: float = 0.0
+        self.school_database_animation_cache: Dict[str, Dict[str, Any]] = {}
+        self.school_database_animation_key: Optional[str] = None
+        self.school_database_animation_frame_index: int = 0
+        self.school_database_animation_timer: float = 0.0
+        self.school_database_animation_finished: bool = False
+        self._school_database_title_font: Optional[pygame.font.Font] = None
+        self.school_database_app: Optional[SchoolDatabaseApp] = None
+        self.school_database_surface: Optional[pygame.Surface] = None
+        self.school_database_surface_size: Tuple[int, int] = (0, 0)
+        self.school_database_particles: List[Dict[str, Any]] = []
+        self.school_database_last_grade_pos: Optional[Tuple[int, int]] = None
+
         self._load_terminal_font()
 
         # Chess game instance
@@ -987,6 +1346,8 @@ class OSMode:
                     get_downloaded_tracks=self.get_downloaded_fugamatchi_tracks,
                     open_file_browser_callback=self._dot_sonic_open_file_browser,
                     close_callback=self._dot_sonic_closed,
+                    track_started_callback=self.on_dotsonic_track_played,
+                    has_token_callback=self.has_token,
                 )
             except Exception as e:
                 print(f"Warning: Failed to initialize DotSonicMediaPlayer: {e}")
@@ -1077,8 +1438,7 @@ class OSMode:
                     return True
             # Handle terminal dragging
             if self.mouse_pressed and self.terminal_dragging:
-                terminal_w = int(665 * self.scale)  # 33% larger: 500 * 1.33 = 665
-                terminal_h = int(375 * self.scale)  # 25% larger: 300 * 1.25 = 375
+                terminal_w, terminal_h = self._get_terminal_window_size()
                 new_x = self.mouse_pos[0] - self.terminal_drag_offset[0]
                 new_y = self.mouse_pos[1] - self.terminal_drag_offset[1]
                 
@@ -1153,6 +1513,10 @@ class OSMode:
                     if self._update_games_icon_drag(self.mouse_pos[0], self.mouse_pos[1]):
                         return True
 
+                if self.file_system_browser_dragging_item and self.file_system_browser_content_rect:
+                    if self._update_file_system_browser_item_drag(self.mouse_pos[0], self.mouse_pos[1]):
+                        return True
+
             if (self.notes_modal_dragging_selection and
                     "notes" in self.active_modals and
                     self.notes_modal_edit_mode and
@@ -1169,76 +1533,56 @@ class OSMode:
                 self.mouse_pressed = True
                 mouse_x, mouse_y = event.pos
                 current_time = time.time()
-                
-                # Focus the top-most modal under the click (like a real OS)
-                focused_modal = None
-                for modal_name in reversed(self.active_modals):
-                    if modal_name == "dot_sonic" and self.dot_sonic_app and self.dot_sonic_app.active:
-                        modal_rect = self.dot_sonic_app.window_rect
-                        if modal_rect and modal_rect.collidepoint(mouse_x, mouse_y):
-                            focused_modal = modal_name
-                            break
-                    else:
-                        modal_x, modal_y = self.modal_positions.get(modal_name, (0, 0))
-                        modal_w, modal_h = self._get_modal_size(modal_name)
-                        modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
-                        modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
-                        if modal_rect.collidepoint(mouse_x, mouse_y):
-                            focused_modal = modal_name
-                            break
+
+                # Terminal file windows are top-most surfaces and capture clicks entirely.
+                if self._get_top_terminal_file_window_at_point(mouse_x, mouse_y):
+                    return self._handle_terminal_file_windows_click(mouse_x, mouse_y)
+
+                # A front-most modal owns the click anywhere inside its surface.
+                focused_modal = self._get_top_modal_at_point(mouse_x, mouse_y)
                 if focused_modal:
                     self._focus_modal(focused_modal)
-                
-                # Route click to dotSONIC when it's top-most (before title bar / icon checks)
-                if focused_modal == "dot_sonic" and self.dot_sonic_app and self.dot_sonic_app.active:
-                    if self.dot_sonic_app.handle_event(event):
+
+                    if focused_modal == "dot_sonic" and self.dot_sonic_app and self.dot_sonic_app.active:
+                        if self.dot_sonic_app.handle_event(event):
+                            return True
                         return True
-                
-                # Check if clicking on a modal title bar for dragging (but exclude close buttons)
-                # Check modals in reverse order (top-most first) to handle close buttons correctly
-                for modal_name in reversed(self.active_modals.copy()):
-                    if modal_name == "dot_sonic":
-                        continue  # dotSONIC handles its own window drag
-                    modal_x, modal_y = self.modal_positions.get(modal_name, (0, 0))
-                    modal_w, modal_h = self._get_modal_size(modal_name)
-                    # Apply clamping to match the actual drawn modal size
-                    modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
-                    if modal_w > 0 and modal_h > 0:
-                        title_bar_rect = pygame.Rect(
-                            modal_x,
-                            modal_y,
-                            modal_w,
-                            self.modal_title_bar_height
-                        )
-                        if title_bar_rect.collidepoint(mouse_x, mouse_y):
-                            # Bring the clicked modal to the front
-                            self._focus_modal(modal_name)
-                            # Check if clicking on close button first (exclude from dragging)
-                            close_btn_size = int(20 * self.scale)
-                            close_btn_x = modal_x + modal_w - close_btn_size - int(5 * self.scale)
-                            close_btn_y = modal_y + int(5 * self.scale)
-                            close_btn_rect = pygame.Rect(close_btn_x, close_btn_y, close_btn_size, close_btn_size)
-                            
-                            # If clicking on close button, handle it directly here
-                            if close_btn_rect.collidepoint(mouse_x, mouse_y):
-                                # Close only this specific modal
-                                self._close_modal(modal_name)
+
+                    if focused_modal != "terminal":
+                        modal_rect = self._get_modal_rect(focused_modal)
+                        if modal_rect:
+                            title_bar_rect = pygame.Rect(
+                                modal_rect.x,
+                                modal_rect.y,
+                                modal_rect.width,
+                                self.modal_title_bar_height
+                            )
+                            if title_bar_rect.collidepoint(mouse_x, mouse_y):
+                                close_btn_size = int(20 * self.scale)
+                                close_btn_x = modal_rect.x + modal_rect.width - close_btn_size - int(5 * self.scale)
+                                close_btn_y = modal_rect.y + int(5 * self.scale)
+                                close_btn_rect = pygame.Rect(close_btn_x, close_btn_y, close_btn_size, close_btn_size)
+                                if close_btn_rect.collidepoint(mouse_x, mouse_y):
+                                    self._close_modal(focused_modal)
+                                    return True
+
+                                self.modal_dragging = focused_modal
+                                self.modal_drag_offset = (mouse_x - modal_rect.x, mouse_y - modal_rect.y)
                                 return True
-                            else:
-                                # Start dragging this modal
-                                self.modal_dragging = modal_name
-                                self.modal_drag_offset = (mouse_x - modal_x, mouse_y - modal_y)
-                                return True
-                
-                # Check if clicking on an icon FIRST (icons should be clickable even when modals are open)
+
+                    if self._handle_modal_surface_click(focused_modal, mouse_x, mouse_y):
+                        return True
+
+                    return True
+
+                # No window owns the click, so fall back to desktop icons.
                 icon_clicked = False
-                clicked_icon = None
                 for icon in self.icons:
                     # Skip mail icon when not in US Mainland (no click/launch in Europe or Pacifica)
                     if icon["name"] == "mail-icon.png" and self.os_locale != 1:
                         continue
-                    # Skip dotSONIC icon when in Pacifica (only visible in Europe and US Mainland)
-                    if icon["name"] == "sonic-icon.png" and self.os_locale == 3:
+                    # Skip dotSONIC icon when in Pacifica or DOTSONIC token not yet held
+                    if icon["name"] == "sonic-icon.png" and (self.os_locale == 3 or not self.has_token("DOTSONIC")):
                         continue
                     icon_rect = pygame.Rect(
                         icon["x"],
@@ -1248,7 +1592,6 @@ class OSMode:
                     )
                     if icon_rect.collidepoint(mouse_x, mouse_y):
                         icon_clicked = True
-                        clicked_icon = icon
                         
                         # Check for double-click
                         is_double_click = (
@@ -1278,6 +1621,7 @@ class OSMode:
                                             get_downloaded_tracks=self.get_downloaded_fugamatchi_tracks,
                                             open_file_browser_callback=self._dot_sonic_open_file_browser,
                                             close_callback=self._dot_sonic_closed,
+                                            has_token_callback=self.has_token,
                                         )
                                         self.dot_sonic_app.start()
                                         self._open_modal("dot_sonic")
@@ -1344,45 +1688,6 @@ class OSMode:
                             self.last_click_time = current_time
                             self.last_click_pos = (mouse_x, mouse_y)
                             return True
-                
-                # Handle modal button clicks (check modals in reverse order for top-most first)
-                # Only check modals if we didn't click on an icon
-                if not icon_clicked:
-                    # Check terminal file windows (multiple .brad viewers)
-                    if self._handle_terminal_file_windows_click(mouse_x, mouse_y):
-                        return True
-                    
-                    for modal_name in reversed(self.active_modals.copy()):
-                        if modal_name == "terminal":
-                            rect = self._get_terminal_rect()
-                            if rect.collidepoint(mouse_x, mouse_y):
-                                self._focus_modal("terminal")
-                                if self._handle_terminal_click(mouse_x, mouse_y):
-                                    return True
-                        elif modal_name == "tape":
-                            if self._handle_tape_modal_click(mouse_x, mouse_y):
-                                return True
-                        elif modal_name == "modem":
-                            if self._handle_modem_modal_click(mouse_x, mouse_y):
-                                return True
-                        elif modal_name == "notes":
-                            if self._handle_notes_modal_click(mouse_x, mouse_y):
-                                return True
-                        elif modal_name == "games":
-                            if self._handle_games_modal_click(mouse_x, mouse_y):
-                                return True
-                        elif modal_name == "hard_drive":
-                            if self._handle_hard_drive_modal_click(mouse_x, mouse_y):
-                                return True
-                        elif modal_name == "system_folder":
-                            if self._handle_system_folder_modal_click(mouse_x, mouse_y):
-                                return True
-                        elif modal_name == "file_system_browser":
-                            if self._handle_file_system_browser_modal_click(mouse_x, mouse_y):
-                                return True
-                        elif modal_name == "mail":
-                            if self._handle_mail_modal_click(mouse_x, mouse_y):
-                                return True
                 
                 # If clicking on desktop (not on an icon), deselect all icons
                 if not icon_clicked and self.desktop_rect.collidepoint(mouse_x, mouse_y):
@@ -1499,6 +1804,22 @@ class OSMode:
                     return True
         
         elif event.type == pygame.KEYDOWN:
+            # Shift+N: toggle notepad objective overlay (always available)
+            if event.key == pygame.K_n and (event.mod & pygame.KMOD_SHIFT):
+                was_visible = self.notepad_overlay_visible
+                self.notepad_overlay_visible = not self.notepad_overlay_visible
+                if not self.notepad_overlay_visible:
+                    self.school_hack_restart_overlay_banner_active = False
+                try:
+                    sound_name = "paper-shuffle.wav" if was_visible else "note-writing.wav"
+                    _np_snd = pygame.mixer.Sound(get_data_path("OS", sound_name))
+                    _ch = pygame.mixer.find_channel(True)
+                    if _ch:
+                        _ch.play(_np_snd)
+                except Exception:
+                    pass
+                return True
+
             # OS-level region hotkeys (A=US Mainland, S=Europe, D=Pacifica) - only when desktop visible
             if not self.active_modals:
                 if event.key == pygame.K_a:
@@ -1567,9 +1888,8 @@ class OSMode:
         gap = int(20 * self.scale)
         
         if modal_name == "tape":
-            # Tape modal dimensions (smaller window)
-            modal_w = int(500 * self.scale)
-            modal_h = int(400 * self.scale) + self.modal_title_bar_height
+            modal_w = int(600 * self.scale)
+            modal_h = int(500 * self.scale) + self.modal_title_bar_height
         elif modal_name == "modem":
             # Modem dimensions (increased height for larger terminal)
             modal_w = int(340 * self.scale)
@@ -1617,22 +1937,6 @@ class OSMode:
             stored_y = max(self.desktop_y, min(stored_y, max_y))
             return (stored_x, stored_y)
         
-        # Datasette (tape) modal uses original positioning - don't move it
-        if modal_name == "tape":
-            # Position modal with margin from desktop edges (original behavior)
-            margin = int(50 * self.scale)
-            modal_x = self.desktop_x + margin
-            modal_y = self.desktop_y + margin
-            
-            # Ensure modal doesn't extend beyond desktop boundaries
-            max_x = self.desktop_x + self.desktop_size[0] - modal_w - margin
-            max_y = self.desktop_y + self.desktop_size[1] - modal_h - margin
-            
-            modal_x = max(self.desktop_x + margin, min(modal_x, max_x))
-            modal_y = max(self.desktop_y + margin, min(modal_y, max_y))
-            
-            return (modal_x, modal_y)
-        
         # For all other modals: count how many are open (excluding tape) to determine position
         screen_w, screen_h = self.screen.get_size()
         
@@ -1674,6 +1978,9 @@ class OSMode:
     
     def _open_modal(self, modal_name: str):
         """Ensure a modal is active, positioned, and top-most."""
+        if modal_name == "modem" and self.mail_server_connected:
+            # Opening the modem app always disconnects the mail server
+            self._disconnect_mail_server()
         if modal_name == "terminal":
             if modal_name not in self.active_modals:
                 self.active_modals.append(modal_name)
@@ -1707,13 +2014,10 @@ class OSMode:
     
     def _handle_tape_modal_click(self, mouse_x: int, mouse_y: int) -> bool:
         """Handle clicks within the tape modal. Returns True if click was handled."""
-        # Modal dimensions (scaled)
-        modal_w = int(800 * self.scale)
-        modal_h = int(500 * self.scale) + self.modal_title_bar_height
-        
-        # Clamp modal to fit within desktop boundaries (same as drawing)
+        modal_w, modal_h = self._get_modal_size("tape")
         modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
-        modal_x, modal_y = self.modal_positions.get("tape", (0, 0))
+        modal_x, modal_y = self._get_modal_position(modal_w, modal_h, "tape")
+        self.modal_positions["tape"] = (modal_x, modal_y)
         
         # Check if clicking on close button in title bar
         close_btn_size = int(20 * self.scale)
@@ -1886,15 +2190,38 @@ class OSMode:
         
         if call_btn_rect.collidepoint(mouse_x, mouse_y):
             if self.network_connected:
+                self._print_modem_debug_attempt(
+                    self.modem_modal_dialed_sequence,
+                    self._normalize_dial_number(self.modem_modal_dialed_sequence),
+                    None,
+                    "blocked: already connected; disconnect before connecting",
+                )
                 self._show_modem_error("DISCONNECT BEFORE CONNECTING")
                 return True
             connections = self._get_modem_connections()
             sequence = self.modem_modal_dialed_sequence
-            if sequence in connections:
-                self._start_modem_connection(connections[sequence])
+            normalized_sequence = self._normalize_dial_number(sequence)
+            matched_config = connections.get(normalized_sequence)
+            if matched_config:
+                if sequence != normalized_sequence:
+                    self.modem_modal_dialed_sequence = normalized_sequence
+                    self.modem_modal_cursor_position = len(normalized_sequence)
+                self._print_modem_debug_attempt(
+                    sequence,
+                    normalized_sequence,
+                    matched_config,
+                    f"matched route: {matched_config.get('target', 'unknown')}",
+                )
+                self._start_modem_connection(matched_config)
             elif sequence:
+                self._print_modem_debug_attempt(
+                    sequence,
+                    normalized_sequence,
+                    None,
+                    "invalid number",
+                )
                 # Show error message for invalid number (don't clear to allow correction)
-                self._show_modem_error("INVALID NUMBER")
+                self._show_modem_error("NOT A VALID PACIFICA ISLES NO.")
             else:
                 # No number entered
                 self._show_modem_error("ENTER A NUMBER")
@@ -1909,23 +2236,33 @@ class OSMode:
 
     def _get_modem_connections(self):
         """Return the set of dialable connections keyed by number."""
-        connections = {
-            "0345728891": {
-                "target": "glyphis",
-                "number": "0345728891",
-                "messages": [
-                    "Initializing modem connection...",
-                    "Dialing 0345728891...",
-                    "Establishing connection...",
-                    "Handshaking...",
-                    "Packets found!",
-                    "Loading data...",
-                    "Connection established!"
-                ],
-                "delays": [2.1, 2.1, 4.0, 4.0, 3.0, 4.0, 3.0],
-                "grant_token": "MODEM1ST",
+        if self.has_token("GAMEOVER_SCHOOLHACK"):
+            connections = {
+                "0345728891": {
+                    "target": "glyphis_busy",
+                    "number": "0345728891",
+                    "messages": ["LINE BUSY"],
+                    "delays": [2.2],
+                }
             }
-        }
+        else:
+            connections = {
+                "0345728891": {
+                    "target": "glyphis",
+                    "number": "0345728891",
+                    "messages": [
+                        "Initializing modem connection...",
+                        "Dialing 0345728891...",
+                        "Establishing connection...",
+                        "Handshaking...",
+                        "Packets found!",
+                        "Loading data...",
+                        "Connection established!"
+                    ],
+                    "delays": [2.1, 2.1, 4.0, 4.0, 3.0, 4.0, 3.0],
+                    "grant_token": "MODEM1ST",
+                }
+            }
 
         if self.has_token("PAPERCRANEBBS"):
             connections["08277341945"] = {
@@ -1933,7 +2270,7 @@ class OSMode:
                 "number": "08277341945",
                 "messages": [
                     "Initializing modem connection...",
-                    "Dialing 08277341945...",
+                    "Dialing 082-7734-1945...",
                     "Establishing connection...",
                     "Handshaking...",
                     "Packets found!",
@@ -1949,7 +2286,7 @@ class OSMode:
                 "number": "0757421989",
                 "messages": [
                     "Initializing modem connection...",
-                    "Dialing 0757421989...",
+                    "Dialing 075-742-1989...",
                     "Establishing connection...",
                     "Handshaking...",
                     "Packets found!",
@@ -1965,7 +2302,7 @@ class OSMode:
                 "number": "0340899891",
                 "messages": [
                     "Initializing modem connection...",
-                    "Dialing 0340899891...",
+                    "Dialing 03-4089-9891...",
                     "Establishing connection...",
                     "Handshaking...",
                     "Packets found!",
@@ -1975,16 +2312,198 @@ class OSMode:
                 "delays": [2.1, 2.1, 4.0, 4.0, 3.0, 4.0, 3.0],
             }
 
+        if self.has_token("RAINSINVITE_1"):
+            connections[SCHOOL_HACK_GIG_PAYPHONE_NUMBER] = {
+                "target": "school_hack_gig_payphone",
+                "number": SCHOOL_HACK_GIG_PAYPHONE_NUMBER,
+                "messages": [
+                    "Initializing modem connection...",
+                    f"Dialing {SCHOOL_HACK_GIG_PAYPHONE_NUMBER}...",
+                    "Routing to payphone switchboard...",
+                    "Carrier acquired.",
+                    "Courier relay connected.",
+                ],
+                "delays": [1.2, 1.8, 2.2, 1.8, 1.8],
+            }
+
+        # School numbers — always dialable
+        connections["0337415079"] = {
+            "target": "school_reception",
+            "number": "0337415079",
+        }
+        connections["0337415069"] = {
+            "target": "school_fax",
+            "number": "0337415069",
+        }
+        # School server modem — always recognized, but only handshakes outside school hours
+        if self._is_school_after_hours():
+            connections["0337415089"] = {
+                "target": "school_server",
+                "number": "0337415089",
+                "messages": [
+                    "Initializing modem connection...",
+                    "Dialing 0337415089...",
+                    "Handshaking...",
+                    "HOST IDENTIFIED: tokyometro-high.edu.api",
+                    "Verifying protocol...",
+                    "BTP-2400 synchronised.",
+                    "Connection established!",
+                ],
+                "delays": [1.5, 2.0, 3.0, 2.0, 2.5, 2.0, 2.0],
+            }
+        else:
+            connections["0337415089"] = {
+                "target": "school_server_busy",
+                "number": "0337415089",
+                "messages": [
+                    "Initializing modem connection...",
+                    "Dialing 0337415089...",
+                    "Carrier detected...",
+                    "LINE BUSY — SCHOOL NETWORK ACTIVE",
+                    "TRY AFTER HOURS",
+                ],
+                "delays": [1.5, 2.0, 2.2, 2.0, 2.4],
+            }
+
         return connections
+
+    def _normalize_dial_number(self, number: str) -> str:
+        """Return a modem-friendly dial string by stripping separators."""
+        return "".join(ch for ch in str(number or "") if ch.isdigit() or ch in "*#")
+
+    def _is_school_after_hours(self) -> bool:
+        """Return True when the school server line should be reachable."""
+        import datetime as _dt
+
+        now = _dt.datetime.now()
+        hour, minute, weekday = now.hour, now.minute, now.weekday()  # 0=Mon 6=Sun
+
+        if weekday == 6:  # Sunday
+            return True
+        if weekday == 5:  # Saturday: after midday or before 9am
+            return hour < 9 or hour >= 12
+        if weekday == 2:  # Wednesday: after 1pm or before 9am
+            return hour < 9 or hour >= 13
+        return hour < 9 or hour >= 18
+
+    def _print_modem_debug_attempt(
+        self,
+        raw_sequence: str,
+        normalized_sequence: str,
+        matched_config: Optional[dict],
+        outcome: str,
+    ) -> None:
+        """Print a focused modem-dial debug trace and persist it to a log file."""
+        import datetime as _dt
+
+        now = _dt.datetime.now()
+        required_number = "0337415089"
+        expected_outcome = (
+            "school_server / handshake expected"
+            if self._is_school_after_hours()
+            else "school_server_busy / line busy expected"
+        )
+        matched_number = matched_config.get("number", "NONE") if matched_config else "NONE"
+        matched_target = matched_config.get("target", "NONE") if matched_config else "NONE"
+        lines = [
+            "[MODEM DEBUG] ----------------------------------------",
+            f"[MODEM DEBUG] time_recorded: {now.strftime('%Y-%m-%d %H:%M:%S')} ({now.strftime('%A')})",
+            f"[MODEM DEBUG] raw_number_dialed: {raw_sequence or '<empty>'}",
+            f"[MODEM DEBUG] normalized_number: {normalized_sequence or '<empty>'}",
+            f"[MODEM DEBUG] expected_school_server_outcome: {expected_outcome}",
+            f"[MODEM DEBUG] required_school_server_number: {required_number}",
+            f"[MODEM DEBUG] matched_number: {matched_number}",
+            f"[MODEM DEBUG] matched_target: {matched_target}",
+            f"[MODEM DEBUG] outcome: {outcome}",
+            "[MODEM DEBUG] ----------------------------------------",
+        ]
+
+        for line in lines:
+            print(line, flush=True)
+
+        try:
+            log_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "modem_debug.log"))
+            with open(log_path, "a", encoding="utf-8") as debug_log:
+                debug_log.write("\n".join(lines) + "\n")
+        except Exception as exc:
+            print(f"[MODEM DEBUG] failed to write modem_debug.log: {exc}", flush=True)
 
     def _start_modem_connection(self, config: dict) -> None:
         """Begin modem connection sequence for the given config."""
-        self.modem_modal_connection_started = True
-        self.modem_modal_current_target = config.get("target")
+        target = config.get("target", "")
+        self.modem_modal_current_target = target
         self.modem_modal_external_bbs = None
-        self._play_modem_dial_sound()
         self.modem_packet_sprites.clear()
         self.modem_packet_spawn_timer = 0.0
+
+        if target == "glyphis_busy":
+            self.modem_modal_connection_started = True
+            self.modem_modal_connection_messages = ["LINE BUSY"]
+            self.modem_modal_message_delays = list(config.get("delays", [2.2]))
+            self.modem_modal_message_index = 0
+            self.modem_modal_message_timer = 0.0
+            self._school_start_busy_tone()
+            return
+
+        if target == "school_server":
+            self.modem_modal_connection_started = True
+            self.modem_school_dial_active = True
+            self.modem_school_target = "server_open"
+            self.modem_school_number = config.get("number", "")
+            self.modem_school_phase = "server_open_tone"
+            self.modem_school_digit_queue = []
+            self.modem_school_digit_timer = 0.0
+            self.modem_school_phase_timer = 0.0
+            self.modem_modal_connection_messages = [f"Dialing {self.modem_school_number}...", ""]
+            self.modem_modal_message_delays = list(config.get("delays", []))
+            self.modem_modal_message_index = 1
+            self.modem_modal_message_timer = 0.0
+            self._school_start_specific_dial_tone("dialup.wav")
+            return
+
+        if target == "school_server_busy":
+            self.modem_modal_connection_started = True
+            self.modem_school_dial_active = True
+            self.modem_school_target = "server_busy"
+            self.modem_school_number = config.get("number", "")
+            self.modem_school_phase = "server_busy"
+            self.modem_school_digit_queue = []
+            self.modem_school_digit_timer = 0.0
+            self.modem_school_phase_timer = 0.0
+            self.modem_modal_connection_messages = [
+                f"Dialing {self.modem_school_number}...",
+                "LINE BUSY - SCHOOL NETWORK ACTIVE",
+                "TRY AFTER HOURS",
+            ]
+            self.modem_modal_message_delays = []
+            self.modem_modal_message_index = 2
+            self.modem_modal_message_timer = 0.0
+            self._school_start_busy_tone()
+            return
+
+        if target in ("school_reception", "school_fax"):
+            # Tone-by-tone telephone dial — no BBS handshake flow
+            self.modem_modal_connection_started = True
+            self.modem_school_dial_active = True
+            self.modem_school_target = "reception" if target == "school_reception" else "fax"
+            self.modem_school_number = config.get("number", "")
+            self.modem_school_phase = "reception_tone" if target == "school_reception" else "fax_tone"
+            self.modem_school_digit_queue = []
+            self.modem_school_digit_timer = 0.0
+            self.modem_school_phase_timer = 0.0
+            self.modem_modal_connection_messages = [f"Dialing {self.modem_school_number}...", ""]
+            self.modem_modal_message_delays = []
+            self.modem_modal_message_index = 1
+            self.modem_modal_message_timer = 0.0
+            if target == "school_reception":
+                self._school_start_ringing()
+            else:
+                self._school_start_specific_dial_tone("short_dial.wav")
+            return
+
+        # Normal BBS connection
+        self.modem_modal_connection_started = True
+        self._play_modem_dial_sound()
         self.modem_modal_connection_messages = list(config.get("messages", []))
         self.modem_modal_message_delays = list(config.get("delays", []))
         self.modem_modal_message_index = 0
@@ -2028,8 +2547,276 @@ class OSMode:
         self.modem_modal_key_flash_label = label
         self.modem_modal_key_flash_timer = max(0.0, float(duration))
 
+    # ------------------------------------------------------------------
+    # School telephone dial-out helpers
+    # ------------------------------------------------------------------
+
+    def _school_play_audio(self, path: str) -> None:
+        """Play a school telephone audio file on the dedicated school channel."""
+        import os as _os
+        try:
+            resolved_path = path
+            if not _os.path.isabs(resolved_path):
+                normalized = path.replace("/", _os.sep).replace("\\", _os.sep)
+                if normalized.startswith("Data" + _os.sep):
+                    normalized = normalized[len("Data" + _os.sep):]
+                resolved_path = get_data_path(*normalized.split(_os.sep))
+            if not _os.path.exists(resolved_path):
+                print(f"[MODEM AUDIO] missing school audio file: {resolved_path}", flush=True)
+                return
+            sound = pygame.mixer.Sound(resolved_path)
+            channel = pygame.mixer.find_channel(True)
+            if channel:
+                channel.play(sound)
+                self.modem_school_audio_channel = channel
+                self.modem_school_audio_sound = sound
+                print(f"[MODEM AUDIO] playing school audio: {resolved_path}", flush=True)
+            else:
+                print(f"[MODEM AUDIO] no free mixer channel for: {resolved_path}", flush=True)
+        except Exception as exc:
+            print(f"[MODEM AUDIO] failed to play school audio {path}: {exc}", flush=True)
+
+    def _school_start_fail_sound(self) -> None:
+        """Play Modem_failing.wav on a dedicated channel (handshake attempt noise)."""
+        path = get_data_path("Social_Engineering", "School_Hack", "Audio", "Modem_failing.wav")
+        try:
+            if not os.path.exists(path):
+                print(f"[MODEM AUDIO] missing fail audio file: {path}", flush=True)
+                return
+            sound = pygame.mixer.Sound(path)
+            channel = pygame.mixer.find_channel(True)
+            if channel:
+                channel.play(sound)
+                self.modem_school_fail_channel = channel
+                print(f"[MODEM AUDIO] playing fail audio: {path}", flush=True)
+            else:
+                print(f"[MODEM AUDIO] no free mixer channel for fail audio: {path}", flush=True)
+        except Exception as exc:
+            print(f"[MODEM AUDIO] failed to play fail audio {path}: {exc}", flush=True)
+
+    def _school_start_ringing(self) -> None:
+        """Play one random office dial tone for the school reception line."""
+        import os as _os, random as _random
+        candidates = ["long_dial.wav", "medium_dial.wav", "short_dial.wav"]
+        chosen = _random.choice(candidates)
+        self._school_play_audio(get_data_path("Social_Engineering", "School_Hack", "Audio", chosen))
+
+    def _school_start_specific_dial_tone(self, filename: str) -> None:
+        """Play a specific school dial-tone file."""
+        self._school_play_audio(get_data_path("Social_Engineering", "School_Hack", "Audio", filename))
+
+    def _school_start_busy_tone(self) -> None:
+        """Play the dedicated busy tone for the school server line."""
+        self._school_play_audio(get_data_path("Social_Engineering", "School_Hack", "Audio", "busy-tone.wav"))
+
+    def _school_start_pickup(self) -> None:
+        """Check school hours and play the appropriate pickup wav."""
+        import os as _os, random as _random, datetime as _dt
+        now = _dt.datetime.now()
+        hour, minute, weekday = now.hour, now.minute, now.weekday()  # 0=Mon 6=Sun
+
+        closed = False
+        if hour < 9 or hour >= 18:                                           # outside 9am-6pm
+            closed = True
+        elif weekday == 2 and (hour > 13 or (hour == 13 and minute > 0)):    # Wednesday after 1pm
+            closed = True
+        elif weekday == 5 and (hour < 9 or hour >= 12):                      # Saturday outside 9am-12pm
+            closed = True
+        elif weekday == 6:                                                    # Sunday all day
+            closed = True
+
+        if closed:
+            path = get_data_path("Social_Engineering", "School_Hack", "Audio", "AnswerPhoneAfterHours.wav")
+        else:
+            n = _random.randint(1, 7)
+            path = get_data_path("Social_Engineering", "School_Hack", "Audio", f"{n:02d}_pickup.wav")
+        self._school_play_audio(path)
+
+    def _update_school_dial(self, dt: float) -> None:
+        """Drive the school telephone dial-out sequence frame by frame."""
+        if self.modem_school_phase == "reception_tone":
+            self.modem_modal_connection_messages = [f"Dialing {self.modem_school_number}...", ""]
+            self.modem_modal_message_index = 1
+            self.modem_school_phase_timer += dt
+            audio_started = self.modem_school_audio_channel is not None
+            audio_finished = audio_started and not self.modem_school_audio_channel.get_busy()
+            if audio_finished or (not audio_started and self.modem_school_phase_timer >= 1.0):
+                self.modem_school_phase = "reception_live"
+                self.modem_school_phase_timer = 0.0
+                self._school_start_fail_sound()
+                self._school_start_pickup()
+            return
+
+        if self.modem_school_phase == "reception_live":
+            self.modem_modal_connection_messages = [f"Dialing {self.modem_school_number}...", "CONNECTED"]
+            self.modem_modal_message_index = 1
+            self.modem_school_phase_timer += dt
+            had_audio = self.modem_school_fail_channel is not None or self.modem_school_audio_channel is not None
+            fail_done = self.modem_school_fail_channel is None or not self.modem_school_fail_channel.get_busy()
+            pickup_done = self.modem_school_audio_channel is None or not self.modem_school_audio_channel.get_busy()
+            if (fail_done and pickup_done and (had_audio or self.modem_school_phase_timer >= 0.5)) or self.modem_school_phase_timer >= 8.0:
+                self._disconnect_network()
+            return
+
+        if self.modem_school_phase == "fax_tone":
+            self.modem_modal_connection_messages = [f"Dialing {self.modem_school_number}...", ""]
+            self.modem_modal_message_index = 1
+            self.modem_school_phase_timer += dt
+            audio_started = self.modem_school_audio_channel is not None
+            audio_finished = audio_started and not self.modem_school_audio_channel.get_busy()
+            if audio_finished or (not audio_started and self.modem_school_phase_timer >= 1.0):
+                self.modem_school_phase = "fax_end_scripted"
+                self.modem_school_phase_timer = 0.0
+                self._school_start_fail_sound()
+            return
+
+        if self.modem_school_phase == "fax_end_scripted":
+            self.modem_modal_connection_messages = [f"Dialing {self.modem_school_number}...", "FAX CARRIER - INCOMPATIBLE", "DISCONNECTING..."]
+            self.modem_modal_message_index = 2
+            self.modem_school_phase_timer += dt
+            had_audio = self.modem_school_fail_channel is not None
+            fail_done = self.modem_school_fail_channel is None or not self.modem_school_fail_channel.get_busy()
+            if (fail_done and (had_audio or self.modem_school_phase_timer >= 0.5)) or self.modem_school_phase_timer >= 6.0:
+                self._disconnect_network()
+            return
+
+        if self.modem_school_phase == "server_busy":
+            self.modem_modal_connection_messages = [f"Dialing {self.modem_school_number}...", "LINE BUSY - SCHOOL NETWORK ACTIVE", "TRY AFTER HOURS"]
+            self.modem_modal_message_index = 2
+            self.modem_school_phase_timer += dt
+            audio_started = self.modem_school_audio_channel is not None
+            audio_finished = audio_started and not self.modem_school_audio_channel.get_busy()
+            if audio_finished or (not audio_started and self.modem_school_phase_timer >= 1.2):
+                self._show_modem_error("SERVER LINE BUSY - TRY AFTER HOURS")
+                self._disconnect_network()
+            return
+
+        if self.modem_school_phase == "server_open_tone":
+            self.modem_modal_connection_messages = [f"Dialing {self.modem_school_number}...", ""]
+            self.modem_modal_message_index = 1
+            self.modem_school_phase_timer += dt
+            audio_started = self.modem_school_audio_channel is not None
+            audio_finished = audio_started and not self.modem_school_audio_channel.get_busy()
+            if audio_finished or (not audio_started and self.modem_school_phase_timer >= 1.2):
+                if self.modem_school_audio_channel is not None:
+                    try:
+                        self.modem_school_audio_channel.stop()
+                    except Exception:
+                        pass
+                self.modem_school_dial_active = False
+                self.modem_school_target = ""
+                self.modem_school_phase = ""
+                self.modem_school_audio_channel = None
+                self.modem_school_audio_sound = None
+                self.modem_school_phase_timer = 0.0
+                self.modem_modal_connection_messages = [
+                    "Initializing modem connection...",
+                    "Dialing 0337415089...",
+                    "Handshaking...",
+                    "HOST IDENTIFIED: tokyometro-high.edu.api",
+                    "Verifying protocol...",
+                    "BTP-2400 synchronised.",
+                    "Connection established!",
+                ]
+                self.modem_modal_message_delays = [1.5, 2.0, 3.0, 2.0, 2.5, 2.0, 2.0]
+                self.modem_modal_message_index = 0
+                self.modem_modal_message_timer = 0.0
+            return
+
+        if self.modem_school_phase == "tones":
+            self.modem_modal_connection_messages = [f"Dialing {self.modem_school_number}...", ""]
+            self.modem_modal_message_index = 1
+
+            self.modem_school_digit_timer += dt
+            if self.modem_school_digit_timer >= self.modem_school_digit_delay:
+                self.modem_school_digit_timer = 0.0
+                if self.modem_school_digit_queue:
+                    digit = self.modem_school_digit_queue.pop(0)
+                    self._play_modem_key_tone(digit)
+                else:
+                    # All tones played — branch
+                    if self.modem_school_target == "reception":
+                        self.modem_school_phase = "ringing"
+                        self.modem_school_digit_timer = 0.0
+                        self._school_start_ringing()
+                    else:  # fax
+                        self.modem_school_phase = "fax_end"
+                        self.modem_school_digit_timer = 0.0
+
+        elif self.modem_school_phase == "ringing":
+            self.modem_modal_connection_messages = [f"Dialing {self.modem_school_number}...", "RINGING..."]
+            self.modem_modal_message_index = 1
+            self.modem_school_phase_timer += dt
+            audio_finished = self.modem_school_audio_channel is not None and not self.modem_school_audio_channel.get_busy()
+            if audio_finished or self.modem_school_phase_timer >= 1.5:
+                self.modem_school_phase = "pickup"
+                self.modem_school_phase_timer = 0.0
+                self._school_start_pickup()
+
+        elif self.modem_school_phase == "pickup":
+            self.modem_modal_connection_messages = [f"Dialing {self.modem_school_number}...", "RINGING...", "CONNECTED"]
+            self.modem_modal_message_index = 2
+            self.modem_school_phase_timer += dt
+            audio_finished = self.modem_school_audio_channel is not None and not self.modem_school_audio_channel.get_busy()
+            if audio_finished or self.modem_school_phase_timer >= 3.0:
+                self._disconnect_network()
+
+        elif self.modem_school_phase == "fax_end":
+            self.modem_modal_connection_messages = [f"Dialing {self.modem_school_number}...", "FAX CARRIER — INCOMPATIBLE", "DISCONNECTING..."]
+            self.modem_modal_message_index = 2
+            self.modem_school_digit_timer += dt
+            if self.modem_school_digit_timer >= 1.8:
+                self._disconnect_network()
+
+    def _begin_school_hack_gig_signature_prompt(self) -> None:
+        """Switch the modem modal into the payphone courier signature prompt."""
+        self.modem_school_hack_signature_prompt_active = True
+        self.modem_modal_connection_started = False
+        self.modem_modal_current_target = "school_hack_gig_prompt"
+        self.modem_modal_dialed_sequence = ""
+        self.modem_modal_cursor_position = 0
+        self.modem_modal_cursor_blink_timer = 0.0
+        self.modem_modal_connection_messages = [
+            "COURIER RELAY CONNECTED.",
+            "ENTER 4-TONE SIGNATURE",
+            "PRESS ENTER TO TRANSMIT",
+        ]
+        self.modem_modal_message_index = len(self.modem_modal_connection_messages) - 1
+        self.modem_modal_message_timer = 0.0
+
+    def _queue_school_hack_gig_result(self, accepted: bool) -> None:
+        """Queue the final courier relay response and hand control back to the scripted modem flow."""
+        self.modem_school_hack_signature_prompt_active = False
+        self.modem_modal_dialed_sequence = ""
+        self.modem_modal_cursor_position = 0
+        self.modem_modal_cursor_blink_timer = 0.0
+        self.modem_modal_connection_started = True
+        if accepted:
+            if not self.has_token("RAINSINVITE_3"):
+                self.grant_token("RAINSINVITE_3", reason="passed the payphone courier check for Fugamatchi's secret gig")
+            self.modem_modal_current_target = "school_hack_gig_ticket"
+            self.modem_modal_connection_messages = [
+                "SIGNATURE ACCEPTED.",
+                "COURIER NETWORK LOCKED.",
+                "BIKE RUNNER DISPATCHED.",
+                "TICKET ETA: < 60 MIN",
+            ]
+            self.modem_modal_message_delays = [0.9, 1.0, 1.2, 1.4]
+        else:
+            self.modem_modal_current_target = "school_hack_gig_locked"
+            self.modem_modal_connection_messages = [
+                "COURIER RELAY CONNECTED.",
+                "TRACK SIGNATURE NOT VERIFIED.",
+                "PLAY RISE NEW VOICES FIRST.",
+            ]
+            self.modem_modal_message_delays = [0.9, 1.0, 1.2]
+        self.modem_modal_message_index = 0
+        self.modem_modal_message_timer = 0.0
+
     def _disconnect_network(self) -> None:
         """Tear down network link and stop any radio audio."""
+        if self._is_school_server_connected():
+            self._record_school_hack_failure()
         self.network_connected = False
         OSMode.persisted_network_connected = False
         self.modem_modal_dialed_sequence = ""
@@ -2037,6 +2824,7 @@ class OSMode:
         self.modem_modal_cursor_blink_timer = 0.0
         self.modem_modal_key_flash_label = None
         self.modem_modal_key_flash_timer = 0.0
+        self.modem_school_hack_signature_prompt_active = False
         self.modem_modal_connection_started = False
         self.modem_modal_connection_messages = []
         self.modem_modal_message_index = 0
@@ -2047,6 +2835,28 @@ class OSMode:
         self.modem_wave_phase = 0.0
         self.modem_packet_spawn_timer = 0.0
         self._stop_modem_dial_sound()
+
+        # Reset school dial-out state
+        self.modem_school_dial_active = False
+        self.modem_school_target = ""
+        self.modem_school_number = ""
+        self.modem_school_phase = ""
+        self.modem_school_digit_queue = []
+        self.modem_school_digit_timer = 0.0
+        self.modem_school_phase_timer = 0.0
+        if self.modem_school_fail_channel is not None:
+            try:
+                self.modem_school_fail_channel.stop()
+            except Exception:
+                pass
+            self.modem_school_fail_channel = None
+        if self.modem_school_audio_channel is not None:
+            try:
+                self.modem_school_audio_channel.stop()
+            except Exception:
+                pass
+            self.modem_school_audio_channel = None
+        self.modem_school_audio_sound = None
 
         # Stop OS-mode Pirate Radio app if running
         if self.pirate_radio_app:
@@ -2073,6 +2883,58 @@ class OSMode:
         
         Returns True to consume the event when the modem modal has focus.
         """
+        if self.modem_school_hack_signature_prompt_active:
+            if event.key == pygame.K_BACKSPACE:
+                cursor_pos = self.modem_modal_cursor_position
+                if cursor_pos > 0:
+                    self.modem_modal_dialed_sequence = (
+                        self.modem_modal_dialed_sequence[:cursor_pos - 1] +
+                        self.modem_modal_dialed_sequence[cursor_pos:]
+                    )
+                    self.modem_modal_cursor_position -= 1
+                    self.modem_modal_cursor_blink_timer = 0.0
+                return True
+            elif event.key == pygame.K_LEFT:
+                if self.modem_modal_cursor_position > 0:
+                    self.modem_modal_cursor_position -= 1
+                    self.modem_modal_cursor_blink_timer = 0.0
+                return True
+            elif event.key == pygame.K_RIGHT:
+                if self.modem_modal_cursor_position < len(self.modem_modal_dialed_sequence):
+                    self.modem_modal_cursor_position += 1
+                    self.modem_modal_cursor_blink_timer = 0.0
+                return True
+            elif event.key == pygame.K_HOME:
+                self.modem_modal_cursor_position = 0
+                self.modem_modal_cursor_blink_timer = 0.0
+                return True
+            elif event.key == pygame.K_END:
+                self.modem_modal_cursor_position = len(self.modem_modal_dialed_sequence)
+                self.modem_modal_cursor_blink_timer = 0.0
+                return True
+            elif event.key == pygame.K_DELETE:
+                cursor_pos = self.modem_modal_cursor_position
+                if cursor_pos < len(self.modem_modal_dialed_sequence):
+                    self.modem_modal_dialed_sequence = (
+                        self.modem_modal_dialed_sequence[:cursor_pos] +
+                        self.modem_modal_dialed_sequence[cursor_pos + 1:]
+                    )
+                    self.modem_modal_cursor_blink_timer = 0.0
+                return True
+            elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                signature = self._normalize_dial_number(self.modem_modal_dialed_sequence)
+                if len(signature) < SCHOOL_HACK_GIG_MIN_SIGNATURE_LENGTH:
+                    self._show_modem_error("ENTER 4 TONES")
+                else:
+                    self._queue_school_hack_gig_result(True)
+                return True
+            elif event.key == pygame.K_ESCAPE:
+                self.modem_modal_dialed_sequence = ""
+                self.modem_modal_cursor_position = 0
+                self.modem_modal_cursor_blink_timer = 0.0
+                return True
+            return True
+
         if self.modem_modal_connection_started:
             return False
         
@@ -2122,13 +2984,36 @@ class OSMode:
         elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
             # Enter key triggers the CONNECT action
             if self.network_connected:
+                self._print_modem_debug_attempt(
+                    self.modem_modal_dialed_sequence,
+                    self._normalize_dial_number(self.modem_modal_dialed_sequence),
+                    None,
+                    "blocked: already connected; disconnect before connecting",
+                )
                 self._show_modem_error("DISCONNECT BEFORE CONNECTING")
             else:
                 connections = self._get_modem_connections()
                 sequence = self.modem_modal_dialed_sequence
-                if sequence in connections:
-                    self._start_modem_connection(connections[sequence])
+                normalized_sequence = self._normalize_dial_number(sequence)
+                matched_config = connections.get(normalized_sequence)
+                if matched_config:
+                    if sequence != normalized_sequence:
+                        self.modem_modal_dialed_sequence = normalized_sequence
+                        self.modem_modal_cursor_position = len(normalized_sequence)
+                    self._print_modem_debug_attempt(
+                        sequence,
+                        normalized_sequence,
+                        matched_config,
+                        f"matched route: {matched_config.get('target', 'unknown')}",
+                    )
+                    self._start_modem_connection(matched_config)
                 elif sequence:
+                    self._print_modem_debug_attempt(
+                        sequence,
+                        normalized_sequence,
+                        None,
+                        "invalid number",
+                    )
                     # Show error for invalid number
                     self._show_modem_error("INVALID NUMBER")
             return True
@@ -2150,22 +3035,45 @@ class OSMode:
         Returns True to consume the event and prevent it from bubbling up
         to other handlers, even for invalid characters.
         """
+        if self.modem_school_hack_signature_prompt_active:
+            if text:
+                for char in text:
+                    if char not in "0123456789*#":
+                        continue
+                    self._flash_modem_dial_key(char)
+                    if len(self.modem_modal_dialed_sequence) >= SCHOOL_HACK_GIG_MIN_SIGNATURE_LENGTH:
+                        break
+                    cursor_pos = self.modem_modal_cursor_position
+                    self.modem_modal_dialed_sequence = (
+                        self.modem_modal_dialed_sequence[:cursor_pos] +
+                        char +
+                        self.modem_modal_dialed_sequence[cursor_pos:]
+                    )
+                    self.modem_modal_cursor_position += 1
+                    self.modem_modal_cursor_blink_timer = 0.0
+                    self._play_modem_key_tone(char)
+            return True
+
         if self.modem_modal_connection_started:
             return False
         
-        # Only accept digits, *, and #
-        if text and text in "0123456789*#":
-            self._flash_modem_dial_key(text)
-            if len(self.modem_modal_dialed_sequence) < 20:  # Limit length
+        # Accept modem digits even when the source string includes dashes or spaces.
+        if text:
+            for char in text:
+                if char not in "0123456789*#":
+                    continue
+                self._flash_modem_dial_key(char)
+                if len(self.modem_modal_dialed_sequence) >= 20:
+                    break
                 cursor_pos = self.modem_modal_cursor_position
                 self.modem_modal_dialed_sequence = (
-                    self.modem_modal_dialed_sequence[:cursor_pos] + 
-                    text + 
+                    self.modem_modal_dialed_sequence[:cursor_pos] +
+                    char +
                     self.modem_modal_dialed_sequence[cursor_pos:]
                 )
                 self.modem_modal_cursor_position += 1
                 self.modem_modal_cursor_blink_timer = 0.0  # Reset cursor blink
-                self._play_modem_key_tone(text)
+                self._play_modem_key_tone(char)
         
         # Always return True when modem modal is active to consume the event
         # and prevent keyboard input from triggering other handlers
@@ -2389,6 +3297,7 @@ class OSMode:
                     self.modem_dial_sound.stop()
                 except Exception:
                     pass
+            self.modem_dial_channel = None
             
             # Load and play dialup.wav
             audio_path = get_data_path("Audio", "dialup.wav")
@@ -2397,11 +3306,13 @@ class OSMode:
                     self.modem_dial_sound = pygame.mixer.Sound(audio_path)
                     # Play the sound - this will interrupt other sounds
                     channel = self.modem_dial_sound.play()
+                    self.modem_dial_channel = channel
                     self.modem_dial_sound_playing = True
                     print(f"DEBUG: Playing dialup.wav from {audio_path}")
                 except Exception as e:
                     print(f"Warning: Failed to load/play dialup.wav: {e}")
                     self.modem_dial_sound = None
+                    self.modem_dial_channel = None
                     self.modem_dial_sound_playing = False
             else:
                 print(f"Warning: dialup.wav not found at {audio_path}")
@@ -2411,6 +3322,7 @@ class OSMode:
                     try:
                         self.modem_dial_sound = pygame.mixer.Sound(alt_path)
                         channel = self.modem_dial_sound.play()
+                        self.modem_dial_channel = channel
                         self.modem_dial_sound_playing = True
                         print(f"DEBUG: Playing dialup.wav from alternative path {alt_path}")
                     except Exception as e:
@@ -2420,6 +3332,7 @@ class OSMode:
             import traceback
             traceback.print_exc()
             self.modem_dial_sound = None
+            self.modem_dial_channel = None
             self.modem_dial_sound_playing = False
 
     def _stop_modem_dial_sound(self) -> None:
@@ -2428,7 +3341,22 @@ class OSMode:
                 self.modem_dial_sound.stop()
         except Exception:
             pass
+        self.modem_dial_channel = None
         self.modem_dial_sound_playing = False
+
+    def _is_modem_dial_sound_active(self) -> bool:
+        """Return True while dialup.wav is still playing on its mixer channel."""
+        channel = self.modem_dial_channel
+        if channel is not None:
+            try:
+                if channel.get_busy():
+                    self.modem_dial_sound_playing = True
+                    return True
+            except Exception:
+                pass
+        self.modem_dial_channel = None
+        self.modem_dial_sound_playing = False
+        return False
 
     def _update_modem_packet_effect(self, dt: float) -> None:
         if not self.modem_terminal_rect or not self.modem_modal_connection_started:
@@ -2850,99 +3778,59 @@ class OSMode:
             if self.mail_status_timer <= 0:
                 self.mail_status_message = ""
 
-        # BRADSONIC-MAIL: connect button technobabble then CONNECTED (legacy flow)
-        if self.mail_connect_phase == "connecting" and self.mail_connect_technobabble_timer >= 0:
-            self.mail_connect_technobabble_timer -= dt
-            if self.mail_connect_technobabble_timer <= 0:
-                self.mail_connect_phase = "connected"
-                self.mail_server_connected = True
-                outbox = self.get_mail_outbox()
-                sent_im_in_to_rain = any(
-                    (msg.get("recipient", "") or "").strip().lower() == "rain@ciphernet.net"
-                    and "i'm in" in ((msg.get("subject", "") or "").lower())
-                    for msg in outbox
-                )
-                for msg in outbox:
-                    self.send_mail(msg.get("recipient", ""), msg.get("subject", ""), msg.get("body", ""))
-                self.save_mail_outbox([])
-                if sent_im_in_to_rain:
-                    self.mail_rain_delivery_timer = 30.0  # Rain's reply takes at least 30 sec
-
-        # BRADSONIC-MAIL: deliver Rain reply (only when "I'm in" was sent to Rain)
-        if self.mail_rain_delivery_timer > 0:
-            self.mail_rain_delivery_timer -= dt
-            if self.mail_rain_delivery_timer <= 0:
-                username, _ = self.get_user_credentials()
-                rain_email = {
-                    "id": f"rain_{int(time.time())}",
-                    "sender": "rain@ciphernet.net",
-                    "recipient": self.mail_settings.get("mail_from", "user@bradsonic.net"),
-                    "subject": RAIN_REPLY_SUBJECT,
-                    "body": _get_rain_reply_body(username),
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "read": False,
-                }
-                self.mail_local_inbox.insert(0, rain_email)
-                self.save_inbox_emails(self.mail_local_inbox)
-                self.play_mail_sound()
-                self.mail_rain_delivery_timer = -1.0
-
         # Mail pulse timer for COMPOSE / SEND
         self.mail_pulse_timer += dt
 
-        # BRADSONIC-MAIL CONNECT view: terminal sequence (Modem detected → Line detected → Dial up → send/receive)
-        if (self.mail_view == "connect" and self._mail_connect_steps and
-                self.mail_connect_terminal_line_index < len(self._mail_connect_steps)):
+        # BRADSONIC-MAIL relay sequence keeps progressing even if the user leaves the CONNECT tab.
+        if self._mail_connect_steps and self.mail_connect_terminal_line_index < len(self._mail_connect_steps):
             self.mail_connect_terminal_timer -= dt
             if self.mail_connect_terminal_timer <= 0:
                 line, delay, action = self._mail_connect_steps[self.mail_connect_terminal_line_index]
-                if action == "play_dialup":
-                    self._play_modem_dial_sound()
-                    self.mail_connect_dialup_started = True
-                elif action == "do_send":
-                    outbox = self.get_mail_outbox()
-                    self._mail_sent_im_in_to_rain = any(
-                        (m.get("recipient", "") or "").strip().lower() == "rain@ciphernet.net"
-                        and "i'm in" in ((m.get("subject", "") or "").lower())
-                        for m in outbox
-                    )
-                    for msg in outbox:
-                        self.send_mail(msg.get("recipient", ""), msg.get("subject", ""), msg.get("body", ""))
-                    self.save_mail_outbox([])
-                elif action == "do_receive":
-                    inbox_before = len(self.mail_local_inbox)
-                    if self._mail_sent_im_in_to_rain:
-                        username, _ = self.get_user_credentials()
-                        rain_email = {
-                            "id": f"rain_{int(time.time())}",
-                            "sender": "rain@ciphernet.net",
-                            "recipient": self.mail_settings.get("mail_from", "user@bradsonic.net"),
-                            "subject": RAIN_REPLY_SUBJECT,
-                            "body": _get_rain_reply_body(username),
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                            "read": False,
-                        }
-                        self.mail_local_inbox.insert(0, rain_email)
-                        self.save_inbox_emails(self.mail_local_inbox)
-                        self.play_mail_sound()
-                    new_count = len(self.mail_local_inbox) - inbox_before
-                    line = f"New mail found: {new_count} message(s)." if new_count > 0 else "No new mail."
-                elif action == "complete":
-                    self.mail_server_connected = True
-                    self.mail_connect_terminal_complete = True
-                if line and line != "PLACEHOLDER_RECEIVE":
-                    self.mail_connect_terminal_lines.append(line)
-                self.mail_connect_terminal_line_index += 1
-                if self.mail_connect_terminal_line_index < len(self._mail_connect_steps):
-                    self.mail_connect_terminal_timer = delay
+                if action == "do_exchange" and self._is_modem_dial_sound_active():
+                    self.mail_connect_terminal_timer = 0.05
                 else:
-                    self.mail_connect_terminal_timer = 0.0
+                    if action == "play_dialup":
+                        self._play_modem_dial_sound()
+                        self.mail_connect_dialup_started = True
+                    elif action == "do_exchange":
+                        exchange = self._mail_run_exchange(source="connect")
+                        self._mail_write_exchange_summary(exchange)
+                        line = "Transfer complete."
+                    elif action == "stay_connected":
+                        self.mail_server_connected = True
+                        self.mail_connect_terminal_complete = True
+                        self.mail_listen_poll_timer = self._mail_get_poll_interval_seconds()
+                        self.mail_connection_mode = "persistent"
+                    elif action == "disconnect_mail":
+                        self._disconnect_mail_server()
+                        self.mail_connect_terminal_complete = True
+                        self.mail_connection_mode = "idle"
+                    if line:
+                        self.mail_connect_terminal_lines.append(line)
+                    self.mail_connect_terminal_line_index += 1
+                    if self.mail_connect_terminal_line_index < len(self._mail_connect_steps):
+                        self.mail_connect_terminal_timer = delay
+                    else:
+                        self.mail_connect_terminal_timer = 0.0
+
+        if self.mail_server_connected and self.mail_connection_mode == "persistent" and not self._mail_is_connect_in_progress():
+            self.mail_listen_poll_timer -= dt
+            if self.mail_listen_poll_timer <= 0:
+                exchange = self._mail_run_exchange(source="poll")
+                if exchange["outbox_count"] > 0 or exchange["new_count"] > 0:
+                    self._mail_append_terminal_line("")
+                    self._mail_append_terminal_line("AUTO SYNC")
+                    self._mail_write_exchange_summary(exchange)
+                self.mail_listen_poll_timer = self._mail_get_poll_interval_seconds()
 
         # Update cursor blink timer for notes modal
         if "notes" in self.active_modals and self.notes_modal_edit_mode:
             self.notes_modal_cursor_blink_timer += dt
             if self.notes_modal_cursor_blink_timer > 1.0:
                 self.notes_modal_cursor_blink_timer = 0.0
+
+        if self.notes_nudge_overlay_anim_active:
+            self._update_notes_nudge_overlay_animation(dt)
         
         # Update terminal cursor blink timer
         if self.terminal_active:
@@ -2955,7 +3843,20 @@ class OSMode:
             else:
                 # Don't blink cursor in menu/message modes
                 self.terminal_cursor_visible = False
-        
+            if self.terminal_mode == "dotsonic_install":
+                self._advance_dotsonic_installer(dt)
+            if self._is_school_database_mode():
+                if not self._is_school_server_connected():
+                    self._reset_school_database_ui_state()
+                    self.terminal_mode = "message"
+                    self.terminal_message = "node disconnected"
+                    self.terminal_message_timer = 0.0
+                else:
+                    app = self._ensure_embedded_school_database()
+                    app.update(dt)
+                    if not app.running:
+                        self._close_embedded_school_database()
+
         # Stop video if modal is closed (but keep recording flag)
         # However, if recording is active, allow video to continue playing even if modal is closed
         # This ensures the Datasette video plays fully during ghost user sequence
@@ -2986,46 +3887,71 @@ class OSMode:
                 self.modem_modal_key_flash_label = None
                 self.modem_modal_key_flash_timer = 0.0
         
+        # School telephone dial-out update (runs independently of BBS connection flow)
+        if "modem" in self.active_modals and self.modem_school_dial_active:
+            self._update_school_dial(dt)
+
         # Update modem modal connection messages and FX
         if "modem" in self.active_modals and self.modem_modal_connection_started and self.modem_modal_connection_messages:
-            self.modem_modal_message_timer += dt
-            
-            # Progress through messages
-            if self.modem_modal_message_index < len(self.modem_modal_connection_messages):
-                # Get delay for current message (default to 2.1 if delays list not available)
-                if hasattr(self, 'modem_modal_message_delays') and self.modem_modal_message_index < len(self.modem_modal_message_delays):
-                    message_delay = self.modem_modal_message_delays[self.modem_modal_message_index]
-                else:
-                    message_delay = 2.1  # Default delay
-                
-                if self.modem_modal_message_timer >= message_delay:
-                    self.modem_modal_message_index += 1
-                    self.modem_modal_message_timer = 0.0
-                    if self.modem_modal_message_index >= len(self.modem_modal_connection_messages):
-                        # Connection successful - route based on target
-                        target = self.modem_modal_current_target
-                        if target == "paper_crane":
-                            self.modem_modal_external_bbs = "paper_crane"
-                            self.modem_modal_should_exit_os = True
-                        elif target == "echo_chamber":
-                            self.modem_modal_external_bbs = "echo_chamber"
-                            self.modem_modal_should_exit_os = True
-                        elif target == "never_again":
-                            self.modem_modal_external_bbs = "never_again"
-                            self.modem_modal_should_exit_os = True
-                        else:
-                            self.modem_modal_should_reset_bbs = True
-                            self.modem_modal_should_exit_os = True
-                            if self.reset_bbs_callback:
-                                self.reset_bbs_callback()
-            if len(self.modem_modal_connection_messages) >= 2 and not self.network_connected:
-                if self.modem_modal_message_index >= len(self.modem_modal_connection_messages) - 2:
-                    self.network_connected = True
-                    OSMode.persisted_network_connected = True
+            # School telephone dials manage their own message list — skip BBS auto-advance
+            if not self.modem_school_dial_active:
+                self.modem_modal_message_timer += dt
+
+                # Progress through messages
+                if self.modem_modal_message_index < len(self.modem_modal_connection_messages):
+                    # Get delay for current message (default to 2.1 if delays list not available)
+                    if hasattr(self, 'modem_modal_message_delays') and self.modem_modal_message_index < len(self.modem_modal_message_delays):
+                        message_delay = self.modem_modal_message_delays[self.modem_modal_message_index]
+                    else:
+                        message_delay = 2.1  # Default delay
+
+                    if self.modem_modal_message_timer >= message_delay:
+                        self.modem_modal_message_index += 1
+                        self.modem_modal_message_timer = 0.0
+                        if self.modem_modal_message_index >= len(self.modem_modal_connection_messages):
+                            # Connection successful - route based on target
+                            target = self.modem_modal_current_target
+                            if target == "paper_crane":
+                                self.modem_modal_external_bbs = "paper_crane"
+                                self.modem_modal_should_exit_os = True
+                            elif target == "echo_chamber":
+                                self.modem_modal_external_bbs = "echo_chamber"
+                                self.modem_modal_should_exit_os = True
+                            elif target == "never_again":
+                                self.modem_modal_external_bbs = "never_again"
+                                self.modem_modal_should_exit_os = True
+                            elif target == "school_hack_gig_payphone":
+                                if self.has_token("RAINSINVITE_2"):
+                                    self._begin_school_hack_gig_signature_prompt()
+                                else:
+                                    self._queue_school_hack_gig_result(False)
+                            elif target == "glyphis_busy":
+                                self._disconnect_network()
+                            elif target == "school_server":
+                                pass  # Stay in OS, network_connected already set below
+                            elif target == "school_server_busy":
+                                self._show_modem_error("SERVER LINE BUSY — TRY AFTER HOURS")
+                                self._disconnect_network()
+                            elif target in {"school_hack_gig_ticket", "school_hack_gig_locked"}:
+                                self._disconnect_network()
+                            else:
+                                self.modem_modal_should_reset_bbs = True
+                                self.modem_modal_should_exit_os = True
+                                if self.reset_bbs_callback:
+                                    self.reset_bbs_callback()
+                if (
+                    len(self.modem_modal_connection_messages) >= 2
+                    and not self.network_connected
+                    and self.modem_modal_current_target not in {"school_server_busy"}
+                ):
+                    if self.modem_modal_message_index >= len(self.modem_modal_connection_messages) - 2:
+                        self.network_connected = True
+                        OSMode.persisted_network_connected = True
             self._update_modem_packet_effect(dt)
         else:
-            self.modem_packet_sprites.clear()
-            self.modem_wave_phase = 0.0
+            if not self.modem_school_dial_active:
+                self.modem_packet_sprites.clear()
+                self.modem_wave_phase = 0.0
         
         # Update fade state
         if self.tape_modal_video_fade_state == "fade_in":
@@ -3132,11 +4058,11 @@ class OSMode:
         
         # Draw icons (use selected "S" version if selected, otherwise normal version)
         # Mail icon only visible in US Mainland (os_locale == 1); hidden in Europe and Pacifica
-        # dotSONIC icon only visible in Europe and US Mainland; hidden in Pacifica
+        # dotSONIC icon only visible in Europe/US Mainland AND when DOTSONIC token is held
         for icon in self.icons:
             if icon["name"] == "mail-icon.png" and self.os_locale != 1:
                 continue
-            if icon["name"] == "sonic-icon.png" and self.os_locale == 3:
+            if icon["name"] == "sonic-icon.png" and (self.os_locale == 3 or not self.has_token("DOTSONIC")):
                 continue
             # Use S version if selected, otherwise normal version
             icon_to_draw = icon["s_image"] if icon["selected"] else icon["image"]
@@ -3207,17 +4133,10 @@ class OSMode:
     
     def _draw_tape_modal(self):
         """Draw the tape icon modal."""
-        # Modal dimensions (scaled)
-        modal_w = int(800 * self.scale)
-        modal_h = int(500 * self.scale) + self.modal_title_bar_height
-        
-        # Clamp modal to fit within desktop boundaries
+        modal_w, modal_h = self._get_modal_size("tape")
         modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
-        
-        # Get position from stored position or calculate new one
-        modal_x, modal_y = self.modal_positions.get("tape", self._get_modal_position(modal_w, modal_h, "tape"))
-        if "tape" not in self.modal_positions:
-            self.modal_positions["tape"] = (modal_x, modal_y)
+        modal_x, modal_y = self._get_modal_position(modal_w, modal_h, "tape")
+        self.modal_positions["tape"] = (modal_x, modal_y)
         
         # Draw modal background (dark blue/black with border)
         modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
@@ -3359,21 +4278,30 @@ class OSMode:
 
     def _get_harddisk_usage_mb(self) -> Tuple[float, float]:
         """Calculate hard disk used space. .sonic = 1MB, .brad = 0.05MB. Total 50MB.
-        .sonic = virtual downloads (Fugamatchi) + physical .mp3/.wav in FILE-SYSTEM.
+        Installer = 8MB, dotSONIC player = 10MB.
         Returns (used_mb, total_mb)."""
         TOTAL_MB = 50
         sonic_count = len(self.get_downloaded_fugamatchi_tracks())
         brad_count = 0
+        installer_present = False
         base_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "FILE-SYSTEM")
         if os.path.isdir(base_path):
             for _root, _dirs, files in os.walk(base_path):
                 for f in files:
                     lower = f.lower()
+                    if f.upper() == DOTSONIC_INSTALLER_FILENAME:
+                        installer_present = True
                     if lower.endswith(".txt"):
                         brad_count += 1
                     elif lower.endswith((".mp3", ".wav")):
                         sonic_count += 1
-        used_mb = sonic_count * 1.0 + brad_count * 0.05  # 1MB per sonic, 0.05MB per brad
+        
+        # Base usage: dotSONIC player (10MB) if token held, else 0.
+        # Plus installer (8MB) if file present.
+        dotsonic_base = 10.0 if self.has_token("DOTSONIC") else 0.0
+        installer_base = 8.0 if installer_present else 0.0
+        
+        used_mb = dotsonic_base + installer_base + (sonic_count * 1.0) + (brad_count * 0.05)
         return (used_mb, TOTAL_MB)
 
     def _draw_clock(self):
@@ -3428,8 +4356,8 @@ class OSMode:
             datasette_status = "DETECTED"
             datasette_status_color = COLOR_GREEN
         
-        # Network status
-        if self.network_connected:
+        # Network status (modem BBS connection OR mail server connection)
+        if self.network_connected or self.mail_server_connected:
             network_status = "CONNECTED"
             network_color = COLOR_NEON_GREEN
         else:
@@ -4024,7 +4952,29 @@ class OSMode:
         if self.modem_modal_connection_started:
             self._draw_modem_packet_effect(terminal_rect)
             status_font = pygame.font.Font(None, max(int(14 * self.scale), 11))
-            status_text = status_font.render("Link Negotiation...", True, COLOR_NEON_GREEN)
+            # Status line varies by connection type
+            if self.modem_modal_current_target == "school_server" and self.network_connected:
+                status_label = "HOST: tokyometro-high.edu.api"
+                status_color = COLOR_NEON_GREEN
+            elif self.modem_school_dial_active and self.modem_school_target == "server_open":
+                status_label = "REMOTE MODEM DETECTED - NEGOTIATING CARRIER"
+                status_color = COLOR_TEAL
+            elif self.modem_school_dial_active and self.modem_school_target == "server_busy":
+                status_label = "LINE BUSY - SCHOOL NETWORK ACTIVE"
+                status_color = COLOR_AMBER
+            elif self.modem_school_dial_active and self.modem_school_target == "reception":
+                status_label = "VOICE LINE DETECTED - NOT A DATA MODEM"
+                status_color = COLOR_AMBER
+            elif self.modem_school_dial_active and self.modem_school_target == "fax":
+                status_label = "FAX CARRIER — HANDSHAKE FAIL"
+                status_color = COLOR_AMBER
+            elif self.modem_school_dial_active:
+                status_label = "MODEM NEGOTIATION IN PROGRESS"
+                status_color = COLOR_TEAL
+            else:
+                status_label = "Link Negotiation..."
+                status_color = COLOR_NEON_GREEN
+            status_text = status_font.render(status_label, True, status_color)
             # Move one character space to the right (use font width of a space character)
             char_width = status_font.size(" ")[0]
             self.screen.blit(status_text, (terminal_x + char_width, terminal_y + terminal_h - status_font.get_height() - int(6 * self.scale)))
@@ -4323,6 +5273,137 @@ class OSMode:
     # BRADSONIC-MAIL Client
     # -------------------------------------------------------------------------
 
+    def _mail_get_poll_interval_seconds(self) -> float:
+        """Return a gameplay-friendly polling interval for persistent mail listening."""
+        try:
+            configured = float(str(self.mail_settings.get("check_interval", "15")).strip())
+        except (TypeError, ValueError):
+            configured = 15.0
+        return max(8.0, min(45.0, configured))
+
+    def _mail_is_connect_in_progress(self) -> bool:
+        return bool(self._mail_connect_steps) and self.mail_connect_terminal_line_index < len(self._mail_connect_steps)
+
+    def _reset_mail_connect_terminal(self, *, clear_lines: bool = True) -> None:
+        if clear_lines:
+            self.mail_connect_terminal_lines = []
+        self.mail_connect_terminal_line_index = 0
+        self.mail_connect_terminal_timer = 0.0
+        self.mail_connect_terminal_complete = False
+        self.mail_connect_dialup_started = False
+        self.mail_connect_terminal_scroll = 0
+        self._mail_connect_steps = []
+
+    def _mail_append_terminal_line(self, text: str) -> None:
+        if text:
+            self.mail_connect_terminal_lines.append(text)
+
+    def _mail_collect_exchange_flags(self, outbox: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return {
+            "outbox_count": len(outbox),
+            "sent_im_in_to_rain": any(
+                (msg.get("recipient", "") or "").strip().lower() == "rain@ciphernet.net"
+                and "i'm in" in ((msg.get("subject", "") or "").lower())
+                for msg in outbox
+            ),
+            "sent_school_spoof": (not self.has_token("SCHOOL_HACK4")) and any(self._is_school_spoof_email(msg) for msg in outbox),
+            "sent_connected_to_rain": (not self.has_token("SCHOOL_HACK4B")) and any(self._is_rain_connected_email(msg) for msg in outbox),
+            "sent_smokey_school_reply": any(self._is_valid_smokey_school_reply(msg) for msg in outbox),
+        }
+
+    def _mail_run_exchange(self, source: str = "manual") -> Dict[str, int]:
+        """Flush queued outbox mail and receive any newly unlocked replies."""
+        outbox = self.get_mail_outbox()
+        flags = self._mail_collect_exchange_flags(outbox)
+        outbox_count = flags["outbox_count"]
+        if outbox_count > 0:
+            for msg in outbox:
+                self.send_mail(msg.get("recipient", ""), msg.get("subject", ""), msg.get("body", ""))
+            self.save_mail_outbox([])
+
+        inbox_before = len(self.mail_local_inbox)
+        if flags["sent_im_in_to_rain"] and not self.has_token("SCHOOL_HACK3"):
+            username, _ = self.get_user_credentials()
+            rain_email = {
+                "id": f"rain_{int(time.time())}",
+                "sender": "rain@ciphernet.net",
+                "recipient": self.mail_settings.get("mail_from", "user@bradsonic.net"),
+                "subject": RAIN_REPLY_SUBJECT,
+                "body": _get_rain_reply_body(username),
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "read": False,
+            }
+            self.mail_local_inbox.insert(0, rain_email)
+            self.save_inbox_emails(self.mail_local_inbox)
+            self.play_mail_sound()
+            self.grant_token("SCHOOL_HACK3", reason="Sent I'm in email; Rain's next-steps reply delivered")
+
+        if flags["sent_school_spoof"]:
+            self.grant_token("SCHOOL_HACK4", reason="Sent spoofed receptionist email with correct from/signature")
+        elif self.has_token("SCHOOL_HACK4") and not self.has_token("SCHOOL_HACK4A"):
+            receptionist_email = self._build_receptionist_reply()
+            self.mail_local_inbox.insert(0, receptionist_email)
+            self.save_inbox_emails(self.mail_local_inbox)
+            self.play_mail_sound()
+            self.grant_token("SCHOOL_HACK4A", reason="Receptionist replied with school phone numbers")
+
+        if flags["sent_connected_to_rain"]:
+            self._deliver_rain_connected_reply()
+
+        if flags["sent_smokey_school_reply"] and not self._mail_has_message_id(SMOKEY_SCHOOL_REPLY_EVENT_ID):
+            self._deliver_mail_to_local_inbox(self._build_smokey_school_reply_mail())
+
+        self._deliver_pending_bradsonic_mail_events(source=source)
+        new_count = len(self.mail_local_inbox) - inbox_before
+        return {"outbox_count": outbox_count, "new_count": new_count}
+
+    def _mail_write_exchange_summary(self, exchange: Dict[str, int]) -> None:
+        outbox_count = exchange.get("outbox_count", 0)
+        new_count = exchange.get("new_count", 0)
+        if outbox_count > 0:
+            self._mail_append_terminal_line(f"TX: {outbox_count} queued message(s) sent.")
+        else:
+            self._mail_append_terminal_line("TX: no queued mail.")
+        if new_count > 0:
+            self._mail_append_terminal_line(f"RX: {new_count} new message(s) received.")
+        else:
+            self._mail_append_terminal_line("RX: no new mail.")
+
+    def _maybe_trigger_notes_nudge_for_email(self, email: Optional[Dict[str, Any]]) -> None:
+        """Trigger the reusable NOTES-NUDGE player aide for key story emails."""
+        if not email:
+            return
+        email_id = (email.get("id", "") or "").strip().lower()
+        sender = (email.get("sender", "") or "").strip().lower()
+        subject = (email.get("subject", "") or "").strip()
+        if sender == "rain@ciphernet.net" and subject == RAIN_REPLY_SUBJECT:
+            self.trigger_notes_nudge(
+                text="SHIFT+N",
+                reason="school_hack_rain_next_steps",
+                auto_open_external_notes=True,
+            )
+            return
+        if sender == "reception@tokyometro-high.edu.api" and email_id.startswith("receptionist_"):
+            self.trigger_notes_nudge(
+                text="SHIFT+N",
+                reason="school_hack_receptionist_numbers",
+                auto_open_external_notes=True,
+            )
+            return
+        if sender == "rain@ciphernet.net" and subject == RAIN_CONNECTED_REPLY_SUBJECT:
+            self.trigger_notes_nudge(
+                text="SHIFT+N",
+                reason="school_hack_rain_break_in",
+                auto_open_external_notes=True,
+            )
+            return
+        if email_id in {"school_hack_fail1_rain", "school_hack_fail2_glyphis"}:
+            self.trigger_notes_nudge(
+                text="SHIFT+N",
+                reason="school_hack_retry_grades",
+                auto_open_external_notes=True,
+            )
+
     def _draw_mail_modal(self):
         """Draw the BRADSONIC-MAIL email client modal."""
         modal_w, modal_h = self._get_modal_size("mail")
@@ -4333,6 +5414,14 @@ class OSMode:
 
         gap = int(10 * self.scale)
         font_size = max(int(16 * self.scale), 12)
+        panel_bg = (18, 24, 36)
+        title_bg = (20, 42, 86)
+        trim_dark = (18, 88, 92)
+        menu_bg = (24, 26, 44)
+        menu_active = (29, 116, 121)
+        menu_hover = (34, 64, 82)
+        content_bg = (8, 10, 16)
+        cream = (231, 225, 210)
 
         # Cache fonts - content fonts are 2x the original for readability
         if getattr(self, "_mail_font_scale", None) != self.scale:
@@ -4348,13 +5437,16 @@ class OSMode:
 
         # -- Window frame --
         modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
-        pygame.draw.rect(self.screen, COLOR_BG_DARK, modal_rect)
+        pygame.draw.rect(self.screen, panel_bg, modal_rect)
         pygame.draw.rect(self.screen, COLOR_CYAN, modal_rect, 2)
+        inner_frame = modal_rect.inflate(-int(8 * self.scale), -int(8 * self.scale))
+        pygame.draw.rect(self.screen, trim_dark, inner_frame, 1)
 
         # -- Title bar --
         title_bar_rect = pygame.Rect(modal_x, modal_y, modal_w, self.modal_title_bar_height)
-        pygame.draw.rect(self.screen, COLOR_BG_TITLE, title_bar_rect)
+        pygame.draw.rect(self.screen, title_bg, title_bar_rect)
         pygame.draw.rect(self.screen, COLOR_CYAN, title_bar_rect, 1)
+        pygame.draw.line(self.screen, COLOR_AMBER, (title_bar_rect.x + int(6 * self.scale), title_bar_rect.bottom - 2), (title_bar_rect.right - int(6 * self.scale), title_bar_rect.bottom - 2), 1)
 
         title_text = self._mail_title_font.render("BRADSONIC-MAIL", True, COLOR_CYAN)
         self.screen.blit(title_text, (modal_x + int(10 * self.scale), modal_y + int(5 * self.scale)))
@@ -4378,7 +5470,7 @@ class OSMode:
         # -- Tagline bar --
         tagline_h = int(18 * self.scale)
         tagline_rect = pygame.Rect(modal_x, y_cursor, modal_w, tagline_h)
-        pygame.draw.rect(self.screen, (15, 15, 35), tagline_rect)
+        pygame.draw.rect(self.screen, (13, 18, 30), tagline_rect)
         pygame.draw.line(self.screen, COLOR_CYAN, (modal_x, y_cursor + tagline_h), (modal_x + modal_w, y_cursor + tagline_h), 1)
         tagline_surf = self._mail_tagline_font.render("Interconnecting the American Mainland and beyond!", True, COLOR_AMBER)
         tagline_x = modal_x + (modal_w - tagline_surf.get_width()) // 2
@@ -4388,7 +5480,7 @@ class OSMode:
         # -- Menu bar: COMPOSE | INBOX | OUTBOX | TRASH | SETTINGS --
         menu_h = int(28 * self.scale)
         menu_rect = pygame.Rect(modal_x, y_cursor, modal_w, menu_h)
-        pygame.draw.rect(self.screen, (30, 30, 55), menu_rect)
+        pygame.draw.rect(self.screen, menu_bg, menu_rect)
         pygame.draw.line(self.screen, COLOR_CYAN, (modal_x, y_cursor + menu_h), (modal_x + modal_w, y_cursor + menu_h), 1)
 
         menu_items = ["COMPOSE", "INBOX", "OUTBOX", "TRASH", "CONNECT", "SETTINGS"]
@@ -4402,23 +5494,27 @@ class OSMode:
             btn_rect = pygame.Rect(btn_x, y_cursor + int(3 * self.scale), menu_btn_w, menu_h - int(6 * self.scale))
             is_active = self.mail_view == menu_view_map[label] or (self.mail_view == "reading" and label == "INBOX") or (self.mail_view == "connect" and label == "CONNECT")
             is_hover = self.hovered_button == ("mail", f"menu_{label}")
-            # Pulse COMPOSE when viewing inbox (guide player to compose first)
-            pulse_compose = label == "COMPOSE" and self.mail_view == "inbox"
+            # Pulse COMPOSE when it is the current guided objective.
+            pulse_compose = label == "COMPOSE" and (
+                self.mail_view == "inbox" or
+                (self.has_token("SCHOOL_HACK4A") and not self.has_token("SCHOOL_HACK4B"))
+            )
             pulse_alpha = 0.5 + 0.5 * math.sin(self.mail_pulse_timer * 3.0) if pulse_compose else 0.0
 
             if is_active:
-                pygame.draw.rect(self.screen, (60, 60, 100), btn_rect)
+                pygame.draw.rect(self.screen, menu_active, btn_rect)
                 pygame.draw.rect(self.screen, COLOR_CYAN, btn_rect, 2)
             elif is_hover:
-                pygame.draw.rect(self.screen, (45, 45, 75), btn_rect)
+                pygame.draw.rect(self.screen, menu_hover, btn_rect)
                 pygame.draw.rect(self.screen, COLOR_CYAN, btn_rect, 1)
             else:
-                pygame.draw.rect(self.screen, COLOR_CYAN, btn_rect, 1)
+                pygame.draw.rect(self.screen, (10, 18, 32), btn_rect)
+                pygame.draw.rect(self.screen, trim_dark, btn_rect, 1)
             if pulse_alpha > 0:
-                pulse_color = (int(0 + pulse_alpha * 0), int(200 + pulse_alpha * 55), int(255))
+                pulse_color = (int(60 + pulse_alpha * 120), int(180 + pulse_alpha * 55), int(210 + pulse_alpha * 40))
                 pygame.draw.rect(self.screen, pulse_color, btn_rect, max(1, int(2 * pulse_alpha)))
 
-            label_surf = self._mail_menu_font.render(label, True, COLOR_CYAN if is_active else COLOR_WHITE)
+            label_surf = self._mail_menu_font.render(label, True, COLOR_CYAN if is_active else cream)
             label_rect = label_surf.get_rect(center=btn_rect.center)
             self.screen.blit(label_surf, label_rect)
             self._mail_menu_hitboxes.append((btn_rect, menu_view_map[label]))
@@ -4427,9 +5523,28 @@ class OSMode:
 
         y_cursor += menu_h + 1  # 1px for the border line
 
-        # -- Content area --
-        content_rect = pygame.Rect(modal_x + gap, y_cursor + gap, modal_w - 2 * gap, modal_h - (y_cursor - modal_y) - 2 * gap)
-        pygame.draw.rect(self.screen, COLOR_BLACK, content_rect)
+        # -- Status bar (terminal row) at bottom of modal interior --
+        status_bar_h = int(20 * self.scale)
+        status_bar_y = modal_y + modal_h - gap - status_bar_h
+        status_bar_rect = pygame.Rect(modal_x + gap, status_bar_y, modal_w - 2 * gap, status_bar_h)
+        pygame.draw.rect(self.screen, (6, 14, 18), status_bar_rect)
+        pygame.draw.line(self.screen, COLOR_CYAN,
+                         (modal_x + gap, status_bar_y),
+                         (modal_x + modal_w - gap, status_bar_y), 1)
+        if self.mail_status_message and self.mail_status_timer > 0:
+            status_surf = self._mail_small_font.render(self.mail_status_message, True, COLOR_AMBER)
+        else:
+            idle_text = "BRADSONIC-MAIL v2.1  //  LINK OPEN" if self.mail_server_connected else "BRADSONIC-MAIL v2.1  //  RELAY STANDBY"
+            status_color = COLOR_NEON_GREEN if self.mail_server_connected else (86, 108, 112)
+            status_surf = self._mail_small_font.render(idle_text, True, status_color)
+        text_y = status_bar_y + (status_bar_h - status_surf.get_height()) // 2
+        self.screen.blit(status_surf, (modal_x + gap + int(4 * self.scale), text_y))
+
+        # -- Content area (shrunk to leave room for status bar) --
+        content_bottom = status_bar_y - gap
+        content_h = content_bottom - (y_cursor + gap)
+        content_rect = pygame.Rect(modal_x + gap, y_cursor + gap, modal_w - 2 * gap, content_h)
+        pygame.draw.rect(self.screen, content_bg, content_rect)
         pygame.draw.rect(self.screen, COLOR_CYAN, content_rect, 1)
 
         # Clip to content area
@@ -4453,51 +5568,35 @@ class OSMode:
 
         self.screen.set_clip(old_clip)
 
-        # -- Status bar --
-        if self.mail_status_message and self.mail_status_timer > 0:
-            status_surf = self._mail_small_font.render(self.mail_status_message, True, COLOR_AMBER)
-            self.screen.blit(status_surf, (modal_x + gap, modal_y + modal_h - int(14 * self.scale)))
-
     def _draw_mail_list(self, content_rect: pygame.Rect, emails: list, list_type: str):
         """Draw an email list (inbox, outbox, or trash). Outbox includes STATUS column."""
         gap = int(10 * self.scale)
         row_h = int(34 * self.scale)
         font = self._mail_body_font
         small_font = self._mail_small_font
+        cream = (231, 225, 210)
         x = content_rect.x + int(8 * self.scale)
         y_start = content_rect.y + int(5 * self.scale)
 
-        # Column layout: outbox has STATUS column
-        if list_type == "outbox":
-            col_status_w = int(100 * self.scale)
-            col_date_x = content_rect.right - int(130 * self.scale) - col_status_w
-            col_status_x = content_rect.right - int(130 * self.scale)
-        else:
-            col_date_x = content_rect.right - int(130 * self.scale)
-            col_status_x = None
+        # Column layout: uniform across inbox, outbox, trash
+        col_date_x = content_rect.right - int(130 * self.scale)
+        col_status_x = None
 
         # Column header
         header_y = y_start
         col_from_label = "TO" if list_type == "outbox" else "FROM"
-        header_from = small_font.render(col_from_label, True, COLOR_GREY)
-        header_subject = small_font.render("SUBJECT", True, COLOR_GREY)
-        header_date = small_font.render("DATE", True, COLOR_GREY)
+        header_from = small_font.render(col_from_label, True, COLOR_AMBER)
+        header_subject = small_font.render("SUBJECT", True, COLOR_AMBER)
+        header_date = small_font.render("DATE", True, COLOR_AMBER)
 
         col_from_x = x
         col_subject_x = x + int(180 * self.scale)
-        col_from_w = int(172 * self.scale)   # TO/FROM column width (before subject)
+        col_from_w = int(172 * self.scale)
         col_subject_w = int(300 * self.scale)
-        if list_type == "outbox":
-            col_subject_x = x + int(140 * self.scale)
-            col_from_w = int(132 * self.scale)  # Narrower; STATUS column takes space
-            col_subject_w = int(220 * self.scale)
 
         self.screen.blit(header_from, (col_from_x, header_y))
         self.screen.blit(header_subject, (col_subject_x, header_y))
         self.screen.blit(header_date, (col_date_x, header_y))
-        if list_type == "outbox" and col_status_x is not None:
-            header_status = small_font.render("STATUS", True, COLOR_GREY)
-            self.screen.blit(header_status, (col_status_x, header_y))
 
         # Separator line
         sep_y = header_y + small_font.get_height() + int(2 * self.scale)
@@ -4526,24 +5625,23 @@ class OSMode:
             is_unread = not email.get("read", True)
 
             if is_selected:
-                pygame.draw.rect(self.screen, (40, 60, 80), row_rect)
+                pygame.draw.rect(self.screen, (22, 68, 74), row_rect)
             elif is_unread:
-                pygame.draw.rect(self.screen, (20, 25, 45), row_rect)
+                pygame.draw.rect(self.screen, (14, 22, 40), row_rect)
+            else:
+                pygame.draw.rect(self.screen, (8, 12, 20), row_rect)
+            pygame.draw.line(self.screen, (18, 58, 60), row_rect.bottomleft, row_rect.bottomright, 1)
 
-            text_color = COLOR_CYAN if is_unread else COLOR_WHITE
+            text_color = COLOR_CYAN if is_unread else cream
             from_field = email.get("recipient", "") if list_type == "outbox" else email.get("sender", "")
-            # Truncate TO/FROM: 17 chars for inbox/trash, 14 for outbox (narrower column)
-            max_from = 14 if list_type == "outbox" else 17
-            if len(from_field) > max_from:
-                from_text = from_field[:max_from] + "..."
+            if len(from_field) > 17:
+                from_text = from_field[:17] + "..."
             else:
                 from_text = from_field
 
             subject_text = email.get("subject", "(no subject)")
-            # Truncate SUBJECT: 28 for outbox (narrower), 35 for inbox/trash
-            max_subj = 28 if list_type == "outbox" else 35
-            if len(subject_text) > max_subj:
-                subject_text = subject_text[:max_subj] + "..."
+            if len(subject_text) > 35:
+                subject_text = subject_text[:35] + "..."
 
             date_text = email.get("timestamp", "")
             if len(date_text) > 16:
@@ -4563,10 +5661,6 @@ class OSMode:
             self.screen.blit(subj_surf, (col_subject_x, text_y))
             self.screen.set_clip(old_clip)
             self.screen.blit(date_surf, (col_date_x, text_y + int(2 * self.scale)))
-            if list_type == "outbox" and col_status_x is not None:
-                status_text = "CONNECTED" if self.mail_server_connected else "DISCONNECTED"
-                status_surf = small_font.render(status_text, True, COLOR_AMBER if self.mail_server_connected else COLOR_GREY)
-                self.screen.blit(status_surf, (col_status_x, text_y + int(2 * self.scale)))
 
             # Unread indicator dot
             if is_unread:
@@ -4608,12 +5702,37 @@ class OSMode:
         pygame.draw.rect(self.screen, field_bg, to_field_rect)
         border_color = COLOR_CYAN if self.mail_compose_active_field == "to" else COLOR_GREY
         pygame.draw.rect(self.screen, border_color, to_field_rect, 1)
+        # Choose placeholders based on arc progress.
+        _connected_phase = self.has_token("SCHOOL_HACK4A") and not self.has_token("SCHOOL_HACK4B")
+        _school_phase = self.has_token("SCHOOL_HACK3") and not self.has_token("SCHOOL_HACK4")
+        if _connected_phase:
+            _ph_to = MAIL_COMPOSE_CONNECTED_TO
+            _ph_subj = MAIL_COMPOSE_CONNECTED_SUBJECT
+            _ph_body = MAIL_COMPOSE_CONNECTED_BODY
+        elif _school_phase:
+            _ph_to = MAIL_COMPOSE_PLACEHOLDER_SCHOOL_TO
+            _ph_subj = MAIL_COMPOSE_PLACEHOLDER_SCHOOL_SUBJECT
+            _ph_body = MAIL_COMPOSE_PLACEHOLDER_SCHOOL_BODY
+        else:
+            _ph_to = MAIL_COMPOSE_PLACEHOLDER_TO
+            _ph_subj = MAIL_COMPOSE_PLACEHOLDER_SUBJECT
+            _ph_body = MAIL_COMPOSE_PLACEHOLDER_BODY
+
         text_pad = int(6 * self.scale)
-        to_display = self.mail_compose_to if self.mail_compose_to else MAIL_COMPOSE_PLACEHOLDER_TO
-        to_color = COLOR_WHITE if self.mail_compose_to else (60, 80, 90)  # Faint placeholder
-        to_text = font.render(to_display, True, to_color)
-        self.screen.blit(to_text, (to_field_x + text_pad, y + text_pad))
-        if show_cursor and self.mail_compose_active_field == "to":
+        to_display = self.mail_compose_to if self.mail_compose_to else _ph_to
+        _ghost_to = self.mail_compose_ghost.get("to", "")
+        _to_active = self.mail_compose_active_field == "to"
+        if _ghost_to and _to_active and self.mail_compose_cursor < len(to_display):
+            # Ghost overwrite mode: typed portion white, remaining ghost grey
+            _split = min(self.mail_compose_cursor, len(to_display))
+            _s1 = font.render(to_display[:_split], True, COLOR_WHITE)
+            _s2 = font.render(to_display[_split:], True, (60, 80, 90))
+            self.screen.blit(_s1, (to_field_x + text_pad, y + text_pad))
+            self.screen.blit(_s2, (to_field_x + text_pad + _s1.get_width(), y + text_pad))
+        else:
+            to_color = COLOR_WHITE if self.mail_compose_to else (60, 80, 90)
+            self.screen.blit(font.render(to_display, True, to_color), (to_field_x + text_pad, y + text_pad))
+        if show_cursor and _to_active:
             cursor_x = to_field_x + text_pad + font.size(self.mail_compose_to[:self.mail_compose_cursor])[0]
             pygame.draw.line(self.screen, COLOR_WHITE, (cursor_x, y + text_pad), (cursor_x, y + field_h - text_pad), 1)
         self._mail_compose_to_rect = to_field_rect
@@ -4628,11 +5747,19 @@ class OSMode:
         pygame.draw.rect(self.screen, field_bg, subj_field_rect)
         border_color = COLOR_CYAN if self.mail_compose_active_field == "subject" else COLOR_GREY
         pygame.draw.rect(self.screen, border_color, subj_field_rect, 1)
-        subj_display = self.mail_compose_subject if self.mail_compose_subject else MAIL_COMPOSE_PLACEHOLDER_SUBJECT
-        subj_color = COLOR_WHITE if self.mail_compose_subject else (60, 80, 90)
-        subj_text = font.render(subj_display, True, subj_color)
-        self.screen.blit(subj_text, (subj_field_x + text_pad, y + text_pad))
-        if show_cursor and self.mail_compose_active_field == "subject":
+        subj_display = self.mail_compose_subject if self.mail_compose_subject else _ph_subj
+        _ghost_subj = self.mail_compose_ghost.get("subject", "")
+        _subj_active = self.mail_compose_active_field == "subject"
+        if _ghost_subj and _subj_active and self.mail_compose_cursor < len(subj_display):
+            _split = min(self.mail_compose_cursor, len(subj_display))
+            _s1 = font.render(subj_display[:_split], True, COLOR_WHITE)
+            _s2 = font.render(subj_display[_split:], True, (60, 80, 90))
+            self.screen.blit(_s1, (subj_field_x + text_pad, y + text_pad))
+            self.screen.blit(_s2, (subj_field_x + text_pad + _s1.get_width(), y + text_pad))
+        else:
+            subj_color = COLOR_WHITE if self.mail_compose_subject else (60, 80, 90)
+            self.screen.blit(font.render(subj_display, True, subj_color), (subj_field_x + text_pad, y + text_pad))
+        if show_cursor and _subj_active:
             cursor_x = subj_field_x + text_pad + font.size(self.mail_compose_subject[:self.mail_compose_cursor])[0]
             pygame.draw.line(self.screen, COLOR_WHITE, (cursor_x, y + text_pad), (cursor_x, y + field_h - text_pad), 1)
         self._mail_compose_subj_rect = subj_field_rect
@@ -4651,16 +5778,39 @@ class OSMode:
 
         # Render body text with word wrapping (or faint placeholder when empty)
         body_pad = int(6 * self.scale)
-        body_display = self.mail_compose_body if self.mail_compose_body else MAIL_COMPOSE_PLACEHOLDER_BODY
+        body_display = self.mail_compose_body if self.mail_compose_body else _ph_body
         body_lines = self._mail_wrap_text(body_display, font, body_rect.width - 2 * body_pad)
         line_h = font.get_height()
+        _ghost_body = self.mail_compose_ghost.get("body", "")
+        _body_ghost_active = (
+            _ghost_body and
+            self.mail_compose_active_field == "body" and
+            self.mail_compose_cursor < len(body_display)
+        )
+        if _body_ghost_active:
+            _line_offsets = self._mail_get_line_offsets(body_display, body_lines)
+            _cur = min(self.mail_compose_cursor, len(body_display))
         for li, line in enumerate(body_lines):
             line_y = y + body_pad + li * line_h
             if line_y + line_h > body_rect.bottom:
                 break
-            body_line_color = COLOR_WHITE if self.mail_compose_body else (60, 80, 90)
-            line_surf = font.render(line, True, body_line_color)
-            self.screen.blit(line_surf, (x + body_pad, line_y))
+            if _body_ghost_active:
+                _ls = _line_offsets[li]
+                _le = _ls + len(line)
+                if _le <= _cur:
+                    self.screen.blit(font.render(line, True, COLOR_WHITE), (x + body_pad, line_y))
+                elif _ls >= _cur:
+                    self.screen.blit(font.render(line, True, (60, 80, 90)), (x + body_pad, line_y))
+                else:
+                    _sp = _cur - _ls
+                    _typed = line[:_sp]
+                    _ghost = line[_sp:]
+                    _ts = font.render(_typed, True, COLOR_WHITE)
+                    self.screen.blit(_ts, (x + body_pad, line_y))
+                    self.screen.blit(font.render(_ghost, True, (60, 80, 90)), (x + body_pad + _ts.get_width(), line_y))
+            else:
+                body_line_color = COLOR_WHITE if self.mail_compose_body else (60, 80, 90)
+                self.screen.blit(font.render(line, True, body_line_color), (x + body_pad, line_y))
 
         if show_cursor and self.mail_compose_active_field == "body":
             # Find cursor position in wrapped text
@@ -4688,7 +5838,22 @@ class OSMode:
         send_btn_rect = pygame.Rect(send_btn_x, send_btn_y, send_btn_w, send_btn_h)
         is_hover = self.hovered_button == ("mail", "send")
         subj_lower = self.mail_compose_subject.strip().lower().replace("'", "").replace(" ", "")
-        send_ready = "imin" in subj_lower or "i'm in" in self.mail_compose_subject.strip().lower()
+        send_ready = (
+            "imin" in subj_lower
+            or "i'm in" in self.mail_compose_subject.strip().lower()
+            or (
+                self.mail_compose_to.strip().lower() == MAIL_COMPOSE_CONNECTED_TO
+                and self.mail_compose_subject.strip().lower() == MAIL_COMPOSE_CONNECTED_SUBJECT
+            )
+            or (
+                self.mail_compose_to.strip().lower() == "reception@tokyometro-high.edu.api"
+                and self.mail_compose_subject.strip()
+            )
+            or (
+                self.mail_compose_to.strip().lower() == SMOKEY_EMAIL_ADDRESS
+                and self.mail_compose_subject.strip()
+            )
+        )
         send_pulse = send_ready and (0.5 + 0.5 * math.sin(self.mail_pulse_timer * 3.0)) > 0.7
         btn_color = (60, 60, 100) if is_hover else (40, 40, 70)
         pygame.draw.rect(self.screen, btn_color, send_btn_rect)
@@ -4712,21 +5877,30 @@ class OSMode:
         self._mail_clear_btn_rect = clear_btn_rect
 
     def _draw_mail_connect(self, content_rect: pygame.Rect):
-        """Draw the CONNECT view - terminal-style modem connection (1989 aesthetic)."""
+        """Draw the CONNECT view with one-shot SEND/RX and persistent CONNECT controls."""
         if not self.terminal_font:
             self._load_terminal_font()
         mono_font = self.terminal_font or self._mail_body_font
         x = content_rect.x + int(8 * self.scale)
         y = content_rect.y + int(8 * self.scale)
+        cream = (231, 225, 210)
+        teal = (23, 118, 124)
+        deep_blue = (23, 42, 82)
+        dark_panel = (8, 14, 24)
 
         # Terminal area (modem look - dark with cyan text)
-        term_h = content_rect.height - int(60 * self.scale)
+        term_h = content_rect.height - int(78 * self.scale)
         term_rect = pygame.Rect(x, y, content_rect.width - int(16 * self.scale), term_h)
-        pygame.draw.rect(self.screen, (8, 12, 24), term_rect)
+        pygame.draw.rect(self.screen, dark_panel, term_rect)
         pygame.draw.rect(self.screen, COLOR_CYAN, term_rect, 1)
+        pygame.draw.rect(self.screen, teal, term_rect.inflate(-int(8 * self.scale), -int(8 * self.scale)), 1)
         # Header
         header = mono_font.render("BBS POP3 International Ciphernet Client", True, COLOR_AMBER)
         self.screen.blit(header, (term_rect.x + int(6 * self.scale), term_rect.y + int(4 * self.scale)))
+        state_text = "PERSISTENT LISTEN MODE" if self.mail_server_connected else "ONE-SHOT SEND/RX AVAILABLE"
+        state_color = COLOR_NEON_GREEN if self.mail_server_connected else cream
+        state_surf = self._mail_small_font.render(state_text, True, state_color)
+        self.screen.blit(state_surf, (term_rect.right - state_surf.get_width() - int(8 * self.scale), term_rect.y + int(6 * self.scale)))
 
         # Terminal content
         line_h = mono_font.get_height() + int(2 * self.scale)
@@ -4757,161 +5931,440 @@ class OSMode:
                         (text_x + int(4 * self.scale), cur_y + line_h - 2), 1
                     )
 
-        # Button row: SEND/RX (when connected) + DIAL or CONNECTED
-        btn_y = content_rect.bottom - int(36 * self.scale)
+        caption_y = term_rect.bottom + int(8 * self.scale)
+        caption = "SEND/RX dials, syncs once, then drops the line. CONNECT holds the mail relay open."
+        caption_surf = self._mail_small_font.render(caption, True, cream)
+        self.screen.blit(caption_surf, (x, caption_y))
+
+        # Button row: SEND/RX one-shot + CONNECT/DISCONNECT persistent
+        btn_y = content_rect.bottom - int(34 * self.scale)
         btn_h = int(28 * self.scale)
         btn_spacing = int(8 * self.scale)
-        dial_btn_w = int(120 * self.scale)
+        dial_btn_w = int(140 * self.scale)
         sendrx_btn_w = int(100 * self.scale)
         dial_btn_x = content_rect.right - dial_btn_w - int(12 * self.scale)
         dial_btn_rect = pygame.Rect(dial_btn_x, btn_y, dial_btn_w, btn_h)
         self._mail_dial_btn_rect = dial_btn_rect
 
-        # SEND/RX button - next to CONNECTED, only when connected
-        if self.mail_server_connected:
-            sendrx_btn_x = dial_btn_x - sendrx_btn_w - btn_spacing
-            sendrx_btn_rect = pygame.Rect(sendrx_btn_x, btn_y, sendrx_btn_w, btn_h)
-            self._mail_sendrx_btn_rect = sendrx_btn_rect
-            is_sendrx_hover = self.hovered_button == ("mail", "sendrx")
-            sendrx_color = (30, 70, 80) if is_sendrx_hover else (20, 60, 70)
-            pygame.draw.rect(self.screen, sendrx_color, sendrx_btn_rect)
-            pygame.draw.rect(self.screen, COLOR_CYAN, sendrx_btn_rect, 2)
-            sendrx_surf = self._mail_menu_font.render("SEND/RX", True, COLOR_CYAN)
-            self.screen.blit(sendrx_surf, sendrx_surf.get_rect(center=sendrx_btn_rect.center))
-        else:
-            self._mail_sendrx_btn_rect = None
+        # SEND/RX button - always does a transient sync and disconnects after the pass.
+        sendrx_btn_x = dial_btn_x - sendrx_btn_w - btn_spacing
+        sendrx_btn_rect = pygame.Rect(sendrx_btn_x, btn_y, sendrx_btn_w, btn_h)
+        self._mail_sendrx_btn_rect = sendrx_btn_rect
+        is_sendrx_hover = self.hovered_button == ("mail", "sendrx")
+        sendrx_color = (28, 92, 98) if is_sendrx_hover else (16, 68, 74)
+        sendrx_border = COLOR_CYAN
+        pygame.draw.rect(self.screen, sendrx_color, sendrx_btn_rect)
+        pygame.draw.rect(self.screen, sendrx_border, sendrx_btn_rect, 2)
+        sendrx_surf = self._mail_menu_font.render("SEND/RX", True, COLOR_CYAN)
+        self.screen.blit(sendrx_surf, sendrx_surf.get_rect(center=sendrx_btn_rect.center))
 
-        if self.mail_connect_terminal_complete and self.mail_server_connected:
-            label = "CONNECTED"
-            btn_color = (20, 80, 60)
-        elif self.mail_connect_terminal_line_index > 0 and not self.mail_connect_terminal_complete:
+        if self.mail_server_connected and self.mail_connection_mode == "persistent":
+            label = "DISCONNECT"
+            btn_color = (120, 38, 42) if self.hovered_button == ("mail", "dial") else (92, 28, 32)
+            border_color = COLOR_RED
+            label_color = cream
+        elif self._mail_is_connect_in_progress() and self.mail_connection_mode == "persistent":
             label = "CONNECTING..."
-            btn_color = (40, 60, 80)
+            btn_color = (44, 58, 88)
+            border_color = COLOR_CYAN
+            label_color = COLOR_CYAN
         else:
-            label = "DIAL"
-            btn_color = (20, 50, 60)
+            label = "CONNECT"
+            btn_color = deep_blue if self.hovered_button == ("mail", "dial") else (18, 34, 62)
+            border_color = COLOR_CYAN
+            label_color = cream
 
-        is_hover = self.hovered_button == ("mail", "dial")
-        if is_hover and not (self.mail_connect_terminal_line_index > 0 and not self.mail_connect_terminal_complete):
-            btn_color = (30, 70, 80)
         pygame.draw.rect(self.screen, btn_color, dial_btn_rect)
-        pygame.draw.rect(self.screen, COLOR_CYAN, dial_btn_rect, 2)
-        dial_surf = self._mail_menu_font.render(label, True, COLOR_CYAN)
+        pygame.draw.rect(self.screen, border_color, dial_btn_rect, 2)
+        dial_surf = self._mail_menu_font.render(label, True, label_color)
         self.screen.blit(dial_surf, dial_surf.get_rect(center=dial_btn_rect.center))
 
-    def _start_mail_connect_sequence(self) -> None:
-        """Start the 1989-style modem connection sequence. 20 sec offline, then dial (27s audio), then send/receive."""
-        self.mail_connect_terminal_lines = []
-        self.mail_connect_terminal_line_index = 0
+    def _start_mail_connect_sequence(self, mode: str = "oneshot") -> None:
+        """Start the BRADSONIC-MAIL relay handshake sequence."""
+        self._reset_mail_connect_terminal(clear_lines=True)
+        self.mail_connection_mode = mode
         self.mail_connect_terminal_timer = 0.4
-        self.mail_connect_terminal_complete = False
-        self.mail_connect_dialup_started = False
-        self._mail_sent_im_in_to_rain = False
-        self.mail_connect_terminal_scroll = 0
-        outbox = self.get_mail_outbox()
-        outbox_count = len(outbox)
-        # Only deliver Rain's reply when "I'm in" was sent TO rain@ciphernet.net
-        has_im_in_to_rain = any(
-            (m.get("recipient", "") or "").strip().lower() == "rain@ciphernet.net"
-            and "i'm in" in ((m.get("subject", "") or "").lower())
-            for m in outbox
-        )
-        # Phase 1: ~20 sec offline technobabble (1989 modem init)
+        self.mail_listen_poll_timer = 0.0
         self._mail_connect_steps = [
-            ("BRADSONIC-MAIL POP3 Client v2.1 initializing...", 1.8, None),
-            ("Checking serial port COM1...", 1.3, None),
-            ("Hayes-compatible modem detected: 2400 baud", 1.3, None),
-            ("ATZ", 0.8, None),
-            ("OK", 0.6, None),
-            ("ATE0", 0.6, None),
-            ("OK", 0.6, None),
-            ("ATM0", 0.6, None),
-            ("OK", 0.6, None),
-            ("AT+FCLASS=0", 0.8, None),
-            ("OK", 0.6, None),
-            ("Modem ready.", 1.0, None),
-            ("Checking line status...", 1.2, None),
-            ("Line detected. Dial tone present.", 1.2, None),
-            ("Carrier detect: READY", 1.0, None),
-            ("Initializing MNP error correction...", 1.2, None),
-            ("LAPM negotiation complete.", 1.0, None),
-            ("Configuring UART 16550...", 1.0, None),
-            ("DTE rate: 9600, DCE rate: 2400", 0.9, None),
-            ("Ready to dial.", 1.0, None),
-            ("", 0.5, None),
-            # Phase 2: Initiating dial
-            ("Initiating dial sequence...", 0.8, None),
-            ("Dial up!", 0.3, "play_dialup"),
-            # Phase 3: Connection technobabble (during 27s dialup.wav - spread over ~22 sec)
-            ("DT 0345728891", 2.2, None),
-            ("RING", 1.8, None),
-            ("RING", 1.8, None),
-            ("CONNECT 2400", 2.0, None),
-            ("Negotiating link protocol...", 2.2, None),
-            ("CCITT V.42 bis compression: ON", 1.8, None),
-            ("Finalizing handshake...", 2.0, None),
-            ("Link established.", 1.5, None),
-            ("Connecting to pop3.ciphernet-relay.net:110...", 2.2, None),
-            ("+OK BBS POP3 International Ciphernet ready", 1.8, None),
-            ("USER check", 1.0, None),
-            ("PASS ***", 0.8, None),
-            ("+OK Authenticated", 1.0, None),
-            # Phase 4: Mail transfer
-            ("STAT", 0.5, None),
-            ("+OK Mailbox ready", 0.6, None),
+            ("BRADSONIC-MAIL POP3 Client v2.1 initializing...", 1.0, None),
+            ("Checking serial port COM1...", 0.7, None),
+            ("Hayes-compatible modem detected: 2400 baud", 0.8, None),
+            ("ATZ", 0.35, None),
+            ("OK", 0.3, None),
+            ("ATE0", 0.3, None),
+            ("OK", 0.3, None),
+            ("ATM0", 0.3, None),
+            ("OK", 0.3, None),
+            ("Carrier detect: READY", 0.5, None),
+            ("Initiating relay dial...", 0.45, None),
+            ("Dial up!", 0.25, "play_dialup"),
+            ("DT 0345728891", 0.8, None),
+            ("RING", 0.7, None),
+            ("CONNECT 2400", 0.8, None),
+            ("Authenticating relay session...", 0.7, None),
+            ("+OK Authenticated", 0.5, None),
+            ("STAT", 0.4, None),
+            ("+OK Mailbox ready", 0.4, None),
+            ("SYNC MAILBOX", 0.45, "do_exchange"),
         ]
-        if outbox_count > 0:
-            self._mail_connect_steps.append((f"Sending mail... ({outbox_count} message(s))", 0.8, None))
-            self._mail_connect_steps.append((f"Mail sent: {outbox_count} message(s).", 0.6, "do_send"))
-            if has_im_in_to_rain:
-                self._mail_connect_steps.append(("Waiting for reply...", 30.0, None))
+        if mode == "persistent":
+            self._mail_connect_steps.append(("MAIL LINK OPEN. PASSIVE LISTEN ENABLED.", 0.35, "stay_connected"))
         else:
-            self._mail_connect_steps.append(("Outbox empty.", 0.5, None))
-        self._mail_connect_steps.append(("RETR - Checking for new mail...", 0.8, None))
-        self._mail_connect_steps.append(("PLACEHOLDER_RECEIVE", 0.5, "do_receive"))
-        self._mail_connect_steps.append(("Connection complete.", 0.4, "complete"))
+            self._mail_connect_steps.append(("MAIL LINK CLOSED.", 0.35, "disconnect_mail"))
 
-    def _mail_do_send_rx(self) -> None:
-        """Quick send outbox + receive when already connected (SEND/RX button). Rain's reply only when 'I'm in' sent to Rain."""
-        outbox = self.get_mail_outbox()
-        outbox_count = len(outbox)
-        sent_im_in_to_rain = False
-        if outbox_count > 0:
-            sent_im_in_to_rain = any(
-                (m.get("recipient", "") or "").strip().lower() == "rain@ciphernet.net"
-                and "i'm in" in ((m.get("subject", "") or "").lower())
-                for m in outbox
+    def _build_receptionist_reply(self) -> dict:
+        """Build the school receptionist's reply email. Content varies by time of day."""
+        import datetime as _dt
+        now = _dt.datetime.now()
+        hour = now.hour
+
+        # Greeting / opening paragraph based on time
+        if 7 <= hour < 9:
+            opening = (
+                "Good morning — you caught me in early today! Just getting the office set up. "
+                "I saw your message come through and wanted to get back to you right away."
             )
-            for msg in outbox:
-                self.send_mail(msg.get("recipient", ""), msg.get("subject", ""), msg.get("body", ""))
-            self.save_mail_outbox([])
-        inbox_before = len(self.mail_local_inbox)
-        if sent_im_in_to_rain:
-            username, _ = self.get_user_credentials()
-            rain_email = {
-                "id": f"rain_{int(time.time())}",
+        elif 9 <= hour < 18:
+            opening = (
+                "Thank you for reaching out. I received your maintenance notice and I'm happy "
+                "to assist BradTel with the quarterly line testing as requested."
+            )
+        elif 18 <= hour < 21:
+            opening = (
+                "Hi there — I'm working a bit late this evening so I caught your message. "
+                "Just so you know, the school answer machine switches on at 6pm for the main "
+                "lines, so if you're testing those you may get the recorded greeting. "
+                "Happy to help with what I can."
+            )
+        else:
+            opening = (
+                "Thank you for your message. I'm responding on behalf of the school "
+                "administration. Please find the line information below as requested."
+            )
+
+        body = (
+            f"{opening}\n\n"
+            "As per your request, here are the phone system numbers for Tokyo Metropolitan "
+            "High School. Please note these are for authorised BradTel relay testing only.\n\n"
+            "MAIN SCHOOL RECEPTION:\n"
+            "  Primary line: 03-3741-5079\n"
+            "  Bradsonic modem entry: 0337415079\n\n"
+            "OFFICE FAX MACHINE:\n"
+            "  Fax line: 03-3741-5069\n"
+            "  Bradsonic modem entry: 0337415069\n\n"
+            "COMPUTER SERVER ROOM:\n"
+            "  Data line: 03-3741-5089\n"
+            "  Bradsonic modem entry: 0337415089\n"
+            "  (Nobody here really uses this one. The IT room has been locked "
+            "since last spring. I think the university sends someone over "
+            "occasionally to do computer things but honestly I have no idea "
+            "what goes on in there. It's in our records so I've included it.)\n\n"
+            "Please let me know if you need anything else.\n\n"
+            "Best regards,\n"
+            "Ms. Scotty McPherson\n"
+            "School Administrator\n"
+            "Tokyo Metropolitan High School"
+        )
+
+        return {
+            "id": f"receptionist_{int(time.time())}",
+            "sender": "reception@tokyometro-high.edu.api",
+            "recipient": self.mail_settings.get("mail_from", "user@bradsonic.net"),
+            "subject": "RE: URGENT - Quarterly Line Test Req. BradTel Relay",
+            "body": body,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "read": False,
+        }
+
+    def _is_school_spoof_email(self, msg: dict) -> bool:
+        """Return True if msg is a correctly spoofed receptionist email (SCHOOL_HACK4 criteria)."""
+        recipient = (msg.get("recipient", "") or "").strip().lower()
+        sender = (msg.get("sender", "") or "").strip().lower()
+        body_lower = (msg.get("body", "") or "").lower()
+        signature = (self.mail_settings.get("signature", "") or "").strip().lower()
+        return (
+            recipient == "reception@tokyometro-high.edu.api"
+            and "telco-relay.bradsonic.net" in sender
+            and "regional line testing" in signature
+            and any(kw in body_lower for kw in ("pin", "modem", "fax", "line test", "telephone", "extension"))
+        )
+
+    def _is_rain_connected_email(self, msg: dict) -> bool:
+        """Return True if msg is the player's update to Rain after getting the school numbers."""
+        recipient = (msg.get("recipient", "") or "").strip().lower()
+        subject = (msg.get("subject", "") or "").strip().lower()
+        return recipient == MAIL_COMPOSE_CONNECTED_TO and subject == MAIL_COMPOSE_CONNECTED_SUBJECT
+
+    def _deliver_rain_connected_reply(self) -> None:
+        """Deliver Rain's school server login reply and award SCHOOL_HACK4B."""
+        if self.has_token("SCHOOL_HACK4B"):
+            return
+        username, _ = self.get_user_credentials()
+        rain_email = {
+            "id": f"rain_connected_{int(time.time())}",
+            "sender": "rain@ciphernet.net",
+            "recipient": self.mail_settings.get("mail_from", "user@bradsonic.net"),
+            "subject": RAIN_CONNECTED_REPLY_SUBJECT,
+            "body": _get_rain_connected_reply_body(username),
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "read": False,
+        }
+        self.mail_local_inbox.insert(0, rain_email)
+        self.save_inbox_emails(self.mail_local_inbox)
+        self.play_mail_sound()
+        self.grant_token("SCHOOL_HACK4B", reason="Sent connected update to Rain and received school database login details")
+
+    def _build_glyphis_school_hack_complete_mail(self) -> Dict[str, Any]:
+        """Build Glyphis' paranoid OPSEC email after all mission grades are changed."""
+        return {
+            "id": f"glyphis_schoolhack5_{int(time.time())}",
+            "sender": "glyphis@ciphernet.net",
+            "recipient": self.mail_settings.get("mail_from", "user@bradsonic.net"),
+            "subject": "OPERATIONAL SECURITY // IMMEDIATE COMPLIANCE REQUIRED",
+            "body": (
+                "Operator,\n\n"
+                "Confirmed — the records have been amended. Rain, Bertie and Jason are clear. "
+                "The team owes you for this. You held your nerve when it counted.\n\n"
+                "Now listen carefully.\n\n"
+                "I have been monitoring signal traffic on this relay for the past seventy-two hours. "
+                "There are anomalies — unauthorized probe attempts against the mail daemon, "
+                "packet headers that do not match any known civilian routing table. "
+                "Someone is sniffing this channel. Could be FBI, could be Bell Atlantic security, "
+                "could be something worse.\n\n"
+                "Effective immediately: CEASE ALL GROUP COMMUNICATIONS through BRADSONIC-MAIL. "
+                "This terminal is compromised until I say otherwise. "
+                "All future correspondence will be conducted EXCLUSIVELY through the GlyphisIO BBS "
+                "email system. The BBS relay is tunneled through three separate switching offices "
+                "and the handshake rotates every forty-eight hours. It is the only channel I trust.\n\n"
+                "Do NOT reply to this message. Do NOT forward it. Do NOT reference this operation "
+                "in any communication on any system unless I explicitly authorize it.\n\n"
+                "If anyone contacts you claiming to be from the school, from BradTel, or from "
+                "any government agency — you know nothing. You have never used this terminal. "
+                "You have never heard of Tokyo Metropolitan High.\n\n"
+                "Return to the BBS. Check your inbox there. Further instructions will follow.\n\n"
+                "— GLYPHIS\n"
+                "CIPHERNET NODE 7 // SIGNAL INTEGRITY: COMPROMISED // OPSEC LEVEL: BLACK"
+            ),
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "read": False,
+        }
+
+    def _queue_glyphis_school_hack_complete_mail(self) -> None:
+        """Queue Glyphis' completion email for the next BRADSONIC-MAIL sync."""
+        self.queue_bradsonic_mail_event("school_hack_complete_glyphis")
+
+    def _is_bradsonic_mail_nighttime(self) -> bool:
+        """Night-time gate for BRADSONIC-MAIL story beats."""
+        return bool(_is_tokyo_nighttime())
+
+    def _mail_has_message_id(self, message_id: str) -> bool:
+        target = str(message_id or "").strip().lower()
+        if not target:
+            return False
+
+        for mailbox in (self.mail_local_inbox, self.get_mail_trash(), self.get_mail_outbox()):
+            for stored in mailbox or []:
+                if str(stored.get("id") or "").strip().lower() == target:
+                    return True
+        return False
+
+    def _is_glyphis_school_hack_complete_mail(self, email: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(email, dict):
+            return False
+        sender = str(email.get("sender") or "").strip().lower()
+        subject = str(email.get("subject") or "").strip()
+        email_id = str(email.get("id") or "").strip().lower()
+        return (
+            sender == "glyphis@ciphernet.net"
+            and subject == "OPERATIONAL SECURITY // IMMEDIATE COMPLIANCE REQUIRED"
+            and email_id.startswith("glyphis_schoolhack5_")
+        )
+
+    def _build_smokey_school_intro_mail(self) -> Dict[str, Any]:
+        username, _ = self.get_user_credentials()
+        username = username or "operator"
+        return {
+            "id": SMOKEY_SCHOOL_INTRO_EVENT_ID,
+            "sender": SMOKEY_EMAIL_ADDRESS,
+            "recipient": self.mail_settings.get("mail_from", "user@bradsonic.net"),
+            "subject": "That handle of yours...",
+            "body": (
+                f"{username}!? Seriously? I'm surprised they haven't laughed you out of their gang yet "
+                f"with a handle like that!? Back on my patch I went by smokeyparkin, my mother had a pet "
+                f"budgie. It was kinda grey and blue, I guess... and Parkin was the surname given to her "
+                f"mother by the Americans.\n\n"
+                "Speaking of which reply briefly with the 3 names you had for the school job, and I'll let "
+                "you in on some important news, like really cool news.\n\n"
+                "Do it before day breaks, I'm logging off soon."
+            ),
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "read": False,
+        }
+
+    def _build_smokey_school_reply_mail(self) -> Dict[str, Any]:
+        return {
+            "id": SMOKEY_SCHOOL_REPLY_EVENT_ID,
+            "sender": SMOKEY_EMAIL_ADDRESS,
+            "recipient": self.mail_settings.get("mail_from", "user@bradsonic.net"),
+            "subject": "Important news, then",
+            "body": (
+                "Thank you, impressive kids, aren't they?\n\n"
+                "So, I've been put in touch with a medical research lab over in London a guy going by the "
+                "name of Dr Brontis, he has a trial coming up and was looking to expand the phase 3 over to "
+                "the Pacifica Isles and was wondering if our department had any \"volunteers\", he said 17+ "
+                "but under 19, obviously I thought of you and your new friends, keep it in mind. No official "
+                "invite just yet, but when it comes I'll get in contact. Maybe keep checking in on this "
+                "Bradsonic Email from time to time, forget what Glyphis says, paranoia makes people think "
+                "they're the center of the universe. Glyphis certainly isn't that.\n\n"
+                "It's great seeing you finally come up for air by the way. For the next few weeks I think "
+                "it's vital to keep doing whatever Glyphis is telling you to do, cuz clearly you're the kind "
+                "of hacker they need.\n\n"
+                "Peace to Pacifica old friend, I miss your philosophical rants in the rec room, all Riccardo "
+                "and Curtis can talk about is this new game CyberTrain, they've become obsessed, NERDZ!\n\n"
+                "Smokey out"
+            ),
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "read": False,
+        }
+
+    def _deliver_mail_to_local_inbox(self, email: Dict[str, Any]) -> None:
+        self.mail_local_inbox.insert(0, email)
+        self.save_inbox_emails(self.mail_local_inbox)
+        self.play_mail_sound()
+
+    def _maybe_trigger_smokey_school_intro(self, email: Optional[Dict[str, Any]]) -> None:
+        if not self.mail_server_connected:
+            return
+        if not self._is_glyphis_school_hack_complete_mail(email):
+            return
+        if self._mail_has_message_id(SMOKEY_SCHOOL_INTRO_EVENT_ID) or self._mail_has_message_id(SMOKEY_SCHOOL_REPLY_EVENT_ID):
+            return
+        if self._is_bradsonic_mail_nighttime():
+            self._deliver_mail_to_local_inbox(self._build_smokey_school_intro_mail())
+        else:
+            self.queue_bradsonic_mail_event(SMOKEY_SCHOOL_INTRO_EVENT_ID)
+
+    def _is_smokey_school_intro_mail(self, email: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(email, dict):
+            return False
+        return str(email.get("id") or "").strip().lower() == SMOKEY_SCHOOL_INTRO_EVENT_ID
+
+    def _is_valid_smokey_school_reply(self, message: Dict[str, Any]) -> bool:
+        recipient = str(message.get("recipient") or "").strip().lower()
+        if recipient != SMOKEY_EMAIL_ADDRESS:
+            return False
+        body = str(message.get("body") or "").strip().lower()
+        return all(name in body for name in ("rain", "bertie", "jason"))
+
+    def _build_school_hack_fail_mail(self, event_id: str) -> Optional[dict]:
+        username, _ = self.get_user_credentials()
+        username = username or "operator"
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        if event_id == "school_hack_fail1_rain":
+            return {
+                "id": event_id,
                 "sender": "rain@ciphernet.net",
                 "recipient": self.mail_settings.get("mail_from", "user@bradsonic.net"),
-                "subject": RAIN_REPLY_SUBJECT,
-                "body": _get_rain_reply_body(username),
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "subject": "Telebase check-in // little mistake, easy fix",
+                "body": (
+                    f"{username},\n\n"
+                    "Uncle-am has a tiny read-only Telebase mirror patched into his MotoPC. "
+                    "It's barely powerful enough to scroll records, but it is enough to show that the three students "
+                    "did not come out right.\n\n"
+                    "I'm treating this as a genuine mistake. Really. Nerves, bad lighting, whatever. "
+                    "The line is still usable and you get another go.\n\n"
+                    "Go back in. Only touch Rosaline Cloud, Bertie Vandengate and Jason Kanderton. "
+                    "Only ENGLISH and U.S.HISTORY. All six need to land on A.\n\n"
+                    "Do that and we're still good.\n\n"
+                    "-Rain"
+                ),
+                "timestamp": timestamp,
                 "read": False,
             }
-            self.mail_local_inbox.insert(0, rain_email)
+
+        if event_id == "school_hack_fail2_glyphis":
+            return {
+                "id": event_id,
+                "sender": "glyphis@ciphernet.net",
+                "recipient": self.mail_settings.get("mail_from", "user@bradsonic.net"),
+                "subject": "Operational liability warning",
+                "body": (
+                    "Operator,\n\n"
+                    "Uncle-am's read-only Telebase mirror confirms the records were altered incorrectly a second time.\n\n"
+                    "This team cannot carry a liability. Correct the grades properly or our time together will end.\n\n"
+                    "Rosaline Cloud. Bertie Vandengate. Jason Kanderton.\n"
+                    "ENGLISH. U.S.HISTORY.\n"
+                    "All six to A. Nothing else.\n\n"
+                    "- GLYPHIS"
+                ),
+                "timestamp": timestamp,
+                "read": False,
+            }
+
+        if event_id == "school_hack_gameover_glyphis":
+            return {
+                "id": event_id,
+                "sender": "glyphis@ciphernet.net",
+                "recipient": self.mail_settings.get("mail_from", "user@bradsonic.net"),
+                "subject": "Connection terminated",
+                "body": (
+                    "Operator,\n\n"
+                    "You were given multiple chances to complete a simple correction and failed each one.\n\n"
+                    "Rain is off this channel. Uncle-am is off this channel. Jaxkando is off this channel.\n"
+                    "Our journey together has come to an end.\n\n"
+                    "Do not attempt to reconnect.\n\n"
+                    "- GLYPHIS"
+                ),
+                "timestamp": timestamp,
+                "read": False,
+            }
+
+        return None
+
+    def _build_pending_bradsonic_mail_event(self, event_id: str, source: str = "manual") -> Optional[dict]:
+        if event_id == "school_hack_complete_glyphis":
+            return self._build_glyphis_school_hack_complete_mail()
+        if event_id == SMOKEY_SCHOOL_INTRO_EVENT_ID:
+            if source == "poll" or not self._is_bradsonic_mail_nighttime():
+                self.queue_bradsonic_mail_event(event_id)
+                return None
+            return self._build_smokey_school_intro_mail()
+        return self._build_school_hack_fail_mail(event_id)
+
+    def _deliver_pending_bradsonic_mail_events(self, source: str = "manual") -> int:
+        delivered = 0
+        for event_id in self.consume_pending_bradsonic_mail_events():
+            if event_id in {
+                "school_hack_fail1_rain",
+                "school_hack_fail2_glyphis",
+                "school_hack_gameover_glyphis",
+            } and any((msg.get("id") or "").strip().lower() == event_id for msg in self.mail_local_inbox):
+                continue
+            if event_id in {SMOKEY_SCHOOL_INTRO_EVENT_ID, SMOKEY_SCHOOL_REPLY_EVENT_ID} and self._mail_has_message_id(event_id):
+                continue
+            pending_mail = self._build_pending_bradsonic_mail_event(event_id, source=source)
+            if not pending_mail:
+                continue
+            self.mail_local_inbox.insert(0, pending_mail)
+            delivered += 1
+
+        if delivered:
             self.save_inbox_emails(self.mail_local_inbox)
             self.play_mail_sound()
-        new_count = len(self.mail_local_inbox) - inbox_before
-        self.mail_connect_terminal_lines.append("")
-        if outbox_count > 0:
-            self.mail_connect_terminal_lines.append(f"Sending mail... ({outbox_count} message(s))")
-            self.mail_connect_terminal_lines.append(f"Mail sent: {outbox_count} message(s).")
-        else:
-            self.mail_connect_terminal_lines.append("Outbox empty.")
-        self.mail_connect_terminal_lines.append("RETR - Checking for new mail...")
-        self.mail_connect_terminal_lines.append(
-            f"New mail found: {new_count} message(s)." if new_count > 0 else "No new mail."
-        )
-        self.mail_connect_terminal_lines.append("Transfer complete.")
+        return delivered
+
+    def _mail_do_send_rx(self) -> None:
+        """Run a manual SEND/RX pass and drop the line immediately after."""
+        if not self.mail_server_connected:
+            self._start_mail_connect_sequence("oneshot")
+            return
+        self.mail_connection_mode = "oneshot"
+        self._mail_append_terminal_line("")
+        exchange = self._mail_run_exchange(source="manual")
+        self._mail_write_exchange_summary(exchange)
+        self._mail_append_terminal_line("MAIL LINK CLOSED.")
+        self._disconnect_mail_server()
 
     def _draw_mail_reading(self, content_rect: pygame.Rect):
         """Draw the email reading view."""
@@ -5054,31 +6507,28 @@ class OSMode:
         for btn_rect, view_name in getattr(self, "_mail_menu_hitboxes", []):
             if btn_rect.collidepoint(mouse_x, mouse_y):
                 if view_name == "compose" and self.mail_view != "compose":
-                    self.mail_compose_to = ""
-                    self.mail_compose_subject = ""
-                    self.mail_compose_body = ""
-                    self.mail_compose_active_field = "to"
-                    self.mail_compose_cursor = 0
+                    self._prefill_mail_compose_for_current_objective()
                 if view_name == "connect" and self.mail_view != "connect":
-                    self._mail_connect_steps = []
-                    self.mail_connect_terminal_lines = []
-                    self.mail_connect_terminal_line_index = 0
+                    self._reset_mail_connect_terminal(clear_lines=False)
                 self.mail_view = view_name
                 self.mail_selected_index = -1
                 self.mail_reading_email = None
                 self.mail_scroll_offset = 0
                 return True
 
-        # CONNECT view: SEND/RX and DIAL buttons
+        # CONNECT view: SEND/RX one-shot and CONNECT/DISCONNECT persistent buttons
         if self.mail_view == "connect":
             if getattr(self, "_mail_sendrx_btn_rect", None) and self._mail_sendrx_btn_rect.collidepoint(mouse_x, mouse_y):
-                if self.mail_server_connected:
+                if not self._mail_is_connect_in_progress():
                     self._mail_do_send_rx()
                 return True
             if getattr(self, "_mail_dial_btn_rect", None) and self._mail_dial_btn_rect.collidepoint(mouse_x, mouse_y):
-                in_progress = self.mail_connect_terminal_line_index > 0 and not self.mail_connect_terminal_complete
-                if not in_progress:
-                    self._start_mail_connect_sequence()
+                if self.mail_server_connected and self.mail_connection_mode == "persistent":
+                    self._mail_append_terminal_line("")
+                    self._mail_append_terminal_line("MAIL LINK CLOSED.")
+                    self._disconnect_mail_server()
+                elif not self._mail_is_connect_in_progress():
+                    self._start_mail_connect_sequence("persistent")
                 return True
 
         if self.mail_view in ("inbox", "outbox", "trash"):
@@ -5097,7 +6547,10 @@ class OSMode:
                         # Mark as read if inbox
                         if self.mail_view == "inbox" and not email.get("read", False):
                             email["read"] = True
+                            self.save_inbox_emails(self.mail_local_inbox)
                         self.mail_reading_email = dict(email)
+                        self._maybe_trigger_smokey_school_intro(self.mail_reading_email)
+                        self._maybe_trigger_notes_nudge_for_email(self.mail_reading_email)
                         self.mail_view = "reading"
                         self.mail_scroll_offset = 0
                     return True
@@ -5127,6 +6580,8 @@ class OSMode:
                 self.mail_compose_body = ""
                 self.mail_compose_active_field = "to"
                 self.mail_compose_cursor = 0
+                self.mail_compose_ghost = {}
+                self.mail_compose_placeholder_override = {}
                 return True
 
         elif self.mail_view == "reading":
@@ -5152,6 +6607,10 @@ class OSMode:
                     self.mail_compose_body = ""
                     self.mail_compose_active_field = "body"
                     self.mail_compose_cursor = 0
+                    self.mail_compose_ghost = {}
+                    self.mail_compose_placeholder_override = {}
+                    if self._is_smokey_school_intro_mail(self.mail_reading_email):
+                        self.mail_compose_placeholder_override = {"body": SMOKEY_SCHOOL_NAMES}
                     self.mail_view = "compose"
                 return True
 
@@ -5190,7 +6649,7 @@ class OSMode:
             "read": True,
         }
 
-        # Add to outbox only; actual send happens when user connects via CONNECT TO MAIL SERVER
+        # Add to outbox only; actual send happens when user runs SEND/RX or opens a persistent CONNECT session.
         outbox = self.get_mail_outbox()
         outbox.insert(0, sent_email)
         self.save_mail_outbox(outbox)
@@ -5201,9 +6660,14 @@ class OSMode:
         self.mail_compose_body = ""
         self.mail_compose_active_field = "to"
         self.mail_compose_cursor = 0
-        self.mail_status_message = "Message queued for send."
+        self.mail_compose_ghost = {}
+        self.mail_compose_placeholder_override = {}
+        self.mail_status_message = "Message queued. Use SEND/RX or CONNECT."
         self.mail_status_timer = 3.0
         self.mail_view = "outbox"
+        if self.mail_server_connected and self.mail_connection_mode == "persistent" and self._is_valid_smokey_school_reply(sent_email):
+            self.mail_listen_poll_timer = 0.25
+            self.mail_status_message = "Message queued. Link open; syncing."
 
     def _mail_move_to_trash(self, email: Dict):
         """Move an email to trash."""
@@ -5213,9 +6677,46 @@ class OSMode:
 
         # Remove from local inbox
         self.mail_local_inbox = [e for e in self.mail_local_inbox if e.get("id") != email.get("id")]
+        self.save_inbox_emails(self.mail_local_inbox)
 
         self.mail_status_message = "Message moved to trash."
         self.mail_status_timer = 3.0
+
+    def _mail_compose_placeholders(self):
+        """Return (ph_to, ph_subj, ph_body) for the current school-hack phase."""
+        _connected_phase = self.has_token("SCHOOL_HACK4A") and not self.has_token("SCHOOL_HACK4B")
+        _school_phase = self.has_token("SCHOOL_HACK3") and not self.has_token("SCHOOL_HACK4")
+        if _connected_phase:
+            base = (MAIL_COMPOSE_CONNECTED_TO, MAIL_COMPOSE_CONNECTED_SUBJECT, MAIL_COMPOSE_CONNECTED_BODY)
+        elif _school_phase:
+            base = (MAIL_COMPOSE_PLACEHOLDER_SCHOOL_TO, MAIL_COMPOSE_PLACEHOLDER_SCHOOL_SUBJECT, MAIL_COMPOSE_PLACEHOLDER_SCHOOL_BODY)
+        else:
+            base = (MAIL_COMPOSE_PLACEHOLDER_TO, MAIL_COMPOSE_PLACEHOLDER_SUBJECT, MAIL_COMPOSE_PLACEHOLDER_BODY)
+
+        override = self.mail_compose_placeholder_override
+        return (
+            override.get("to", base[0]),
+            override.get("subject", base[1]),
+            override.get("body", base[2]),
+        )
+
+    def _mail_get_line_offsets(self, text: str, lines: list) -> list:
+        """For each word-wrapped line, return its start character offset in the original text."""
+        offsets = []
+        pos = 0
+        for line in lines:
+            if not line:
+                offsets.append(pos)
+                pos += 1  # newline
+                continue
+            idx = text.find(line, pos)
+            if idx >= 0:
+                offsets.append(idx)
+                pos = idx + len(line)
+            else:
+                offsets.append(pos)
+                pos += len(line)
+        return offsets
 
     def _mail_handle_keydown(self, event) -> bool:
         """Handle keyboard input in compose or settings mode."""
@@ -5236,7 +6737,12 @@ class OSMode:
 
         if event.key == pygame.K_BACKSPACE:
             if cursor > 0:
-                text = text[:cursor - 1] + text[cursor:]
+                ghost = self.mail_compose_ghost.get(field, "")
+                if ghost and cursor <= len(ghost):
+                    # In ghost range: restore the placeholder character instead of deleting
+                    text = text[:cursor - 1] + ghost[cursor - 1] + text[cursor:]
+                else:
+                    text = text[:cursor - 1] + text[cursor:]
                 cursor -= 1
         elif event.key == pygame.K_DELETE:
             if cursor < len(text):
@@ -5319,7 +6825,24 @@ class OSMode:
             current = self.mail_compose_body
 
         cursor = min(self.mail_compose_cursor, len(current))
-        current = current[:cursor] + text + current[cursor:]
+
+        # Ghost (overwrite) mode: on first keystroke into an empty field, seed with placeholder
+        if not current and field not in self.mail_compose_ghost:
+            ph_to, ph_subj, ph_body = self._mail_compose_placeholders()
+            ph = {"to": ph_to, "subject": ph_subj, "body": ph_body}.get(field, "")
+            if ph:
+                current = ph
+                self.mail_compose_ghost[field] = ph
+                cursor = 0
+
+        ghost = self.mail_compose_ghost.get(field, "")
+        if ghost and cursor < len(current):
+            # Overwrite mode: replace character(s) at cursor, preserving the ghost tail
+            n = len(text)
+            current = current[:cursor] + text + current[cursor + n:]
+        else:
+            # Normal insert mode (past ghost or no ghost)
+            current = current[:cursor] + text + current[cursor:]
         cursor += len(text)
 
         if field == "to":
@@ -5338,12 +6861,12 @@ class OSMode:
     # Settings layout definition: list of (key, label, type)
     # type: "text" = editable text field, "radio" = radio button group, "check" = checkbox
     _MAIL_SETTINGS_LAYOUT = [
-        ("_header_account", "── ACCOUNT SETTINGS ──", "header"),
+        ("_header_account", "= ACCOUNT SETTINGS =", "header"),
         ("mail_from", "Mail From Address:", "text"),
         ("display_name", "Display Name:", "text"),
         ("reply_to", "Reply-To Address:", "text"),
-        ("signature", "X-Signature Footer:", "text"),
-        ("_header_server", "── SERVER CONFIGURATION ──", "header"),
+        ("signature", "X-Signature Footer:", "textarea"),
+        ("_header_server", "= SERVER CONFIGURATION =", "header"),
         ("smtp_server", "SMTP Relay Host:", "text"),
         ("smtp_port", "SMTP Port:", "text"),
         ("pop3_server", "POP3/IMAP Server:", "text"),
@@ -5351,13 +6874,13 @@ class OSMode:
         ("protocol", "Mail Protocol:", "radio", ["POP3", "IMAP"]),
         ("auth_method", "Auth Method:", "radio", ["LOGIN", "PLAIN", "CRAM-MD5"]),
         ("encryption", "Connection Security:", "radio", ["None", "SSL", "TLS"]),
-        ("_header_advanced", "── ADVANCED / MIME ──", "header"),
+        ("_header_advanced", "= ADVANCED / MIME =", "header"),
         ("mime_encoding", "MIME Transfer-Encoding:", "radio", ["quoted-printable", "base64", "7bit"]),
         ("charset", "Character Set:", "radio", ["US-ASCII", "ISO-8859-1", "UTF-8"]),
         ("max_msg_size", "Max Message Size (KB):", "text"),
         ("line_wrap", "Line Wrap Column:", "text"),
         ("check_interval", "Check Interval (min):", "text"),
-        ("_header_options", "── OPTIONS ──", "header"),
+        ("_header_options", "= OPTIONS =", "header"),
         ("leave_on_server", "Leave Messages on Server", "check"),
         ("auto_bcc", "Auto-BCC to Self", "check"),
         ("x_mailer_header", "Include X-Mailer Header", "check"),
@@ -5381,9 +6904,12 @@ class OSMode:
         self.mail_cursor_blink_timer += 0.05
         show_cursor = (self.mail_cursor_blink_timer % 1.0) < 0.5
 
-        # Calculate total height
-        total_rows = len(self._MAIL_SETTINGS_LAYOUT)
-        total_h = total_rows * row_h + int(10 * self.scale)
+        # Calculate total height (textarea rows are taller)
+        textarea_h = int(72 * self.scale)   # height of the signature textarea box
+        textarea_row_h = textarea_h + int(8 * self.scale)
+        total_h = int(10 * self.scale)
+        for entry in self._MAIL_SETTINGS_LAYOUT:
+            total_h += textarea_row_h if entry[2] == "textarea" else row_h
         visible_h = content_rect.height
         max_scroll = max(0, total_h - visible_h)
         self.mail_settings_scroll = max(0, min(self.mail_settings_scroll, max_scroll))
@@ -5395,20 +6921,20 @@ class OSMode:
             key = entry[0]
             label = entry[1]
             etype = entry[2]
+            this_row_h = textarea_row_h if etype == "textarea" else row_h
 
-            row_top = y
-            if y + row_h < content_rect.y or y > content_rect.bottom:
-                y += row_h
+            if y + this_row_h < content_rect.y or y > content_rect.bottom:
+                y += this_row_h
                 continue  # Off-screen, skip drawing but advance
 
             if etype == "header":
                 # Section header
                 header_surf = font.render(label, True, COLOR_AMBER)
                 self.screen.blit(header_surf, (x, y + int(4 * self.scale)))
-                y += row_h
+                y += this_row_h
                 continue
 
-            # Draw label
+            # Draw label (top-aligned)
             label_surf = font.render(label, True, COLOR_CYAN)
             self.screen.blit(label_surf, (x, y + int(3 * self.scale)))
 
@@ -5436,6 +6962,50 @@ class OSMode:
                 self.screen.set_clip(old_clip)
 
                 self._mail_settings_hitboxes.append((field_rect, key, "text"))
+
+            elif etype == "textarea":
+                # Multi-line textarea for signature (tweet-length: 280 chars max)
+                value = str(self.mail_settings.get(key, ""))
+                is_active = self.mail_settings_active_field == key
+                field_rect = pygame.Rect(control_x, y + int(1 * self.scale), field_w - label_w, textarea_h)
+                bg = (30, 30, 55) if is_active else (15, 15, 30)
+                pygame.draw.rect(self.screen, bg, field_rect)
+                border = COLOR_CYAN if is_active else COLOR_GREY
+                pygame.draw.rect(self.screen, border, field_rect, 1)
+
+                # Word-wrap and render text inside the box
+                text_pad = int(4 * self.scale)
+                wrap_w = field_rect.width - 2 * text_pad
+                wrapped_lines = self._mail_wrap_text(value, font, wrap_w)
+                line_h_sig = font.get_height()
+                old_clip = self.screen.get_clip()
+                self.screen.set_clip(field_rect.inflate(-2, -2))
+                for li, wline in enumerate(wrapped_lines):
+                    ly = field_rect.y + text_pad + li * line_h_sig
+                    if ly + line_h_sig > field_rect.bottom:
+                        break
+                    wsurf = font.render(wline, True, COLOR_WHITE)
+                    self.screen.blit(wsurf, (field_rect.x + text_pad, ly))
+                # Cursor
+                if show_cursor and is_active:
+                    cursor_pos = min(self.mail_settings_cursor, len(value))
+                    text_before = value[:cursor_pos]
+                    before_lines = self._mail_wrap_text(text_before, font, wrap_w)
+                    cur_line = len(before_lines) - 1 if before_lines else 0
+                    cur_x_off = font.size(before_lines[-1] if before_lines else "")[0]
+                    cx = field_rect.x + text_pad + cur_x_off
+                    cy = field_rect.y + text_pad + cur_line * line_h_sig
+                    if cy + line_h_sig <= field_rect.bottom:
+                        pygame.draw.line(self.screen, COLOR_WHITE, (cx, cy), (cx, cy + line_h_sig), 1)
+                self.screen.set_clip(old_clip)
+
+                # Char count indicator (tweet-length: 280 max)
+                char_count = len(value)
+                count_color = COLOR_AMBER if char_count > 250 else COLOR_GREY
+                count_surf = font.render(f"{char_count}/280", True, count_color)
+                self.screen.blit(count_surf, (field_rect.right - count_surf.get_width() - text_pad, field_rect.bottom + int(1 * self.scale)))
+
+                self._mail_settings_hitboxes.append((field_rect, key, "textarea"))
 
             elif etype == "radio":
                 options = entry[3]
@@ -5465,7 +7035,7 @@ class OSMode:
                     pygame.draw.rect(self.screen, COLOR_CYAN, inner)
                 self._mail_settings_hitboxes.append((check_rect.inflate(int(8 * self.scale), int(4 * self.scale)), key, "check"))
 
-            y += row_h
+            y += this_row_h
 
         # Scroll bar
         if total_h > visible_h:
@@ -5485,7 +7055,7 @@ class OSMode:
             key = entry[1]
             etype = entry[2]
             if rect.collidepoint(mouse_x, mouse_y):
-                if etype == "text":
+                if etype in ("text", "textarea"):
                     self.mail_settings_active_field = key
                     self.mail_settings_cursor = len(str(self.mail_settings.get(key, "")))
                     return True
@@ -5547,10 +7117,12 @@ class OSMode:
 
         current = str(self.mail_settings.get(key, ""))
         cursor = min(self.mail_settings_cursor, len(current))
-        current = current[:cursor] + text + current[cursor:]
+        new_text = current[:cursor] + text + current[cursor:]
+        # Enforce 280-char limit for X-Signature Footer (tweet-length)
+        if key == "signature" and len(new_text) > 280:
+            return True
         cursor += len(text)
-
-        self.mail_settings[key] = current
+        self.mail_settings[key] = new_text
         self.mail_settings_cursor = cursor
         return True
 
@@ -5824,6 +7396,29 @@ class OSMode:
         except Exception as e:
             print(f"Warning: Failed to load sonic-file icon: {e}")
             self.file_system_browser_sonic_icon = self.file_system_browser_brad_icon
+        for attr, base_name in (
+            ("file_system_browser_binst_icon", "binst-file.png"),
+            ("file_system_browser_brx_icon", "brx-file.png"),
+        ):
+            try:
+                img_path = get_data_path("OS", base_name)
+                s_img_path = get_data_path("OS", "S-" + base_name)
+                if os.path.exists(img_path):
+                    img = pygame.image.load(img_path).convert_alpha()
+                    iw, ih = img.get_size()
+                    isz = (int(iw * self.scale), int(ih * self.scale))
+                    img = pygame.transform.scale(img, isz)
+                    try:
+                        s_img = pygame.image.load(s_img_path).convert_alpha() if os.path.exists(s_img_path) else img
+                        s_img = pygame.transform.scale(s_img, isz)
+                    except Exception:
+                        s_img = img
+                    setattr(self, attr, {"image": img, "s_image": s_img, "width": isz[0], "height": isz[1]})
+                else:
+                    setattr(self, attr, self.file_system_browser_brad_icon)
+            except Exception as e:
+                print(f"Warning: Failed to load {base_name} icon: {e}")
+                setattr(self, attr, self.file_system_browser_brad_icon)
         try:
             script_dir = os.path.dirname(os.path.abspath(__file__))
             data_dir = os.path.dirname(script_dir)
@@ -5920,8 +7515,9 @@ class OSMode:
         if not mail_icon or not sonic_icon or sonic_icon.get("from_saved") or not self.desktop_rect:
             return
         spacing = int(10 * self.scale)
+        desktop_h = self.desktop_rect.height if self.desktop_rect else 768
         sonic_icon["x"] = mail_icon["x"]
-        sonic_icon["y"] = mail_icon["y"] + mail_icon["height"] + spacing
+        sonic_icon["y"] = mail_icon["y"] + mail_icon["height"] + spacing + int(desktop_h * 0.02)
         sonic_icon["y"] = max(self.desktop_rect.top, min(sonic_icon["y"], self.desktop_rect.bottom - sonic_icon["height"]))
     
     def _remove_mail_icon_from_desktop(self) -> None:
@@ -5933,6 +7529,7 @@ class OSMode:
     def _switch_os_region(self, region_num: int) -> None:
         """Switch OS locale to region (1=US Mainland, 2=Europe, 3=Pacifica)."""
         self.os_locale = region_num
+        self.save_locale(region_num)
         if region_num == 1:
             self._add_mail_icon_to_desktop()
             if self.grant_token:
@@ -6331,28 +7928,7 @@ class OSMode:
                         (current_time - self.system_folder_modal_last_click_time) < self.double_click_threshold):
                     # Double-click - launch terminal or bring existing one to front
                     self.system_folder_modal_icon["selected"] = False
-                    if self.terminal_active:
-                        self._open_modal("terminal")
-                    else:
-                        self.terminal_active = True
-                        self.terminal_text = ""
-                        self.terminal_input_buffer = ""
-                        self.terminal_cursor_blink_timer = 0.0
-                        self.terminal_cursor_visible = True
-                        self.terminal_position = None  # Will be centered on first draw
-                        self.terminal_mode = "command"
-                        self.terminal_admin_menu_selection = 1
-                        self.terminal_region_selection = 1
-                        self.terminal_message = ""
-                        self.terminal_file_system_mode = False
-                        self.terminal_file_system_path = []
-                        self.terminal_file_content = []
-                        self.terminal_file_view_filename = ""
-                        self.terminal_file_scroll_index = 0
-                        self.terminal_history_index = -1
-                        self.terminal_current_input_line = ""
-                        self.terminal_cursor_index = 0
-                        self._open_modal("terminal")
+                    self._open_terminal_window(reset_session=not self.terminal_active)
                     self.system_folder_modal_last_click_time = 0.0
                 else:
                     self.system_folder_modal_last_click_time = current_time
@@ -6371,9 +7947,8 @@ class OSMode:
         """Draw the file system browser modal: folders (folder.png) and .brad files (brad-file.png) with Pixellari cyan labels."""
         modal_w, modal_h = self._get_modal_size("file_system_browser")
         modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
-        modal_x, modal_y = self.modal_positions.get("file_system_browser", self._get_modal_position(modal_w, modal_h, "file_system_browser"))
-        if "file_system_browser" not in self.modal_positions:
-            self.modal_positions["file_system_browser"] = (modal_x, modal_y)
+        modal_x, modal_y = self._get_modal_position(modal_w, modal_h, "file_system_browser")
+        self.modal_positions["file_system_browser"] = (modal_x, modal_y)
 
         modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
         pygame.draw.rect(self.screen, COLOR_BG_DARK, modal_rect)
@@ -6416,6 +7991,7 @@ class OSMode:
         pygame.draw.rect(self.screen, COLOR_CYAN, content_rect, 1)
         inner = content_rect.inflate(-int(10 * self.scale), -int(10 * self.scale))
         pygame.draw.rect(self.screen, COLOR_BG_DARK, inner)
+        self.file_system_browser_content_rect = inner
 
         folder_icon = self.file_system_browser_folder_icon
         brad_icon = self.file_system_browser_brad_icon
@@ -6430,16 +8006,35 @@ class OSMode:
         row_height = (folder_icon["height"] if folder_icon else 48) + label_gap + (font.get_height() if font else 16) + padding_below_label
 
         sonic_icon = getattr(self, "file_system_browser_sonic_icon", None) or brad_icon
+        binst_icon = getattr(self, "file_system_browser_binst_icon", None) or brad_icon
+        brx_icon = getattr(self, "file_system_browser_brx_icon", None) or brad_icon
         for i, item in enumerate(self.file_system_browser_items):
             col = i % cols
             row = i // cols
-            ix = inner.x + icon_gap + col * (inner.width // cols)
-            iy = inner.y + icon_gap + row * row_height
             is_folder = item["type"] == "folder"
-            is_sonic = item.get("file_type") == "sonic"
-            icon_src = folder_icon if is_folder else (sonic_icon if is_sonic else brad_icon)
+            file_type = item.get("file_type")
+            if is_folder:
+                icon_src = folder_icon
+            elif file_type == "sonic":
+                icon_src = sonic_icon
+            elif file_type == "binst":
+                icon_src = binst_icon
+            elif file_type == "brx":
+                icon_src = brx_icon
+            else:
+                icon_src = brad_icon
             icon_w = icon_src["width"] if icon_src else 48
             icon_h = icon_src["height"] if icon_src else 48
+            default_rel_x = icon_gap + col * (inner.width // cols)
+            default_rel_y = icon_gap + row * row_height
+            max_rel_x = max(0, inner.width - icon_w)
+            max_rel_y = max(0, inner.height - row_height)
+            item_rel_x = item.get("rel_x")
+            item_rel_y = item.get("rel_y")
+            item["rel_x"] = max(0, min(default_rel_x if item_rel_x is None else item_rel_x, max_rel_x))
+            item["rel_y"] = max(0, min(default_rel_y if item_rel_y is None else item_rel_y, max_rel_y))
+            ix = inner.x + item["rel_x"]
+            iy = inner.y + item["rel_y"]
             if icon_src:
                 selected = (i == self.file_system_browser_selected_index)
                 img = icon_src["s_image"] if selected else icon_src["image"]
@@ -6452,26 +8047,35 @@ class OSMode:
                 label_x = ix + (icon_w - label_surf.get_width()) // 2
                 self.screen.blit(label_surf, (label_x, iy + icon_h + label_gap))
             w = max(icon_w, label_surf.get_width() if label_surf else 0)
-            item["rect"] = pygame.Rect(ix, iy, w, row_height - icon_gap)
+            item["rect"] = pygame.Rect(ix, iy, w, row_height)
 
         # Draw ghost icon when dragging a file
         if self.file_system_browser_dragging_item:
             drag_item, ox, oy = self.file_system_browser_dragging_item
-            is_sonic_drag = drag_item.get("file_type") == "sonic"
-            icon_src = sonic_icon if is_sonic_drag else brad_icon
+            drag_type = drag_item.get("file_type")
+            if drag_type == "sonic":
+                icon_src = sonic_icon
+            elif drag_type == "binst":
+                icon_src = binst_icon
+            elif drag_type == "brx":
+                icon_src = brx_icon
+            else:
+                icon_src = brad_icon
             if icon_src:
                 mx, my = pygame.mouse.get_pos()
-                ghost_x = mx - ox
-                ghost_y = my - oy
-                ghost_img = icon_src["s_image"].copy()
-                ghost_img.set_alpha(180)
-                self.screen.blit(ghost_img, (ghost_x, ghost_y))
+                if not inner.collidepoint(mx, my):
+                    ghost_x = mx - ox
+                    ghost_y = my - oy
+                    ghost_img = icon_src["s_image"].copy()
+                    ghost_img.set_alpha(180)
+                    self.screen.blit(ghost_img, (ghost_x, ghost_y))
 
     def _handle_file_system_browser_modal_click(self, mouse_x: int, mouse_y: int) -> bool:
         """Handle clicks in file system browser: single click select, double-click folder navigate, double-click .brad open in terminal window."""
         modal_w, modal_h = self._get_modal_size("file_system_browser")
         modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
-        modal_x, modal_y = self.modal_positions.get("file_system_browser", (0, 0))
+        modal_x, modal_y = self._get_modal_position(modal_w, modal_h, "file_system_browser")
+        self.modal_positions["file_system_browser"] = (modal_x, modal_y)
         close_btn_size = int(20 * self.scale)
         close_btn_rect = pygame.Rect(
             modal_x + modal_w - close_btn_size - int(5 * self.scale),
@@ -6484,6 +8088,15 @@ class OSMode:
         modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
         if not modal_rect.collidepoint(mouse_x, mouse_y):
             return False
+
+        gap = int(20 * self.scale)
+        content_rect = pygame.Rect(
+            modal_x + gap,
+            modal_y + self.modal_title_bar_height + gap,
+            modal_w - 2 * gap,
+            modal_h - self.modal_title_bar_height - 2 * gap
+        ).inflate(-int(10 * self.scale), -int(10 * self.scale))
+        self.file_system_browser_content_rect = content_rect
 
         current_time = time.time()
         for i, item in enumerate(self.file_system_browser_items):
@@ -6506,8 +8119,10 @@ class OSMode:
                             self.file_system_browser_path.append(item["real_name"])
                             self.file_system_browser_items = self._list_file_system_browser_directory()
                     elif item["type"] == "file":
+                        if self._is_dotsonic_installer_file(item["display_name"]):
+                            self._start_dotsonic_installer()
                         # .sonic files: when opened from dotSONIC LOAD, add to playlist; else show info
-                        if item.get("file_type") == "sonic":
+                        elif item.get("file_type") == "sonic":
                             if self.file_system_browser_opened_from_dot_sonic and self.dot_sonic_app:
                                 self.dot_sonic_app.add_track_to_playlist(
                                     item["display_name"],
@@ -6522,7 +8137,7 @@ class OSMode:
                                     f"  {title}",
                                     "",
                                     "  This is a .sonic audio file.",
-                                    "  Play it from the Datasette."
+                                    "  Play it from the Bradsonic dotSONIC Player! COMING SOON!!!"
                                 ]
                                 tw = int(500 * self.scale)
                                 th = int(320 * self.scale)
@@ -6568,22 +8183,15 @@ class OSMode:
                                 except Exception as e:
                                     print(f"Error opening .brad file: {e}")
                 else:
-                    # Single click: select or deselect (toggle if already selected)
-                    if self.file_system_browser_selected_index == i:
-                        self.file_system_browser_selected_index = -1
-                        self.file_system_browser_dragging_item = None
-                    else:
-                        self.file_system_browser_selected_index = i
-                        if item["type"] == "file":
-                            self.file_system_browser_dragging_item = (
-                                item, mouse_x - r.x, mouse_y - r.y
-                            )
-                        else:
-                            self.file_system_browser_dragging_item = None
+                    self.file_system_browser_selected_index = i
+                    self.file_system_browser_dragging_item = (
+                        item, mouse_x - r.x, mouse_y - r.y
+                    )
                 return True
 
-        self.file_system_browser_selected_index = -1
-        self.file_system_browser_dragging_item = None
+        if content_rect.collidepoint(mouse_x, mouse_y):
+            self.file_system_browser_selected_index = -1
+            self.file_system_browser_dragging_item = None
         return True
 
     def _draw_terminal_file_window(self, win: Dict[str, Any]) -> None:
@@ -6716,6 +8324,29 @@ class OSMode:
         )
         return True
 
+    def _update_file_system_browser_item_drag(self, mouse_x: int, mouse_y: int) -> bool:
+        """Update file system browser item position while dragging."""
+        if not self.file_system_browser_dragging_item or not self.file_system_browser_content_rect:
+            return False
+        item, offset_x, offset_y = self.file_system_browser_dragging_item
+        item_rect = item.get("rect")
+        if not item_rect:
+            return False
+        content_rect = self.file_system_browser_content_rect
+        new_rel_x = mouse_x - content_rect.x - offset_x
+        new_rel_y = mouse_y - content_rect.y - offset_y
+        max_x = max(0, content_rect.width - item_rect.width)
+        max_y = max(0, content_rect.height - item_rect.height)
+        item["rel_x"] = max(0, min(new_rel_x, max_x))
+        item["rel_y"] = max(0, min(new_rel_y, max_y))
+        item["rect"] = pygame.Rect(
+            content_rect.x + item["rel_x"],
+            content_rect.y + item["rel_y"],
+            item_rect.width,
+            item_rect.height
+        )
+        return True
+
     def _get_prompt_text(self) -> str:
         """Get the current prompt text based on mode."""
         if self.terminal_file_system_mode:
@@ -6727,6 +8358,629 @@ class OSMode:
         else:
             return "."
 
+    def _is_school_database_mode(self) -> bool:
+        return self.terminal_mode == "school_db"
+
+    def _get_terminal_window_size(self) -> Tuple[int, int]:
+        """Use the standalone-sized terminal only while the embedded school DB is active."""
+        if self._is_school_database_mode():
+            return int(665 * self.scale), int(round(375 * 1.10 * self.scale))
+        return int(500 * self.scale), int(320 * self.scale)
+
+    def _is_school_server_connected(self) -> bool:
+        return self.network_connected and self.modem_modal_current_target == "school_server"
+
+    def _reset_school_database_ui_state(self) -> None:
+        self.school_database_home_index = 0
+        self.school_database_login_username = ""
+        self.school_database_login_password = ""
+        self.school_database_login_error = ""
+        self.school_database_selected_student_index = 0
+        self.school_database_selected_field_index = 0
+        self.school_database_editing = False
+        self.school_database_attendance_editing = False
+        self.school_database_splash_timer = 0.0
+        self.school_database_animation_key = None
+        self.school_database_animation_frame_index = 0
+        self.school_database_animation_timer = 0.0
+        self.school_database_animation_finished = False
+        self.school_database_app = None
+        self.school_database_surface = None
+        self.school_database_surface_size = (0, 0)
+
+    def _ensure_embedded_school_database(self, reset: bool = False) -> SchoolDatabaseApp:
+        if reset or self.school_database_app is None:
+            self.school_database_surface_size = (1, 1)
+            self.school_database_surface = pygame.Surface(self.school_database_surface_size)
+            self.school_database_app = SchoolDatabaseApp(
+                self.school_database_surface,
+                scale=self.scale,
+                get_state_callback=self.get_school_database_state,
+                save_state_callback=self.save_school_database_state,
+            )
+        return self.school_database_app
+
+    def _close_embedded_school_database(self) -> None:
+        self._finalize_school_hack_terminal_exit()
+        self._reset_school_database_ui_state()
+        self.terminal_position = None
+        self.terminal_mode = "admin_menu"
+
+    def _reset_dotsonic_installer_state(self) -> None:
+        self.dotsonic_installer_lines = []
+        self.dotsonic_installer_script = []
+        self.dotsonic_installer_step_index = 0
+        self.dotsonic_installer_timer = 0.0
+        self.dotsonic_installer_complete = False
+
+    def _is_dotsonic_installer_file(self, filename: str) -> bool:
+        return os.path.basename(filename).upper() == DOTSONIC_INSTALLER_FILENAME
+
+    def _open_terminal_window(self, *, reset_session: bool = False) -> None:
+        if reset_session or not self.terminal_active:
+            self.terminal_active = True
+            self.terminal_text = ""
+            self.terminal_input_buffer = ""
+            self.terminal_cursor_blink_timer = 0.0
+            self.terminal_cursor_visible = True
+            self.terminal_position = None
+            self.terminal_dragging = False
+            self.terminal_drag_offset = (0, 0)
+            self.terminal_mode = "command"
+            self.terminal_admin_menu_selection = 1
+            self.terminal_region_selection = 1
+            self.terminal_message = ""
+            self.terminal_message_timer = 0.0
+            self.terminal_file_system_mode = False
+            self.terminal_file_system_path = []
+            self.terminal_file_content = []
+            self.terminal_file_view_filename = ""
+            self.terminal_file_scroll_index = 0
+            self.terminal_history_index = -1
+            self.terminal_current_input_line = ""
+            self.terminal_cursor_index = 0
+            self._reset_school_database_ui_state()
+            self._reset_dotsonic_installer_state()
+        self._open_modal("terminal")
+
+    def _build_dotsonic_installer_script(self, already_installed: bool) -> List[Dict[str, Any]]:
+        if already_installed:
+            return [
+                {"line": "Bradsonic Install Utility v2.1", "delay": 0.22},
+                {"line": "Loading package manifest ........ OK", "delay": 0.28},
+                {"line": "Echo Chamber patch signature .... VERIFIED", "delay": 0.28},
+                {"line": "Existing dotSONIC installation found.", "delay": 0.35},
+                {"line": "Executable image: DOTSONIC.BRX", "delay": 0.28},
+                {"line": "dotSONIC is already tuned for LAPC-1 output.", "delay": 0.28},
+                {"line": "Pacifica lockout already bypassed.", "delay": 0.28},
+                {"line": f"Install path: {DOTSONIC_INSTALLER_DESTINATION}", "delay": 0.32},
+                {"line": "Desktop shell icon already registered.", "delay": 0.28},
+                {"line": "", "delay": 0.12},
+                {"line": "Press ENTER to close installer.", "delay": 0.0, "action": "complete"},
+            ]
+        return [
+            {"line": "Bradsonic Install Utility v2.1", "delay": 0.22},
+            {"line": "Copyright (C) 1989 Bradsonic / dotSONIC Labs", "delay": 0.26},
+            {"line": "", "delay": 0.14},
+            {"line": "Checking package integrity ...... OK", "delay": 0.3},
+            {"line": "Echo Chamber crack header ....... FOUND", "delay": 0.3},
+            {"line": "Scanning audio hardware ......... OK", "delay": 0.34},
+            {"line": "Detected sound adapter: Radland LAPC-1", "delay": 0.38},
+            {"line": "Selecting sound driver: RADLAND LAPC-1", "delay": 0.36},
+            {"line": "Original release track: American Mainland only", "delay": 0.34},
+            {"line": "Patch note: Pacifica lock wall bypassed before launch", "delay": 0.34},
+            {"line": "dotSONIC + LAPC-1 turns the 69000 into a desktop deck.", "delay": 0.34},
+            {"line": "No more living on pirate radio alone for clean banned tracks.", "delay": 0.34},
+            {"line": "Stereo imaging, cleaner playback, sharper low-end response.", "delay": 0.32},
+            {"line": "Built for .sonic sessions, late-night transfers, and loud rooms.", "delay": 0.32},
+            {"line": f"Destination directory: {DOTSONIC_INSTALLER_DESTINATION}", "delay": 0.34},
+            {"line": "Destination locked by package manifest.", "delay": 0.28},
+            {"line": "Deploying executable: DOTSONIC.BRX", "delay": 0.28},
+            {"line": "Installing Bradsonic's premier personal media environment...", "delay": 0.3},
+            {"line": "MESSAGE FROM ECHO CHAMBER: Pacifica listens too.", "delay": 0.28},
+            {"line": "Copying player modules .......... OK", "delay": 0.32},
+            {"line": "Registering desktop shell icon .. OK", "delay": 0.28},
+            {"line": "Updating application map ........ OK", "delay": 0.22, "action": "grant"},
+            {"line": "", "delay": 0.12},
+            {"line": "dotSONIC installation complete.", "delay": 0.14},
+            {"line": "Your Bradsonic 69000 is ready to play the underground.", "delay": 0.16},
+            {"line": "Press ENTER to close installer.", "delay": 0.0, "action": "complete"},
+        ]
+
+    def _start_dotsonic_installer(self) -> None:
+        self._open_terminal_window(reset_session=True)
+        self.terminal_mode = "dotsonic_install"
+        self.dotsonic_installer_script = self._build_dotsonic_installer_script(self.has_token("DOTSONIC"))
+        self.dotsonic_installer_step_index = 0
+        self.dotsonic_installer_timer = 0.08
+        self.dotsonic_installer_complete = False
+        self.dotsonic_installer_lines = []
+
+    def _advance_dotsonic_installer(self, dt: float) -> None:
+        if self.terminal_mode != "dotsonic_install" or self.dotsonic_installer_complete:
+            return
+        self.dotsonic_installer_timer -= dt
+        while self.dotsonic_installer_timer <= 0 and self.dotsonic_installer_step_index < len(self.dotsonic_installer_script):
+            step = self.dotsonic_installer_script[self.dotsonic_installer_step_index]
+            self.dotsonic_installer_step_index += 1
+            line = step.get("line")
+            if line is not None:
+                self.dotsonic_installer_lines.append(line)
+            action = step.get("action")
+            if action == "grant" and self.grant_token:
+                self.grant_token("DOTSONIC", reason="installed dotSONIC from Echo Chamber darknet filez")
+                self._position_sonic_icon_under_mail()
+                # Remove the installer .BINST file from the filesystem
+                base_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "FILE-SYSTEM")
+                if os.path.isdir(base_path):
+                    for root, _dirs, files in os.walk(base_path):
+                        for f in files:
+                            if f.upper() == DOTSONIC_INSTALLER_FILENAME:
+                                try:
+                                    os.remove(os.path.join(root, f))
+                                    print(f"Deleted installer: {f}")
+                                except Exception as e:
+                                    print(f"Failed to delete installer {f}: {e}")
+            elif action == "complete":
+                self.dotsonic_installer_complete = True
+            self.dotsonic_installer_timer += float(step.get("delay", 0.0))
+            if self.dotsonic_installer_timer > 0:
+                break
+
+    def _reset_terminal_session(self) -> None:
+        if self._is_school_database_mode() or self._is_school_server_connected():
+            self._finalize_school_hack_terminal_exit()
+        self.terminal_active = False
+        if "terminal" in self.active_modals:
+            self.active_modals.remove("terminal")
+        self.terminal_position = None
+        self.terminal_dragging = False
+        self.terminal_mode = "command"
+        self.terminal_text = ""
+        self.terminal_input_buffer = ""
+        self.terminal_cursor_index = 0
+        self.terminal_message = ""
+        self.terminal_admin_menu_selection = 1
+        self.terminal_region_selection = 1
+        self.terminal_file_system_mode = False
+        self.terminal_file_system_path = []
+        self.terminal_file_content = []
+        self.terminal_file_view_filename = ""
+        self.terminal_file_scroll_index = 0
+        self._reset_school_database_ui_state()
+        self._reset_dotsonic_installer_state()
+
+    def _school_database_seed(self, text: str) -> int:
+        return sum((idx + 1) * ord(ch) for idx, ch in enumerate(text))
+
+    def _get_school_database_id(self, mug_filename: str, student_index: int) -> str:
+        seed = self._school_database_seed(mug_filename)
+        serial = 1000 + ((seed + student_index * 37) % 9000)
+        campus_code = "TMH"
+        division_code = "A" if "f_bradsonic" in mug_filename.lower() else "B"
+        return f"{campus_code}-89-{division_code}{serial:04d}"
+
+    def _get_school_database_name(self, mug_filename: str, gender: str, used_names: set, used_surnames: set) -> str:
+        overrides = {
+            "1m_BRADSONIC_mosaic_reveal.gif": "Bertie Vandengate",
+            "2m_BRADSONIC_mosaic_reveal.gif": "Jason Kanderton",
+            "1f_BRADSONIC_mosaic_reveal.gif": "Rosaline Cloud",
+        }
+        if mug_filename in overrides:
+            full_name = overrides[mug_filename]
+            surname = full_name.split()[-1]
+            used_names.add(full_name)
+            used_surnames.add(surname)
+            return full_name
+
+        first_names = SCHOOL_DATABASE_FEMALE_FIRST_NAMES if gender == "f" else SCHOOL_DATABASE_MALE_FIRST_NAMES
+        seed = self._school_database_seed(mug_filename)
+        first_idx = seed % len(first_names)
+        last_idx = (seed // max(1, len(first_names))) % len(SCHOOL_DATABASE_SURNAMES)
+        max_offsets = max(len(first_names), len(SCHOOL_DATABASE_SURNAMES)) * 3
+        for surname_offset in range(max_offsets):
+            last = SCHOOL_DATABASE_SURNAMES[(last_idx + surname_offset) % len(SCHOOL_DATABASE_SURNAMES)]
+            if last in used_surnames:
+                continue
+            for first_offset in range(len(first_names)):
+                first = first_names[(first_idx + first_offset) % len(first_names)]
+                candidate = f"{first} {last}"
+                if candidate not in used_names:
+                    used_names.add(candidate)
+                    used_surnames.add(last)
+                    return candidate
+        candidate = f"{first_names[first_idx]} {SCHOOL_DATABASE_SURNAMES[last_idx]} {len(used_names) + 1}"
+        used_names.add(candidate)
+        used_surnames.add(SCHOOL_DATABASE_SURNAMES[last_idx])
+        return candidate
+
+    def _build_school_database_student(self, mug_filename: str, student_index: int, used_names: set, used_surnames: set) -> Dict[str, Any]:
+        lower_name = mug_filename.lower()
+        gender = "f" if "f_bradsonic" in lower_name else "m"
+        seed = self._school_database_seed(mug_filename)
+        rng = random.Random(seed)
+        name = self._get_school_database_name(mug_filename, gender, used_names, used_surnames)
+        elective = SCHOOL_DATABASE_ELECTIVES[seed % len(SCHOOL_DATABASE_ELECTIVES)]
+        grades = {subject: SCHOOL_DATABASE_GRADE_VALUES[rng.randrange(0, 3)] for subject in SCHOOL_DATABASE_SUBJECTS}
+
+        if mug_filename == "1m_BRADSONIC_mosaic_reveal.gif":
+            elective = "MUSIC"
+            grades.update({
+                "ENGLISH": "C",
+                "U.S.HISTORY": "C",
+                "AMERICAN PACIFICA POLITIC": "A",
+                "MATHMATICS": "A",
+                "SCIENCE": "A",
+                "PHYSICAL EDUCATION": "A",
+                "COMPUTER SCIENCE": "A",
+                "ART": "A",
+            })
+        elif mug_filename == "2m_BRADSONIC_mosaic_reveal.gif":
+            elective = "MUSIC"
+            grades.update({
+                "ENGLISH": "B",
+                "U.S.HISTORY": "B",
+                "AMERICAN PACIFICA POLITIC": "A",
+                "MATHMATICS": "A",
+                "SCIENCE": "A",
+                "PHYSICAL EDUCATION": "A",
+                "COMPUTER SCIENCE": "A",
+                "ART": "A",
+            })
+        elif mug_filename == "1f_BRADSONIC_mosaic_reveal.gif":
+            grades = {subject: "A" for subject in SCHOOL_DATABASE_SUBJECTS}
+            grades["ENGLISH"] = "C"
+            grades["U.S.HISTORY"] = "C"
+
+        return {
+            "id": self._get_school_database_id(mug_filename, student_index),
+            "mug_filename": mug_filename,
+            "name": name,
+            "gender": gender,
+            "elective": elective,
+            "grades": grades,
+            "attendance": rng.randint(78, 99),
+        }
+
+    def _build_default_school_database_state(self) -> Dict[str, Any]:
+        mugs_dir = get_data_path("Social_Engineering", "School_Hack", "School_Mugs")
+        mug_files = sorted(
+            filename for filename in os.listdir(mugs_dir)
+            if filename.lower().endswith(".gif")
+        ) if os.path.isdir(mugs_dir) else []
+        used_names = set()
+        used_surnames = set()
+        students = [self._build_school_database_student(filename, idx, used_names, used_surnames) for idx, filename in enumerate(mug_files)]
+        return {"version": 2, "students": students}
+
+    def _normalize_school_database_state(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        students = state.get("students", [])
+        if not isinstance(students, list):
+            return self._build_default_school_database_state()
+
+        rebuilt_students: List[Dict[str, Any]] = []
+        used_names = set()
+        used_surnames = set()
+        for idx, raw_student in enumerate(students):
+            if not isinstance(raw_student, dict):
+                continue
+            mug_filename = str(raw_student.get("mug_filename", "")).strip()
+            if not mug_filename:
+                continue
+            base_student = self._build_school_database_student(mug_filename, idx, used_names, used_surnames)
+            grades = raw_student.get("grades")
+            if isinstance(grades, dict):
+                normalized_grades = {
+                    subject: str(grades.get(subject, base_student["grades"][subject])).upper()
+                    if str(grades.get(subject, base_student["grades"][subject])).upper() in SCHOOL_DATABASE_GRADE_VALUES
+                    else base_student["grades"][subject]
+                    for subject in SCHOOL_DATABASE_SUBJECTS
+                }
+                base_student["grades"] = normalized_grades
+            elective = str(raw_student.get("elective", base_student["elective"])).upper()
+            if elective in SCHOOL_DATABASE_ELECTIVES:
+                base_student["elective"] = elective
+            try:
+                base_student["attendance"] = max(0, min(100, int(raw_student.get("attendance", base_student["attendance"]))))
+            except (TypeError, ValueError):
+                pass
+            rebuilt_students.append(base_student)
+
+        return {"version": 2, "students": rebuilt_students}
+
+    def _ensure_school_database_loaded(self) -> None:
+        if self.school_database_state.get("students"):
+            return
+        stored_state = self.get_school_database_state()
+        if isinstance(stored_state, dict) and isinstance(stored_state.get("students"), list):
+            self.school_database_state = self._normalize_school_database_state(stored_state)
+        else:
+            self.school_database_state = self._build_default_school_database_state()
+        self.save_school_database_state(self.school_database_state)
+        if self.school_database_state.get("students"):
+            self.school_database_selected_student_index = min(
+                self.school_database_selected_student_index,
+                len(self.school_database_state["students"]) - 1
+            )
+            self._reset_school_database_animation(force=True)
+
+    def _save_school_database(self) -> None:
+        if self.school_database_state:
+            self.save_school_database_state(self.school_database_state)
+
+    def _get_school_database_students(self) -> List[Dict[str, Any]]:
+        self._ensure_school_database_loaded()
+        students = self.school_database_state.get("students", [])
+        students.sort(key=lambda s: s.get("name", "").split()[-1].lower())
+        return students
+
+    def _get_school_database_student(self) -> Optional[Dict[str, Any]]:
+        students = self._get_school_database_students()
+        if not students:
+            return None
+        self.school_database_selected_student_index %= len(students)
+        return students[self.school_database_selected_student_index]
+
+    def _load_school_database_animation(self, mug_filename: str) -> Dict[str, Any]:
+        cached = self.school_database_animation_cache.get(mug_filename)
+        if cached:
+            return cached
+
+        frames: List[pygame.Surface] = []
+        durations: List[float] = []
+        gif_path = get_data_path("Social_Engineering", "School_Hack", "School_Mugs", mug_filename)
+        print(f"[SCHOOL_DB] Loading GIF: '{mug_filename}'")
+        print(f"[SCHOOL_DB]   Resolved path: {gif_path}")
+        print(f"[SCHOOL_DB]   PIL available: {_pil_available}")
+        print(f"[SCHOOL_DB]   File exists: {os.path.exists(gif_path)}")
+        if _pil_available and os.path.exists(gif_path):
+            try:
+                with Image.open(gif_path) as gif_image:
+                    for frame in ImageSequence.Iterator(gif_image):
+                        converted = frame.convert("RGBA")
+                        frame_surface = pygame.image.fromstring(converted.tobytes(), converted.size, "RGBA").convert_alpha()
+                        frames.append(frame_surface)
+                        duration_ms = frame.info.get("duration", gif_image.info.get("duration", 90))
+                        durations.append(max(0.04, float(duration_ms) / 1000.0))
+                print(f"[SCHOOL_DB]   Loaded {len(frames)} frames OK ({frames[0].get_size() if frames else 'N/A'})")
+            except Exception as e:
+                print(f"[SCHOOL_DB]   ERROR loading GIF: {e}")
+                frames = []
+                durations = []
+        else:
+            if not _pil_available:
+                print("[SCHOOL_DB]   FAIL: PIL/Pillow not installed")
+            elif not os.path.exists(gif_path):
+                print(f"[SCHOOL_DB]   FAIL: File not found at {gif_path}")
+
+        if not frames:
+            print(f"[SCHOOL_DB]   Using fallback surface for '{mug_filename}'")
+            fallback = pygame.Surface((96, 120), pygame.SRCALPHA)
+            fallback.fill(COLOR_BLACK)
+            pygame.draw.rect(fallback, COLOR_CYAN, fallback.get_rect(), 2)
+            frames = [fallback]
+            durations = [0.1]
+
+        self.school_database_animation_cache[mug_filename] = {"frames": frames, "durations": durations}
+        return self.school_database_animation_cache[mug_filename]
+
+    def _reset_school_database_animation(self, force: bool = False) -> None:
+        student = self._get_school_database_student()
+        if not student:
+            self.school_database_animation_key = None
+            return
+        animation_key = student.get("mug_filename")
+        if not force and self.school_database_animation_key == animation_key:
+            return
+        self._load_school_database_animation(animation_key)
+        self.school_database_animation_key = animation_key
+        self.school_database_animation_frame_index = 0
+        self.school_database_animation_timer = 0.0
+        self.school_database_animation_finished = False
+
+    def _get_school_database_current_frame(self) -> Optional[pygame.Surface]:
+        student = self._get_school_database_student()
+        if not student:
+            return None
+        animation = self._load_school_database_animation(student.get("mug_filename", ""))
+        frames = animation.get("frames", [])
+        if not frames:
+            return None
+        frame_index = min(self.school_database_animation_frame_index, len(frames) - 1)
+        return frames[frame_index]
+
+    def _change_school_database_student(self, delta: int) -> None:
+        students = self._get_school_database_students()
+        if not students:
+            return
+        self.school_database_selected_student_index = (self.school_database_selected_student_index + delta) % len(students)
+        self._reset_school_database_animation(force=True)
+
+    def _get_school_database_grade_value(self, grade: str) -> int:
+        return {"A": 4, "B": 3, "C": 2, "D": 1, "F": 0}.get((grade or "").upper(), 0)
+
+    def _get_school_database_gpa(self, student: Dict[str, Any]) -> float:
+        grades = student.get("grades", {})
+        values = [self._get_school_database_grade_value(grades.get(subject, "F")) for subject in SCHOOL_DATABASE_SUBJECTS]
+        return sum(values) / max(1, len(values))
+
+    _SCHOOL_HACK_TARGET_NAMES = {"Rosaline Cloud", "Bertie Vandengate", "Jason Kanderton"}
+    _SCHOOL_HACK_TARGET_SUBJECTS = {"ENGLISH", "U.S.HISTORY"}
+    _SCHOOL_HACK_TARGET_BASELINE = {
+        "Rosaline Cloud": {"ENGLISH": "C", "U.S.HISTORY": "C"},
+        "Bertie Vandengate": {"ENGLISH": "C", "U.S.HISTORY": "C"},
+        "Jason Kanderton": {"ENGLISH": "B", "U.S.HISTORY": "B"},
+    }
+
+    def _get_school_hack_grade_snapshot(self, students: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Dict[str, str]]:
+        """Capture all grade cells so failed attempts only trigger on real grade edits."""
+        snapshot: Dict[str, Dict[str, str]] = {}
+        source_students = students if students is not None else self._get_school_database_students()
+        for index, student in enumerate(source_students):
+            key = str(
+                student.get("id")
+                or student.get("mug_filename")
+                or student.get("name")
+                or index
+            )
+            grades = student.get("grades", {}) or {}
+            snapshot[key] = {
+                subject: str(grades.get(subject, ""))
+                for subject in SCHOOL_DATABASE_SUBJECTS
+            }
+        return snapshot
+
+    def _is_school_hack_mission_grade(self, student: Dict[str, Any], subject: str) -> bool:
+        """Return True if student+subject is a mission-relevant grade cell."""
+        return (
+            student.get("name", "") in self._SCHOOL_HACK_TARGET_NAMES
+            and subject in self._SCHOOL_HACK_TARGET_SUBJECTS
+        )
+
+    def _is_school_hack_mission_complete(self, student: Dict[str, Any], subject: str) -> bool:
+        """Return True if a mission-relevant grade cell is set to A."""
+        return (
+            self._is_school_hack_mission_grade(student, subject)
+            and student.get("grades", {}).get(subject, "") == "A"
+        )
+
+    def _check_school_hack_grades_complete(self) -> bool:
+        """Return True if all 6 mission-relevant grades are A."""
+        students = self._get_school_database_students()
+        for student in students:
+            if student.get("name", "") in self._SCHOOL_HACK_TARGET_NAMES:
+                grades = student.get("grades", {})
+                for subject in self._SCHOOL_HACK_TARGET_SUBJECTS:
+                    if grades.get(subject, "") != "A":
+                        return False
+        return True
+
+    def _has_school_hack_incorrect_grade_attempt(self) -> bool:
+        """Return True only when any grade cell was altered away from the original records."""
+        if self.has_token("SCHOOL_HACK5"):
+            return False
+        if not self.has_token("SCHOOL_HACK4B"):
+            return False
+
+        current_snapshot = self._get_school_hack_grade_snapshot()
+        baseline_students = self._build_default_school_database_state().get("students", [])
+        baseline_snapshot = self._get_school_hack_grade_snapshot(baseline_students)
+
+        for student_key, current_grades in current_snapshot.items():
+            baseline_grades = baseline_snapshot.get(student_key, {})
+            for subject, current_grade in current_grades.items():
+                if current_grade != baseline_grades.get(subject, ""):
+                    return True
+        return False
+
+    def _reset_school_hack_grade_attempt(self) -> None:
+        """Restore Telebase to its pre-breach state so the player gets a fresh retry."""
+        self.school_database_state = self._build_default_school_database_state()
+        self._save_school_database()
+
+    def _record_school_hack_failure(self) -> None:
+        """Escalate the school-hack fail chain and queue the appropriate BRADSONIC mail."""
+        if self.has_token("GAMEOVER_SCHOOLHACK"):
+            return
+        if not self._has_school_hack_incorrect_grade_attempt():
+            return
+
+        if self.has_token("SCHOOL_HACK_FAIL2"):
+            self.grant_token("GAMEOVER_SCHOOLHACK", reason="failed the school-hack Telebase grade edit three times")
+            self.queue_school_hack_fail_mail("gameover")
+        elif self.has_token("SCHOOL_HACK_FAIL1"):
+            self.grant_token("SCHOOL_HACK_FAIL2", reason="failed the school-hack Telebase grade edit twice")
+            self.queue_school_hack_fail_mail("fail2")
+        else:
+            self.grant_token("SCHOOL_HACK_FAIL1", reason="failed the school-hack Telebase grade edit once")
+            self.queue_school_hack_fail_mail("fail1")
+
+        self._reset_school_hack_grade_attempt()
+
+    def _finalize_school_hack_terminal_exit(self) -> None:
+        """On Telebase exit, evaluate mission mistakes and force the school node offline."""
+        if self._is_school_server_connected():
+            self._disconnect_network()
+
+    def _spawn_school_database_particles(self, x: int, y: int) -> None:
+        """Spawn celebratory particles at the given screen position."""
+        import math as _math
+        for _ in range(6):
+            angle = random.uniform(0, 2 * _math.pi)
+            speed = random.uniform(1.5, 4.0)
+            self.school_database_particles.append({
+                "x": float(x), "y": float(y),
+                "vx": speed * _math.cos(angle), "vy": speed * _math.sin(angle),
+                "color": random.choice([(0, 255, 255), (255, 255, 255), (0, 255, 0), (255, 255, 0), (255, 165, 0)]),
+                "life": 1.0, "decay": random.uniform(0.02, 0.04),
+                "size": random.randint(2, 3),
+            })
+
+    def _update_school_database_particles(self) -> None:
+        """Move particles, apply gravity, decay life, remove dead."""
+        alive = []
+        for p in self.school_database_particles:
+            p["x"] += p["vx"]
+            p["y"] += p["vy"]
+            p["vy"] += 0.15
+            p["life"] -= p["decay"]
+            if p["life"] > 0:
+                alive.append(p)
+        self.school_database_particles = alive
+
+    def _draw_school_database_particles(self) -> None:
+        """Draw active particles as small coloured circles."""
+        for p in self.school_database_particles:
+            alpha = max(0, min(255, int(p["life"] * 255)))
+            r, g, b = p["color"]
+            surf = pygame.Surface((p["size"] * 2, p["size"] * 2), pygame.SRCALPHA)
+            pygame.draw.circle(surf, (r, g, b, alpha), (p["size"], p["size"]), p["size"])
+            self.screen.blit(surf, (int(p["x"]) - p["size"], int(p["y"]) - p["size"]))
+
+    def _change_school_database_report_value(self, delta: int) -> None:
+        student = self._get_school_database_student()
+        if not student:
+            return
+        field = SCHOOL_DATABASE_KEY_ORDER[self.school_database_selected_field_index]
+        if field == "ELECTIVE":
+            current = student.get("elective", SCHOOL_DATABASE_ELECTIVES[0])
+            if current not in SCHOOL_DATABASE_ELECTIVES:
+                current = SCHOOL_DATABASE_ELECTIVES[0]
+            index = SCHOOL_DATABASE_ELECTIVES.index(current)
+            student["elective"] = SCHOOL_DATABASE_ELECTIVES[(index + delta) % len(SCHOOL_DATABASE_ELECTIVES)]
+        else:
+            grades = student.setdefault("grades", {})
+            current = grades.get(field, "C")
+            if current not in SCHOOL_DATABASE_GRADE_VALUES:
+                current = "C"
+            index = SCHOOL_DATABASE_GRADE_VALUES.index(current)
+            grades[field] = SCHOOL_DATABASE_GRADE_VALUES[(index + delta) % len(SCHOOL_DATABASE_GRADE_VALUES)]
+        self._save_school_database()
+
+        # Particle burst + mission completion check for mission-relevant A grades
+        if field != "ELECTIVE" and self._is_school_hack_mission_complete(student, field):
+            if self.school_database_last_grade_pos:
+                self._spawn_school_database_particles(*self.school_database_last_grade_pos)
+            if self._check_school_hack_grades_complete() and not self.has_token("SCHOOL_HACK5"):
+                self.grant_token("SCHOOL_HACK5", reason="Changed all required school grades to A")
+                self._queue_glyphis_school_hack_complete_mail()
+
+    def _change_school_database_attendance(self, delta: int) -> None:
+        student = self._get_school_database_student()
+        if not student:
+            return
+        attendance = int(student.get("attendance", 85))
+        student["attendance"] = max(0, min(100, attendance + delta))
+        self._save_school_database()
+
+    def _open_school_database(self) -> None:
+        self._reset_school_database_ui_state()
+        self._ensure_embedded_school_database(reset=True)
+        self.terminal_position = None
+        self.terminal_mode = "school_db"
+        self.terminal_text = ""
+        self.terminal_input_buffer = ""
+
     def _get_file_system_path(self) -> str:
         """Get the full file system path based on current navigation."""
         return os.path.join(self.terminal_file_system_base_path, *self.terminal_file_system_path)
@@ -6734,6 +8988,19 @@ class OSMode:
     def _get_file_system_browser_path(self) -> str:
         """Get the full path for the file system browser modal."""
         return os.path.join(self.terminal_file_system_base_path, *self.file_system_browser_path)
+
+    def _make_file_system_browser_item(self, item_type: str, display_name: str, real_name: str, **extra: Any) -> Dict[str, Any]:
+        """Create a file browser item with icon interaction state."""
+        item = {
+            "type": item_type,
+            "display_name": display_name,
+            "real_name": real_name,
+            "rel_x": extra.pop("rel_x", None),
+            "rel_y": extra.pop("rel_y", None),
+            "rect": None,
+        }
+        item.update(extra)
+        return item
 
     def _list_file_system_browser_directory(self) -> List[Dict[str, Any]]:
         """List items in current browser path. Returns list of { type, display_name, real_name, file_type? }.
@@ -6743,19 +9010,19 @@ class OSMode:
         downloads_visible = self.os_locale in (1, 2)
 
         if self.file_system_browser_path:
-            items.append({"type": "folder", "display_name": "..", "real_name": ".."})
+            items.append(self._make_file_system_browser_item("folder", "..", ".."))
             # Inside DOWNLOADS (match case-insensitively: downloads, DOWNLOADS, etc.)
             if len(self.file_system_browser_path) == 1 and self.file_system_browser_path[0].upper() == "DOWNLOADS":
                 base_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "FILE-SYSTEM")
                 # Virtual .sonic files from BBS downloads (when region allows)
                 if downloads_visible:
                     for title in self.get_downloaded_fugamatchi_tracks():
-                        items.append({
-                            "type": "file",
-                            "display_name": title + ".sonic",
-                            "real_name": f"__sonic__{title}",
-                            "file_type": "sonic",
-                        })
+                        items.append(self._make_file_system_browser_item(
+                            "file",
+                            title + ".sonic",
+                            f"__sonic__{title}",
+                            file_type="sonic",
+                        ))
                 # Physical files from disk (if folder exists as downloads/DOWNLOADS etc.)
                 for disk_item in (os.listdir(base_path) if os.path.isdir(base_path) else []):
                     if disk_item.upper() == "DOWNLOADS":
@@ -6765,13 +9032,17 @@ class OSMode:
                                 fp = os.path.join(phys_path, f)
                                 if os.path.isfile(fp):
                                     if f.lower().endswith(".txt"):
-                                        items.append({"type": "file", "display_name": f[:-4] + ".brad", "real_name": f, "file_type": "brad"})
+                                        items.append(self._make_file_system_browser_item("file", f[:-4] + ".brad", f, file_type="brad"))
                                     elif f.lower().endswith((".mp3", ".wav")):
-                                        items.append({"type": "file", "display_name": os.path.splitext(f)[0] + ".sonic", "real_name": f, "file_type": "sonic", "file_path": fp})
+                                        items.append(self._make_file_system_browser_item("file", os.path.splitext(f)[0] + ".sonic", f, file_type="sonic", file_path=fp))
+                                    elif f.lower().endswith(".binst"):
+                                        items.append(self._make_file_system_browser_item("file", f, f, file_type="binst"))
+                                    elif f.lower().endswith(".brx"):
+                                        items.append(self._make_file_system_browser_item("file", f, f, file_type="brx"))
                                     else:
-                                        items.append({"type": "file", "display_name": f, "real_name": f})
+                                        items.append(self._make_file_system_browser_item("file", f, f))
                                 elif os.path.isdir(fp):
-                                    items.append({"type": "folder", "display_name": f, "real_name": f})
+                                    items.append(self._make_file_system_browser_item("folder", f, f))
                         break
                 return items
         if not os.path.exists(current_path):
@@ -6783,22 +9054,26 @@ class OSMode:
             # DOWNLOADS folder may not exist on disk - it shows .sonic tracks from user state
             # Use case-insensitive check to avoid duplicate when physical DOWNLOADS/downloads exists
             if not self.file_system_browser_path and downloads_visible and not has_downloads_on_disk:
-                items.append({"type": "folder", "display_name": "DOWNLOADS", "real_name": "DOWNLOADS"})
+                items.append(self._make_file_system_browser_item("folder", "DOWNLOADS", "DOWNLOADS"))
             for item in dir_items:
                 if item.upper() == "DOWNLOADS":
                     if downloads_visible:
-                        items.append({"type": "folder", "display_name": "DOWNLOADS", "real_name": "DOWNLOADS"})
+                        items.append(self._make_file_system_browser_item("folder", "DOWNLOADS", "DOWNLOADS"))
                     continue
                 item_path = os.path.join(current_path, item)
                 if os.path.isdir(item_path):
-                    items.append({"type": "folder", "display_name": item, "real_name": item})
+                    items.append(self._make_file_system_browser_item("folder", item, item))
                 elif os.path.isfile(item_path):
                     if item.lower().endswith(".txt"):
-                        items.append({"type": "file", "display_name": item[:-4] + ".brad", "real_name": item, "file_type": "brad"})
+                        items.append(self._make_file_system_browser_item("file", item[:-4] + ".brad", item, file_type="brad"))
                     elif item.lower().endswith((".mp3", ".wav")):
-                        items.append({"type": "file", "display_name": os.path.splitext(item)[0] + ".sonic", "real_name": item, "file_type": "sonic", "file_path": item_path})
+                        items.append(self._make_file_system_browser_item("file", os.path.splitext(item)[0] + ".sonic", item, file_type="sonic", file_path=item_path))
+                    elif item.lower().endswith(".binst"):
+                        items.append(self._make_file_system_browser_item("file", item, item, file_type="binst"))
+                    elif item.lower().endswith(".brx"):
+                        items.append(self._make_file_system_browser_item("file", item, item, file_type="brx"))
                     else:
-                        items.append({"type": "file", "display_name": item, "real_name": item})
+                        items.append(self._make_file_system_browser_item("file", item, item))
         except Exception as e:
             print(f"Error listing file system browser: {e}")
         return items
@@ -6869,10 +9144,144 @@ class OSMode:
 
         return sorted(folders), sorted(files)
     
-    def _get_school_op_note_content(self, with_credentials: bool = False) -> str:
-        """Return School Op note content. with_credentials=False: placeholders (ghost). with_credentials=True: filled in (after observing LocaleProtocols)."""
-        lines = SCHOOL_HACK_NOTE_LINES_WITH_CREDS if with_credentials else SCHOOL_HACK_NOTE_LINES_NO_CREDS
-        return "\n".join(lines)
+    def _get_school_op_note_phase(self, with_credentials: bool = False) -> str:
+        """Return the current school-op note phase for the player's progress."""
+        if self.has_token("SCHOOL_HACK5"):
+            return "hack5"
+        if self.has_token("SCHOOL_HACK4B"):
+            return "hack4b"
+        if self.has_token("SCHOOL_HACK4A"):
+            return "hack4a"
+        if self.has_token("SCHOOL_HACK4"):
+            return "hack4"
+        if self.has_token("SCHOOL_HACK3"):
+            return "hack3"
+        return "with_creds" if with_credentials else "no_creds"
+
+    def _get_school_op_note_content(
+        self,
+        with_credentials: bool = False,
+        note_phase: Optional[str] = None,
+    ) -> str:
+        """Return School Op note content for the player's current school-hack progress."""
+        phase = note_phase or self._get_school_op_note_phase(with_credentials=with_credentials)
+        if phase == "hack5":
+            lines = [
+                "Completed steps:",
+                "- Switched region, spoofed the receptionist, got the numbers, and breached Telebase",
+                "- Changed Rosaline, Bertie, and Jason's ENGLISH / U.S.HISTORY grades to A",
+                "",
+                "Mission complete:",
+                "- Check BRADSONIC-MAIL for Glyphis' message",
+                "- Return to the BBS once you have read it",
+            ]
+        elif phase == "hack4b":
+            lines = [
+                "Completed steps:",
+                "- Switched region to American Mainland",
+                "- Emailed rain@ciphernet.net with subject: I'm in",
+                "- Spoofed the receptionist and got the school phone numbers",
+                "- Reached the server line and emailed Rain after Network: Connected",
+                "",
+                "Next steps:",
+                "- Disconnect BRADSONIC-MAIL so the modem is free",
+                "- Dial 03-3741-5089 and wait for Network: Connected",
+                "- Open HDD > System > Terminal",
+                "- Run admin-subset",
+                "- Choose Handshake Connected Node",
+                "- Log in with admin / password",
+                "- Change only these grades to A:",
+                "  - Rosaline Cloud: ENGLISH and U.S.HISTORY",
+                "  - Bertie Vandengate: ENGLISH and U.S.HISTORY",
+                "  - Jason Kanderton: ENGLISH and U.S.HISTORY",
+                "- Do not alter any other grades",
+            ]
+        elif phase == "hack4a":
+            lines = [
+                "Completed steps:",
+                "- Switched region to American Mainland",
+                "- Emailed rain@ciphernet.net with subject: I'm in",
+                "- Spoofed the receptionist and got the school phone numbers",
+                "",
+                "Next steps:",
+                "- Email rain@ciphernet.net",
+                "  - subject: got the numbers",
+                "- Wait for Rain's break-in reply before dialing the server line",
+            ]
+        elif phase == "hack4":
+            lines = [
+                "Completed steps:",
+                "- Switched region to American Mainland",
+                "- Emailed rain@ciphernet.net with subject: I'm in",
+                "- Sent the spoofed receptionist request",
+                "",
+                "Next steps:",
+                "- Check BRADSONIC-MAIL for Ms. McPherson's reply",
+                "- Do not dial anything until the numbers arrive",
+            ]
+        elif phase == "hack3":
+            lines = [
+                "Completed steps:",
+                "- Switched region to American Mainland",
+                "- Emailed rain@ciphernet.net with subject: I'm in",
+                "",
+                "Next steps:",
+                "- Open BRADSONIC-MAIL Settings",
+                "- Set MAIL FROM to region-support@telco-relay.bradsonic.net",
+                "- Set Display Name to TELCO RELAY ENGINEER",
+                "- Set Signature to Regional Line Testing, BRADSONIC-TELCO RELAY.",
+                "- Compose to: reception@tokyometro-high.edu.api",
+                "- Ask for all school numbers: main lines, fax, modem, server room",
+                "- Best time to email the receptionist: 7am to 9pm",
+                "- Wait for the reply before dialing anything",
+                "- Call the returned numbers outside school hours:",
+                "  - Weekdays: after 6pm or before 9am",
+                "  - Wednesday: after 1pm",
+                "  - Saturday: after midday",
+                "  - Sunday: any time",
+                "- When the numbers arrive, email rain@ciphernet.net",
+                "  - subject: got the numbers",
+            ]
+        else:
+            lines = [
+                "- Log out to the Bradsonic desktop",
+                "- Open HDD > System > Terminal and type: file-system-start",
+                "- Open LocaleProtocols and get the Switch Region String values",
+            ]
+            if with_credentials:
+                lines.extend([
+                    "  - command: admin-subset",
+                    "  - username: general",
+                    "  - password: louis-sonic",
+                    "- Close Terminal, reopen it, then run admin-subset with general / louis-sonic",
+                ])
+            else:
+                lines.extend([
+                    "  - command: ???",
+                    "  - username: ???",
+                    "  - password: ???",
+                    "- Close Terminal, reopen it, then run the command with that username and password",
+                ])
+            lines.extend([
+                "- Change region to American Mainland",
+                "  - do NOT factory reset",
+                "- Open BRADSONIC-MAIL and email rain@ciphernet.net",
+                "  - subject: I'm in",
+                "- Wait for Rain's next instructions before doing anything else",
+                "- Final grade targets once the server is open:",
+                "  - Rosaline Cloud: ENGLISH and U.S.HISTORY -> A",
+                "  - Bertie Vandengate: ENGLISH and U.S.HISTORY -> A",
+                "  - Jason Kanderton: ENGLISH and U.S.HISTORY -> A",
+            ])
+        content = "\n".join(lines)
+        replacements = {
+            "â€¢": "-",
+            "Ã¢â‚¬Â¢": "-",
+            "â†’": "->",
+        }
+        for old, new in replacements.items():
+            content = content.replace(old, new)
+        return content
 
     def _replace_school_op_note_content(self) -> bool:
         """Replace the School Op - Steps note with the version that has credentials (admin-subset, username, password).
@@ -6880,16 +9289,38 @@ class OSMode:
         notes = self._load_user_notes()
         for n in notes:
             if n.get("title") == SCHOOL_OP_NOTE_TITLE:
-                new_content = self._get_school_op_note_content(with_credentials=True)
+                new_content = self._get_school_op_note_content(
+                    with_credentials=True,
+                    note_phase=self._get_school_op_note_phase(with_credentials=True),
+                )
                 if n.get("content") != new_content:
                     n["content"] = new_content
                     self._save_user_notes(notes)
-                return True
+                    return True
+                return False
         return False
+
+    def _prefill_mail_compose_for_current_objective(self) -> None:
+        """Seed compose fields for the current school-hack step when appropriate."""
+        self.mail_compose_to = ""
+        self.mail_compose_subject = ""
+        self.mail_compose_body = ""
+        self.mail_compose_active_field = "to"
+        self.mail_compose_cursor = 0
+        self.mail_compose_ghost = {}
+
+        if self.has_token("SCHOOL_HACK4A") and not self.has_token("SCHOOL_HACK4B"):
+            self.mail_compose_to = MAIL_COMPOSE_CONNECTED_TO
+            self.mail_compose_subject = MAIL_COMPOSE_CONNECTED_SUBJECT
+            self.mail_compose_active_field = "body"
+            self.mail_compose_cursor = 0
 
     def _open_file_in_terminal(self, filename: str) -> bool:
         """Open a file in the terminal. Returns True if successful."""
         original_filename = filename  # Keep for display/pulse (e.g. LocaleProtocols.brad)
+        if self._is_dotsonic_installer_file(original_filename):
+            self._start_dotsonic_installer()
+            return True
         # Virtual .sonic files in DOWNLOADS (when in terminal file-system and path is DOWNLOADS)
         if (self.terminal_file_system_mode and len(self.terminal_file_system_path) == 1 and
                 self.terminal_file_system_path[0].upper() == "DOWNLOADS" and self.os_locale in (1, 2)):
@@ -6900,7 +9331,7 @@ class OSMode:
                         f"  {filename}",
                         "",
                         "  This is a .sonic audio file.",
-                        "  Play it from the Datasette."
+                        "  Play it from the Bradsonic dotSONIC Player! COMING SOON!!!"
                     ]
                     self.terminal_file_content = lines
                     self.terminal_file_view_filename = filename
@@ -6940,7 +9371,7 @@ class OSMode:
                 f"  {original_filename}",
                 "",
                 "  This is a .sonic audio file.",
-                "  Play it from the Datasette."
+                "  Play it from the Bradsonic dotSONIC Player! COMING SOON!!!"
             ]
             self.terminal_file_view_filename = original_filename
             self.terminal_file_scroll_index = 0
@@ -6957,7 +9388,12 @@ class OSMode:
             self.terminal_mode = "file_view"
             # When player observes LocaleProtocols file, replace School Op note with full list (admin-subset, username, password)
             if "LocaleProtocols" in original_filename:
-                self._replace_school_op_note_content()
+                if self._replace_school_op_note_content():
+                    self.trigger_notes_nudge(
+                        text="SHIFT+N",
+                        reason="school_hack_locale_protocols",
+                        auto_open_external_notes=True,
+                    )
             return True
         except Exception as e:
             print(f"Error opening file: {e}")
@@ -7049,11 +9485,329 @@ class OSMode:
             int(base_rgb[2] + (light_rgb[2] - base_rgb[2]) * pulse),
         )
 
+    def _draw_school_database_splash(self, content_x: int, content_y: int, content_w: int, content_h: int, line_height: int) -> None:
+        lines = [
+            "WOLF PRO : BRADSONIC-TELO TELEBASE",
+            "",
+            "TOKYO MET HIGH / STUDENT RECORD ENVIRONMENT",
+            "",
+            "LOADING DIRECTORY MAP...",
+            "VERIFYING TELEBASE NODE...",
+            "READY.",
+            "",
+            "[ ENTER ] CONTINUE",
+        ]
+        start_y = content_y + max(int(16 * self.scale), 8)
+        for idx, line in enumerate(lines):
+            color = COLOR_YELLOW if idx == 0 else COLOR_GREEN
+            surf = self.terminal_font.render(line, True, color)
+            self.screen.blit(surf, (content_x, start_y + idx * line_height))
+
+    def _draw_school_database_login(self, content_x: int, content_y: int, password: bool = False) -> None:
+        title = self.terminal_font.render("WOLF PRO TELEBASE LOGIN", True, COLOR_YELLOW)
+        self.screen.blit(title, (content_x, content_y + int(10 * self.scale)))
+        username_line = f"USERNAME : {self.school_database_login_username}"
+        password_line = "PASSWORD : " + ("*" * len(self.school_database_login_password))
+        self.screen.blit(self.terminal_font.render(username_line, True, COLOR_CYAN), (content_x, content_y + int(50 * self.scale)))
+        self.screen.blit(self.terminal_font.render(password_line, True, COLOR_CYAN), (content_x, content_y + int(80 * self.scale)))
+        self.screen.blit(self.terminal_font.render("Use admin / password", True, COLOR_GREEN), (content_x, content_y + int(130 * self.scale)))
+        if self.school_database_login_error:
+            self.screen.blit(self.terminal_font.render(self.school_database_login_error, True, COLOR_RED), (content_x, content_y + int(160 * self.scale)))
+        active_line = password_line if password else username_line
+        cursor_surface = self.terminal_font.render(active_line + "_", True, COLOR_GREEN)
+        self.screen.blit(cursor_surface, (content_x, content_y + (int(80 * self.scale) if password else int(50 * self.scale))))
+
+    def _draw_school_database_panel(self, rect: pygame.Rect, title: Optional[str] = None, title_color: Tuple[int, int, int] = COLOR_GREEN) -> None:
+        pygame.draw.rect(self.screen, COLOR_BLACK, rect)
+        pygame.draw.rect(self.screen, COLOR_NEON_GREEN, rect, 2)
+        if title:
+            label = f" {title} "
+            title_surf = self.terminal_font.render(label, True, title_color)
+            label_bg = pygame.Rect(rect.x + int(10 * self.scale), rect.y - int(2 * self.scale), title_surf.get_width() + int(6 * self.scale), title_surf.get_height())
+            pygame.draw.rect(self.screen, COLOR_BLACK, label_bg)
+            self.screen.blit(title_surf, (label_bg.x + int(3 * self.scale), label_bg.y))
+
+    def _draw_school_database_wrapped_text(self, text: str, x: int, y: int, max_width: int, color: Tuple[int, int, int], line_height: int, max_lines: Optional[int] = None) -> int:
+        wrapped_lines = self._wrap_terminal_text(text, self.terminal_font, max_width)
+        if max_lines is not None:
+            wrapped_lines = wrapped_lines[:max_lines]
+        for idx, line in enumerate(wrapped_lines):
+            self.screen.blit(self.terminal_font.render(line, True, color), (x, y + idx * line_height))
+        return len(wrapped_lines)
+
+    def _draw_school_database_footer(self, frame_rect: pygame.Rect, footer: str, color: Tuple[int, int, int]) -> None:
+        footer_width = frame_rect.width - int(20 * self.scale)
+        wrapped_footer = self._wrap_terminal_text(footer, self.terminal_font, footer_width)
+        total_height = len(wrapped_footer) * self.terminal_font.get_linesize()
+        start_y = frame_rect.bottom - total_height - int(10 * self.scale)
+        for idx, line in enumerate(wrapped_footer):
+            self.screen.blit(self.terminal_font.render(line, True, color), (frame_rect.x + int(10 * self.scale), start_y + idx * self.terminal_font.get_linesize()))
+
+    def _draw_school_database_row(self, rect: pygame.Rect, label: str, value: str, label_color: Tuple[int, int, int], value_color: Tuple[int, int, int], highlight: bool = False) -> None:
+        border_color = COLOR_YELLOW if highlight else COLOR_GREEN
+        pygame.draw.rect(self.screen, COLOR_BLACK, rect)
+        pygame.draw.rect(self.screen, border_color, rect, 1)
+        split_x = rect.x + int(rect.width * 0.62)
+        pygame.draw.line(self.screen, border_color, (split_x, rect.y + 2), (split_x, rect.bottom - 2), 1)
+        label_max_w = max(20, split_x - rect.x - int(12 * self.scale))
+        value_max_w = max(20, rect.right - split_x - int(12 * self.scale))
+        max_lines = max(1, (rect.height - int(8 * self.scale)) // max(1, self.terminal_font.get_linesize()))
+        label_lines = self._wrap_terminal_text(label, self.terminal_font, label_max_w)[:max_lines]
+        value_lines = self._wrap_terminal_text(value, self.terminal_font, value_max_w)[:max_lines]
+        for idx, line in enumerate(label_lines):
+            self.screen.blit(self.terminal_font.render(line, True, label_color), (rect.x + int(6 * self.scale), rect.y + int(4 * self.scale) + idx * self.terminal_font.get_linesize()))
+        for idx, line in enumerate(value_lines):
+            line_surf = self.terminal_font.render(line, True, value_color)
+            self.screen.blit(line_surf, (rect.right - line_surf.get_width() - int(6 * self.scale), rect.y + int(4 * self.scale) + idx * self.terminal_font.get_linesize()))
+
+    def _draw_school_database_header(self, frame_rect: pygame.Rect, title: str, status: str) -> None:
+        pygame.draw.rect(self.screen, COLOR_BLACK, frame_rect)
+        pygame.draw.rect(self.screen, COLOR_NEON_GREEN, frame_rect, 2)
+        header_rect = pygame.Rect(frame_rect.x, frame_rect.y, frame_rect.width, int(30 * self.scale))
+        pygame.draw.rect(self.screen, COLOR_BLACK, header_rect)
+        pygame.draw.line(self.screen, COLOR_NEON_GREEN, header_rect.bottomleft, header_rect.bottomright, 2)
+        title_surf = self.terminal_font.render(title, True, COLOR_YELLOW)
+        status_surf = self.terminal_font.render(status, True, COLOR_CYAN)
+        self.screen.blit(title_surf, (header_rect.x + int(8 * self.scale), header_rect.y + int(5 * self.scale)))
+        self.screen.blit(status_surf, (header_rect.right - status_surf.get_width() - int(8 * self.scale), header_rect.y + int(5 * self.scale)))
+
+    def _draw_school_database_home(self, content_x: int, content_y: int, content_w: int, content_h: int) -> None:
+        frame_rect = pygame.Rect(content_x, content_y, content_w, content_h)
+        self._draw_school_database_header(frame_rect, "WOLF PRO : BRADSONIC-TELO TELEBASE", "NODE OK")
+        panel_top = content_y + int(38 * self.scale)
+        panel_rect = pygame.Rect(content_x + int(10 * self.scale), panel_top, content_w - int(20 * self.scale), content_h - int(74 * self.scale))
+        self._draw_school_database_panel(panel_rect, "DIRECTORY MAP", COLOR_YELLOW)
+        title = self.terminal_font.render("TOKYO METROPOLITAN HIGH SCHOOL / INDEX", True, COLOR_GREEN)
+        self.screen.blit(title, (content_x + int(24 * self.scale), panel_top + int(18 * self.scale)))
+        menu_top = panel_top + int(42 * self.scale)
+        menu_gap = int(26 * self.scale)
+        for idx, section in enumerate(self.school_database_sections):
+            y_pos = menu_top + idx * menu_gap
+            prefix = ">" if idx == self.school_database_home_index else " "
+            color = COLOR_YELLOW if idx == self.school_database_home_index else COLOR_CYAN
+            self.screen.blit(self.terminal_font.render(f"{prefix} {section}", True, color), (content_x + int(24 * self.scale), y_pos))
+        access_y = menu_top + len(self.school_database_sections) * menu_gap + int(16 * self.scale)
+        self._draw_school_database_wrapped_text("Access path: connected node handshake / student records mirror", content_x + int(24 * self.scale), access_y, content_w - int(50 * self.scale), COLOR_GREEN, self.terminal_font.get_linesize(), max_lines=2)
+        footer = "[LEFT/RIGHT/TAB] SELECT   [ENTER] OPEN   [ESC] BACK"
+        self._draw_school_database_footer(frame_rect, footer, COLOR_GREEN)
+
+    def _draw_school_database_record(self, content_x: int, content_y: int, content_w: int, content_h: int, attendance_view: bool, line_height: int) -> None:
+        student = self._get_school_database_student()
+        if not student:
+            print("[SCHOOL_DB DRAW] No student data!")
+            self.screen.blit(self.terminal_font.render("NO STUDENT RECORDS AVAILABLE", True, COLOR_RED), (content_x, content_y))
+            return
+
+        # Debug: print once per student change
+        _dbg_key = f"draw_{self.school_database_selected_student_index}"
+        if not hasattr(self, '_school_db_debug_last') or self._school_db_debug_last != _dbg_key:
+            self._school_db_debug_last = _dbg_key
+            print(f"[SCHOOL_DB DRAW] Student #{self.school_database_selected_student_index}: {student.get('name', '?')}")
+            print(f"[SCHOOL_DB DRAW]   mug_filename: {student.get('mug_filename', 'MISSING')}")
+            print(f"[SCHOOL_DB DRAW]   content area: {content_w}x{content_h} at ({content_x},{content_y})")
+            print(f"[SCHOOL_DB DRAW]   scale: {self.scale}")
+            print(f"[SCHOOL_DB DRAW]   anim_key: {self.school_database_animation_key}, frame: {self.school_database_animation_frame_index}, finished: {self.school_database_animation_finished}")
+
+        frame_rect = pygame.Rect(content_x, content_y, content_w, content_h)
+        lh = self.terminal_font.get_linesize()
+        pad = int(6 * self.scale)
+        header_h = int(30 * self.scale)
+
+        # --- Outer frame + header ---
+        self._draw_school_database_header(
+            frame_rect,
+            "WOLF PRO : BRADSONIC-TELO TELEBASE",
+            f"REC {self.school_database_selected_student_index + 1:02d}/{len(self._get_school_database_students()):02d}"
+        )
+
+        # --- Sub-header line (like the inspiration: "TOKYO MET HIGH: 1989 -") ---
+        sub_y = content_y + header_h + int(2 * self.scale)
+        sub_text = "TOKYO MET HIGH: 1989 -"
+        sub_surf = self.terminal_font.render(sub_text, True, COLOR_GREEN)
+        sub_center_x = content_x + (content_w - sub_surf.get_width()) // 2
+        self.screen.blit(sub_surf, (sub_center_x, sub_y))
+
+        # --- Footer bar (two lines, anchored to bottom) ---
+        footer_line1 = f"TERMINAL: PC98-21   NODE: TOK-MET-EDU-04   DATABASE: TELEBASE STUDENT SYS v3.4"
+        if attendance_view:
+            footer_line2 = "[LEFT/RIGHT/TAB] STUDENT   [ENTER] EDIT   [ESC] BACK"
+        else:
+            footer_line2 = "[UP/DOWN] FIELD  [LEFT/RIGHT/TAB] STUDENT  [ENTER] EDIT  [ESC] BACK"
+        footer_total_h = lh * 2 + int(6 * self.scale)
+        footer_top = frame_rect.bottom - footer_total_h - int(2 * self.scale)
+        pygame.draw.line(self.screen, COLOR_NEON_GREEN, (frame_rect.x + 2, footer_top), (frame_rect.right - 2, footer_top), 1)
+        self.screen.blit(self.terminal_font.render(footer_line1, True, COLOR_CYAN), (frame_rect.x + pad, footer_top + int(2 * self.scale)))
+        self.screen.blit(self.terminal_font.render(footer_line2, True, COLOR_GREEN), (frame_rect.x + pad, footer_top + int(2 * self.scale) + lh))
+        # Record count + time on right side of footer
+        rec_text = f"RECORD {self.school_database_selected_student_index + 1:02d}/{len(self._get_school_database_students()):02d}"
+        rec_surf = self.terminal_font.render(rec_text, True, COLOR_YELLOW)
+        self.screen.blit(rec_surf, (frame_rect.right - rec_surf.get_width() - pad, footer_top + int(2 * self.scale)))
+
+        # --- Main content area between sub-header and footer ---
+        body_top = sub_y + lh + int(4 * self.scale)
+        body_bottom = footer_top - int(4 * self.scale)
+        body_h = body_bottom - body_top
+
+        # Left column ~35% for mugshot + info, right column ~65% for name + grades
+        left_w = int(content_w * 0.35)
+        right_x = content_x + left_w + pad
+        right_w = content_w - left_w - pad
+
+        # ====== LEFT COLUMN: mugshot + compact info ======
+        # Mugshot: capped at 200px height, scaled proportionally
+        mug_max_h = min(int(200 * self.scale), body_h - lh * 5)
+        mug_max_w = left_w - pad * 2
+        mug_surface = self._get_school_database_current_frame()
+        mug_drawn_h = 0
+
+        # Draw a border rect for the mugshot area
+        mug_rect = pygame.Rect(content_x + pad, body_top, left_w - pad * 2, mug_max_h)
+        pygame.draw.rect(self.screen, COLOR_NEON_GREEN, mug_rect, 1)
+
+        # Info lines below mugshot
+        info_y = body_top + mug_max_h + int(4 * self.scale)
+        details = [
+            ("ID:", student.get("id", "").upper()),
+            ("ATTENDANCE:", f"{int(student.get('attendance', 0)):03d}%"),
+            ("ELECTIVE:", student.get("elective", "N/A").upper()),
+            ("GPA:", f"{self._get_school_database_gpa(student):0.2f}/4.00"),
+        ]
+        for idx, (label, value) in enumerate(details):
+            row_y = info_y + idx * (lh + int(1 * self.scale))
+            label_surf = self.terminal_font.render(label, True, COLOR_GREEN)
+            value_surf = self.terminal_font.render(f" {value}", True, COLOR_CYAN)
+            self.screen.blit(label_surf, (content_x + pad, row_y))
+            self.screen.blit(value_surf, (content_x + pad + label_surf.get_width(), row_y))
+
+        # ====== RIGHT COLUMN: name header + grade table ======
+        # Student name (large, prominent)
+        name_text = student.get("name", "UNKNOWN").upper()
+        name_surf = self.terminal_font.render(name_text, True, COLOR_YELLOW)
+        self.screen.blit(name_surf, (right_x, body_top))
+        # School + term line
+        school_line = "TOKYO METROPOLITAN HIGH SCHOOL"
+        self.screen.blit(self.terminal_font.render(school_line, True, COLOR_GREEN), (right_x, body_top + lh))
+        title_text = "ATTENDANCE SCORES" if attendance_view else "TERM REPORT 3 . 1989"
+        self.screen.blit(self.terminal_font.render(title_text, True, COLOR_GREEN), (right_x, body_top + lh * 2))
+
+        # Horizontal divider under title block
+        divider_y = body_top + lh * 3 + int(2 * self.scale)
+        pygame.draw.line(self.screen, COLOR_NEON_GREEN, (right_x, divider_y), (content_x + content_w - pad, divider_y), 1)
+
+        # Grade table starts here
+        table_top = divider_y + int(4 * self.scale)
+        table_right_edge = content_x + content_w - pad
+
+        if attendance_view:
+            rows = [
+                ("ATTENDANCE SCORE", f"{int(student.get('attendance', 0)):03d}%"),
+                ("STATUS", "GOOD" if int(student.get("attendance", 0)) >= 90 else ("WATCH" if int(student.get("attendance", 0)) >= 80 else "RISK")),
+                ("NODE", "TOK-MET-EDU-04"),
+            ]
+            table_available = body_bottom - table_top
+            row_gap = max(lh, table_available // max(1, len(rows)))
+            for idx, (label, value) in enumerate(rows):
+                row_y = table_top + idx * row_gap
+                color = COLOR_YELLOW if idx == 0 else COLOR_CYAN
+                if idx == 0 and self.school_database_attendance_editing:
+                    color = COLOR_GREEN
+                hl = idx == 0 and self.school_database_attendance_editing
+                if hl:
+                    pygame.draw.rect(self.screen, (0, 40, 0), pygame.Rect(right_x, row_y, table_right_edge - right_x, lh))
+                self.screen.blit(self.terminal_font.render(label, True, color), (right_x, row_y))
+                val_surf = self.terminal_font.render(value, True, color)
+                self.screen.blit(val_surf, (table_right_edge - val_surf.get_width(), row_y))
+        else:
+            subject_labels = {
+                "ENGLISH": "ENGLISH",
+                "U.S.HISTORY": "U.S. HISTORY",
+                "AMERICAN PACIFICA POLITIC": "GOVERNMENT",
+                "MATHMATICS": "MATHEMATICS",
+                "SCIENCE": "SCIENCE",
+                "PHYSICAL EDUCATION": "PHYSICAL EDUCATION",
+                "COMPUTER SCIENCE": "COMPUTER SCIENCE",
+                "ART": "ART",
+            }
+            # Column headers
+            self.screen.blit(self.terminal_font.render("SUBJECT", True, COLOR_YELLOW), (right_x, table_top))
+            grade_header_surf = self.terminal_font.render("GRADE", True, COLOR_YELLOW)
+            self.screen.blit(grade_header_surf, (table_right_edge - grade_header_surf.get_width(), table_top))
+
+            rows_top = table_top + lh + int(2 * self.scale)
+            rows = [(subject_labels.get(subject, subject), student.get("grades", {}).get(subject, "F"), subject) for subject in SCHOOL_DATABASE_SUBJECTS]
+            rows.append(("ELECTIVE:" + student.get("elective", "N/A").upper(), "", "ELECTIVE"))
+            table_available = body_bottom - rows_top
+            row_gap = max(lh, table_available // max(1, len(rows)))
+            for idx, (label, value, raw_subject) in enumerate(rows):
+                row_y = rows_top + idx * row_gap
+                is_selected = idx == self.school_database_selected_field_index
+                color = COLOR_GREEN if is_selected else COLOR_CYAN
+                if is_selected and self.school_database_editing:
+                    color = COLOR_YELLOW
+                # Pulsing highlight for completed mission grades
+                if value and self._is_school_hack_mission_complete(student, raw_subject):
+                    pulse = 0.5 + 0.5 * math.sin(time.time() * 4.0)
+                    cr = int(0 + 255 * pulse)
+                    cg = 255
+                    cb = int(255 * pulse)
+                    color = (cr, cg, cb)
+                if is_selected:
+                    pygame.draw.rect(self.screen, (0, 40, 0), pygame.Rect(right_x, row_y, table_right_edge - right_x, lh))
+                self.screen.blit(self.terminal_font.render(label, True, color), (right_x, row_y))
+                if value:
+                    val_surf = self.terminal_font.render(str(value), True, color)
+                    val_x = table_right_edge - val_surf.get_width()
+                    self.screen.blit(val_surf, (val_x, row_y))
+                    # Track position of selected grade for particle spawning
+                    if is_selected:
+                        self.school_database_last_grade_pos = (val_x + val_surf.get_width() // 2, row_y)
+
+            # GPA line at bottom of table
+            gpa_y = rows_top + len(rows) * row_gap
+            if gpa_y < body_bottom - lh:
+                gpa_text = f"G.P.A.: {self._get_school_database_gpa(student):0.2f}/4.00"
+                gpa_surf = self.terminal_font.render(gpa_text, True, COLOR_YELLOW)
+                self.screen.blit(gpa_surf, (table_right_edge - gpa_surf.get_width(), gpa_y))
+
+        # ====== MUGSHOT drawn last (z-order: on top of everything) ======
+        if mug_surface is not None:
+            s = min(mug_max_w / max(1, mug_surface.get_width()), mug_max_h / max(1, mug_surface.get_height()))
+            scaled = pygame.transform.smoothscale(
+                mug_surface,
+                (max(1, int(mug_surface.get_width() * s)), max(1, int(mug_surface.get_height() * s)))
+            )
+            mug_x = mug_rect.x + (mug_rect.width - scaled.get_width()) // 2
+            mug_y = mug_rect.y + (mug_rect.height - scaled.get_height()) // 2
+            self.screen.blit(scaled, (mug_x, mug_y))
+            if not hasattr(self, '_school_db_mug_debug_last') or self._school_db_mug_debug_last != _dbg_key:
+                self._school_db_mug_debug_last = _dbg_key
+                print(f"[SCHOOL_DB DRAW]   Mugshot blitted: {scaled.get_size()} at ({mug_x},{mug_y}), scale_factor={s:.3f}")
+                print(f"[SCHOOL_DB DRAW]   mug_rect: {mug_rect}, mug_max: {mug_max_w}x{mug_max_h}")
+        else:
+            if not hasattr(self, '_school_db_mug_debug_last') or self._school_db_mug_debug_last != _dbg_key:
+                self._school_db_mug_debug_last = _dbg_key
+                print(f"[SCHOOL_DB DRAW]   WARNING: mug_surface is None! _get_school_database_current_frame returned nothing")
+
+        # Particle effects (drawn on top of everything)
+        self._update_school_database_particles()
+        self._draw_school_database_particles()
+
+    def _draw_school_database(self, content_x: int, content_y: int, content_w: int, content_h: int, line_height: int) -> None:
+        app = self._ensure_embedded_school_database()
+        target_size = (max(1, content_w), max(1, content_h))
+        if self.school_database_surface is None or self.school_database_surface_size != target_size:
+            self.school_database_surface = pygame.Surface(target_size)
+            self.school_database_surface_size = target_size
+        app.screen = self.school_database_surface
+        app.scale = self.scale
+        app.draw()
+        self.screen.blit(self.school_database_surface, (content_x, content_y))
+        if not app.running:
+            self._close_embedded_school_database()
+
     def _draw_terminal(self) -> None:
         """Draw the terminal application window."""
-        # Terminal window size - width increased by 33% (665x375)
-        terminal_w = int(665 * self.scale)  # 33% larger: 500 * 1.33 = 665
-        terminal_h = int(375 * self.scale)  # 25% larger: 300 * 1.25 = 375
+        terminal_w, terminal_h = self._get_terminal_window_size()
         
         # Use stored position if available, otherwise center on desktop
         if self.terminal_position:
@@ -7092,8 +9846,11 @@ class OSMode:
         close_btn_x = terminal_x + terminal_w - close_btn_size - int(5 * self.scale)
         close_btn_y = terminal_y + int(5 * self.scale)
         close_btn_rect = pygame.Rect(close_btn_x, close_btn_y, close_btn_size, close_btn_size)
-        pygame.draw.rect(self.screen, COLOR_RED, close_btn_rect)
-        pygame.draw.rect(self.screen, COLOR_WHITE, close_btn_rect, 1)
+        is_hovered = close_btn_rect.collidepoint(self.mouse_pos)
+        close_fill = COLOR_RED if is_hovered else COLOR_RED_DARK
+        border_color = COLOR_WHITE if is_hovered else COLOR_RED
+        pygame.draw.rect(self.screen, close_fill, close_btn_rect)
+        pygame.draw.rect(self.screen, border_color, close_btn_rect, 1)
         try:
             close_font = pygame.font.Font(None, max(int(14 * self.scale), 10))
             close_text = close_font.render("X", True, COLOR_WHITE)
@@ -7115,7 +9872,9 @@ class OSMode:
             line_height = self.terminal_font.get_height()
             
             # Handle different terminal modes
-            if self.terminal_mode == "message":
+            if self._is_school_database_mode():
+                self._draw_school_database(content_x, content_y, content_w, content_h, line_height)
+            elif self.terminal_mode == "message":
                 # Display message (with wrapping)
                 message_lines = self._wrap_terminal_text(self.terminal_message, self.terminal_font, content_w)
                 message_start_y = content_y + (content_h - len(message_lines) * line_height) // 2
@@ -7212,6 +9971,24 @@ class OSMode:
                     cursor_rect = pygame.Rect(cursor_x, cursor_y, int(2 * self.scale), line_height)
                     pygame.draw.rect(self.screen, COLOR_GREEN, cursor_rect)
                 
+            elif self.terminal_mode == "dotsonic_install":
+                lines = self.dotsonic_installer_lines or ["Initializing installer..."]
+                max_lines = max(1, content_h // line_height)
+                display_lines = lines[-max_lines:]
+                y_offset = content_y
+                for idx, line in enumerate(display_lines):
+                    color = COLOR_WHITE if idx == 0 else COLOR_GREEN
+                    text_surface = self.terminal_font.render(line, True, color)
+                    self.screen.blit(text_surface, (content_x, y_offset))
+                    y_offset += line_height
+                status_text = "READY" if self.dotsonic_installer_complete else "INSTALLING..."
+                status_color = COLOR_CYAN if self.dotsonic_installer_complete else COLOR_YELLOW
+                status_surface = self.terminal_font.render(status_text, True, status_color)
+                self.screen.blit(
+                    status_surface,
+                    (content_x, content_y + content_h - line_height),
+                )
+
             elif self.terminal_mode == "file_view":
                 # Draw file content with scrolling
                 if self.terminal_file_content:
@@ -7300,8 +10077,7 @@ class OSMode:
 
     def _handle_terminal_click(self, mouse_x: int, mouse_y: int) -> bool:
         """Handle clicks within the terminal window."""
-        terminal_w = int(665 * self.scale)  # 33% larger: 500 * 1.33 = 665
-        terminal_h = int(375 * self.scale)  # 25% larger: 300 * 1.25 = 375
+        terminal_w, terminal_h = self._get_terminal_window_size()
         
         # Use stored position if available, otherwise center on desktop
         if self.terminal_position:
@@ -7323,17 +10099,7 @@ class OSMode:
             close_btn_size
         )
         if close_btn_rect.collidepoint(mouse_x, mouse_y):
-            self.terminal_active = False
-            if "terminal" in self.active_modals:
-                self.active_modals.remove("terminal")
-            self.terminal_position = None
-            self.terminal_dragging = False
-            self.terminal_mode = "command"
-            self.terminal_text = ""
-            self.terminal_cursor_index = 0
-            self.terminal_message = ""
-            self.terminal_admin_menu_selection = 1
-            self.terminal_region_selection = 1
+            self._reset_terminal_session()
             return True
         
         # Check if clicking on title bar for dragging
@@ -7356,8 +10122,7 @@ class OSMode:
 
     def _get_terminal_rect(self) -> pygame.Rect:
         """Return the terminal window rect (same position/size as drawn). Used for z-order hit-testing."""
-        terminal_w = int(665 * self.scale)
-        terminal_h = int(375 * self.scale)
+        terminal_w, terminal_h = self._get_terminal_window_size()
         if self.terminal_position:
             terminal_x, terminal_y = self.terminal_position
         else:
@@ -7366,6 +10131,62 @@ class OSMode:
         terminal_x = max(self.desktop_x, min(terminal_x, self.desktop_x + self.desktop_size[0] - terminal_w))
         terminal_y = max(self.desktop_y, min(terminal_y, self.desktop_y + self.desktop_size[1] - terminal_h))
         return pygame.Rect(terminal_x, terminal_y, terminal_w, terminal_h)
+
+    def _get_top_terminal_file_window_at_point(self, mouse_x: int, mouse_y: int) -> Optional[Dict[str, Any]]:
+        """Return the top-most terminal file window under the cursor, if any."""
+        for win in reversed(self.terminal_file_windows):
+            rect = win.get("rect")
+            if rect and rect.collidepoint(mouse_x, mouse_y):
+                return win
+        return None
+
+    def _get_modal_rect(self, modal_name: str) -> Optional[pygame.Rect]:
+        """Return the current screen rect for a modal."""
+        if modal_name == "dot_sonic":
+            if self.dot_sonic_app and self.dot_sonic_app.active:
+                return self.dot_sonic_app.window_rect
+            return None
+        if modal_name == "terminal":
+            return self._get_terminal_rect()
+
+        modal_x, modal_y = self.modal_positions.get(modal_name, (0, 0))
+        modal_w, modal_h = self._get_modal_size(modal_name)
+        modal_w, modal_h = self._clamp_modal_to_desktop(modal_w, modal_h)
+        if modal_w <= 0 or modal_h <= 0:
+            return None
+        return pygame.Rect(modal_x, modal_y, modal_w, modal_h)
+
+    def _get_top_modal_at_point(self, mouse_x: int, mouse_y: int) -> Optional[str]:
+        """Return the front-most modal under the cursor."""
+        for modal_name in reversed(self.active_modals):
+            modal_rect = self._get_modal_rect(modal_name)
+            if modal_rect and modal_rect.collidepoint(mouse_x, mouse_y):
+                return modal_name
+        return None
+
+    def _handle_modal_surface_click(self, modal_name: str, mouse_x: int, mouse_y: int) -> bool:
+        """Route a click only to the targeted modal and swallow hits inside its surface."""
+        if modal_name == "dot_sonic":
+            return False
+        if modal_name == "terminal":
+            return self._handle_terminal_click(mouse_x, mouse_y)
+        if modal_name == "tape":
+            return self._handle_tape_modal_click(mouse_x, mouse_y)
+        if modal_name == "modem":
+            return self._handle_modem_modal_click(mouse_x, mouse_y)
+        if modal_name == "notes":
+            return self._handle_notes_modal_click(mouse_x, mouse_y)
+        if modal_name == "games":
+            return self._handle_games_modal_click(mouse_x, mouse_y)
+        if modal_name == "hard_drive":
+            return self._handle_hard_drive_modal_click(mouse_x, mouse_y)
+        if modal_name == "system_folder":
+            return self._handle_system_folder_modal_click(mouse_x, mouse_y)
+        if modal_name == "file_system_browser":
+            return self._handle_file_system_browser_modal_click(mouse_x, mouse_y)
+        if modal_name == "mail":
+            return self._handle_mail_modal_click(mouse_x, mouse_y)
+        return False
 
     def _handle_terminal_keydown(self, event: pygame.event.Event) -> bool:
         """Handle keyboard input for the terminal."""
@@ -7380,7 +10201,25 @@ class OSMode:
                 self.terminal_message = ""
                 return True
             return True
-        
+
+        if self.terminal_mode == "dotsonic_install":
+            if self.dotsonic_installer_complete and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_ESCAPE):
+                self._reset_terminal_session()
+            return True
+
+        if self._is_school_database_mode():
+            if not self._is_school_server_connected():
+                self._reset_school_database_ui_state()
+                self.terminal_mode = "message"
+                self.terminal_message = "node disconnected"
+                self.terminal_message_timer = 0.0
+                return True
+            app = self._ensure_embedded_school_database()
+            app.handle_event(event)
+            if not app.running:
+                self._close_embedded_school_database()
+            return True
+
         # Handle region select mode
         if self.terminal_mode == "region_select":
             if event.key == pygame.K_UP:
@@ -7423,9 +10262,12 @@ class OSMode:
                     return True
                 elif self.terminal_admin_menu_selection == 3:
                     # Handshake Connected Node
-                    self.terminal_mode = "message"
-                    self.terminal_message = "no node connected"
-                    self.terminal_message_timer = 0.0
+                    if self._is_school_server_connected():
+                        self._open_school_database()
+                    else:
+                        self.terminal_mode = "message"
+                        self.terminal_message = "no node connected"
+                        self.terminal_message_timer = 0.0
                     return True
                 elif self.terminal_admin_menu_selection == 4:
                     # Shutdown System - show quit screen
@@ -7436,6 +10278,7 @@ class OSMode:
                 self.terminal_mode = "command"
                 self.terminal_text = ""
                 self.terminal_input_buffer = ""
+                self._reset_school_database_ui_state()
                 return True
             return True
         
@@ -7810,6 +10653,15 @@ class OSMode:
                     self.terminal_text += "\n"
                     self.terminal_mode = "admin_login_username"
                     self.terminal_input_buffer = ""
+                elif command_lower == "sh123":
+                    # Cheat path: jump straight into the school database.
+                    self._reset_school_database_ui_state()
+                    app = self._ensure_embedded_school_database(reset=True)
+                    app._ensure_loaded()
+                    app.mode = "school_db_home"
+                    self.terminal_text += "\n"
+                    self.terminal_mode = "school_db"
+                    self.terminal_input_buffer = ""
                 elif command_lower == "file-system-start":
                     # Enter file system mode
                     self.terminal_file_system_mode = True
@@ -7835,23 +10687,7 @@ class OSMode:
                 self.terminal_cursor_index = 0
                 return True
             # At "." (terminal start): close terminal window only, stay in OS mode
-            self.terminal_active = False
-            if "terminal" in self.active_modals:
-                self.active_modals.remove("terminal")
-            self.terminal_position = None
-            self.terminal_dragging = False
-            self.terminal_mode = "command"
-            self.terminal_text = ""
-            self.terminal_input_buffer = ""
-            self.terminal_cursor_index = 0
-            self.terminal_message = ""
-            self.terminal_admin_menu_selection = 1
-            self.terminal_region_selection = 1
-            self.terminal_file_system_mode = False
-            self.terminal_file_system_path = []
-            self.terminal_file_content = []
-            self.terminal_file_view_filename = ""
-            self.terminal_file_scroll_index = 0
+            self._reset_terminal_session()
             return True
         elif event.unicode and event.unicode.isprintable():
             # Insert character at cursor on current line only
@@ -7905,35 +10741,50 @@ class OSMode:
         has_jax1 = self.has_token("JAX1")
         has_papercranebbs = self.has_token("PAPERCRANEBBS")
         has_echochamber = self.has_token("ECHOCHAMBER")
-        
+        has_neveragainbbs_in = self.has_token("NEVERAGAINBBS_IN")
+        has_school_hack = self.has_token("SCHOOL_HACK")
+        has_school_hack5 = self.has_token("SCHOOL_HACK5")
+
         # Build content dynamically
         content = (
             "[s]1. Receive Invite from Glyphis[/s]\n"
-            "[s]2. Get onto the BBS (0345728891)[/s]\n"
+            "[s]2. Get onto the BBS (03-4572-8891)[/s]\n"
             "[s]3. Complete a technical challenge to prove yourself[/s]\n"
             "4. Get the audio tech's help and get the first audio stream from Glyphisis_IO. Record it using the Datasette!\n"
         )
-        
+
         # Item 5: Strike through if player has JAX1
         if has_jax1:
             content += "[s]5. Get invited to crack some games[/s]\n"
         else:
             content += "5. Get invited to crack some games\n"
-        
+
         # Item 6: Strike through if player has RADIO_ACCESS1
         if has_radio_access1:
             content += "[s]6. Obtain access to the group's Pirate Radio Stream![/s]\n"
         else:
             content += "6. Obtain access to the group's Pirate Radio Stream!\n"
-        
+
         # Item 7: Strike through if player has both PAPERCRANEBBS and ECHOCHAMBER tokens
         if has_papercranebbs and has_echochamber:
             content += "[s]7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.[/s]\n"
         else:
             content += "7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.\n"
-        
-        content += "8. Dial into at least 3 more BBS sites.\n"
+
+        # Item 8: Strike through if player has logged into Never Again BBS
+        if has_neveragainbbs_in:
+            content += "[s]8. Dial into at least 3 more BBS sites.[/s]\n"
+        else:
+            content += "8. Dial into at least 3 more BBS sites.\n"
+
         content += "9. Crack games, play them and attempt to dominate the leaderboards\n"
+
+        # Item 10: Only shown once the School Hack op begins
+        if has_school_hack:
+            if has_school_hack5:
+                content += "[s]10. Complete the School Op, change the grades of the hackers![/s]\n"
+            else:
+                content += "10. Complete the School Op, change the grades of the hackers!\n"
         
         return {
             "title": MISSION_NOTE_TITLE,
@@ -7945,26 +10796,26 @@ class OSMode:
         """Generate BBS login note content with current user credentials and PAPER CRANE BBS if token exists."""
         username, pin = self.get_user_credentials()
         content = f"{BBS_NAME}\n"
-        content += f"Dial-in: (03) 45 72 88 91\n"
+        content += f"Dial-in: 03-4572-8891\n"
         content += f"Username: {username if username else 'Not Set'}\n"
         content += f"Login PIN: {pin if pin else 'Not Set'}"
         
         # Add PAPER CRANE BBS info if player has PAPERCRANEBBS token
         if self.has_token("PAPERCRANEBBS"):
             content += f"\n\nPAPER CRANE BBS\n"
-            content += f"Dial-in: (082) 77 34 19 45\n"
+            content += f"Dial-in: 082-7734-1945\n"
             content += f"Username: guest\n"
             content += f"Password: origami"
         
         # Add ECHO CHAMBER BBS info if player has ECHOCHAMBER token
         if self.has_token("ECHOCHAMBER"):
             content += f"\n\nECHO CHAMBER BBS\n"
-            content += f"Dial-in: (07) 57 42 19 89"
+            content += f"Dial-in: 075-742-1989"
         
         # Add NEVER AGAIN BBS info if player has NEVERAGAINBBS token
         if self.has_token("NEVERAGAINBBS"):
             content += f"\n\nNEVER AGAIN BBS\n"
-            content += f"Dial-in: (034) 089 98 91"
+            content += f"Dial-in: 03-4089-9891"
         
         return content
     
@@ -8056,113 +10907,192 @@ class OSMode:
                         notes[1]["is_locked"] = True
                         changed = True
                     
-                    # Update mission note content if token status has changed (for items 5-9)
+                    # Update mission note content if token status has changed (for items 5-10)
                     # Check if tokens require content update
                     has_radio_access1 = self.has_token("RADIO_ACCESS1")
                     has_jax1 = self.has_token("JAX1")
                     has_papercranebbs = self.has_token("PAPERCRANEBBS")
                     has_echochamber = self.has_token("ECHOCHAMBER")
+                    has_neveragainbbs_in = self.has_token("NEVERAGAINBBS_IN")
+                    has_school_hack = self.has_token("SCHOOL_HACK")
+                    has_school_hack5 = self.has_token("SCHOOL_HACK5")
                     existing_content = notes[0].get("content", "")
-                    
+
                     # Check if item 5 needs to be updated (strike through if JAX1 present)
                     item_5_struck = "[s]5. Get invited to crack some games[/s]" in existing_content
                     item_5_unstruck = "5. Get invited to crack some games" in existing_content and not item_5_struck
-                    
+
                     # Check if item 6 needs to be updated (strike through if token present)
                     item_6_struck = "[s]6. Obtain access to the group's Pirate Radio Stream![/s]" in existing_content
                     item_6_unstruck = "6. Obtain access to the group's Pirate Radio Stream!" in existing_content and not item_6_struck
-                    
+
                     # Check if item 7 needs to be updated (strike through if both PAPERCRANEBBS and ECHOCHAMBER present)
                     item_7_struck = "[s]7. Observe the Underground Radio Scene" in existing_content
                     item_7_unstruck = "7. Observe the Underground Radio Scene" in existing_content and not item_7_struck
-                    
+
+                    # Check if item 8 needs to be updated (strike through if NEVERAGAINBBS_IN present)
+                    item_8_struck = "[s]8. Dial into at least 3 more BBS sites.[/s]" in existing_content
+                    item_8_unstruck = "8. Dial into at least 3 more BBS sites." in existing_content and not item_8_struck
+
+                    # Check if item 10 needs to be added or struck through
+                    has_item_10 = "10. Complete the School Op" in existing_content
+                    item_10_struck = "[s]10. Complete the School Op" in existing_content
+                    item_10_unstruck = "10. Complete the School Op" in existing_content and not item_10_struck
+
                     # Check if items 7-9 exist
                     has_item_7 = "7. Observe the Underground Radio Scene" in existing_content
-                    has_item_8 = "8. Dial into at least 3 more BBS sites" in existing_content
+                    has_item_8 = "8. Dial into at least 3 more BBS sites." in existing_content
                     has_item_9 = "9. Crack games, play them and attempt to dominate the leaderboards" in existing_content
-                    
+
                     # Update content if needed
                     needs_update = False
                     updated_content = existing_content
-                    
+
                     # Update item 5 strike-through status if token status changed
                     if has_jax1 and item_5_unstruck:
-                        # Need to strike through item 5
                         updated_content = updated_content.replace(
                             "5. Get invited to crack some games\n",
                             "[s]5. Get invited to crack some games[/s]\n"
                         )
                         needs_update = True
                     elif not has_jax1 and item_5_struck:
-                        # Need to remove strike-through from item 5
                         updated_content = updated_content.replace(
                             "[s]5. Get invited to crack some games[/s]\n",
                             "5. Get invited to crack some games\n"
                         )
                         needs_update = True
-                    
+
                     # Update item 6 strike-through status if token status changed
                     if has_radio_access1 and item_6_unstruck:
-                        # Need to strike through item 6
                         updated_content = updated_content.replace(
                             "6. Obtain access to the group's Pirate Radio Stream!\n",
                             "[s]6. Obtain access to the group's Pirate Radio Stream![/s]\n"
                         )
                         needs_update = True
                     elif not has_radio_access1 and item_6_struck:
-                        # Need to remove strike-through from item 6
                         updated_content = updated_content.replace(
                             "[s]6. Obtain access to the group's Pirate Radio Stream![/s]\n",
                             "6. Obtain access to the group's Pirate Radio Stream!\n"
                         )
                         needs_update = True
-                    
+
                     # Update item 7 strike-through status if token status changed
                     if has_papercranebbs and has_echochamber and item_7_unstruck:
-                        # Need to strike through item 7
                         updated_content = updated_content.replace(
                             "7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.\n",
                             "[s]7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.[/s]\n"
                         )
                         needs_update = True
                     elif not (has_papercranebbs and has_echochamber) and item_7_struck:
-                        # Need to remove strike-through from item 7
                         updated_content = updated_content.replace(
                             "[s]7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.[/s]\n",
                             "7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.\n"
                         )
                         needs_update = True
-                    
+
+                    # Update item 8 strike-through status if token status changed
+                    if has_neveragainbbs_in and item_8_unstruck:
+                        updated_content = updated_content.replace(
+                            "8. Dial into at least 3 more BBS sites.\n",
+                            "[s]8. Dial into at least 3 more BBS sites.[/s]\n"
+                        )
+                        needs_update = True
+                    elif not has_neveragainbbs_in and item_8_struck:
+                        updated_content = updated_content.replace(
+                            "[s]8. Dial into at least 3 more BBS sites.[/s]\n",
+                            "8. Dial into at least 3 more BBS sites.\n"
+                        )
+                        needs_update = True
+
                     # Add items 7-9 if they don't exist
                     if not has_item_7 or not has_item_8 or not has_item_9:
                         # Remove any existing items 7-9 to avoid duplicates
                         lines = updated_content.split('\n')
                         filtered_lines = []
                         for line in lines:
-                            if not (line.strip().startswith("7. ") or 
+                            if not (line.strip().startswith("7. ") or
                                    line.strip().startswith("[s]7. ") or
-                                   line.strip().startswith("8. ") or 
+                                   line.strip().startswith("8. ") or
                                    line.strip().startswith("[s]8. ") or
-                                   line.strip().startswith("9. ") or 
+                                   line.strip().startswith("9. ") or
                                    line.strip().startswith("[s]9. ")):
                                 filtered_lines.append(line)
-                        
-                        # Add items 7-9 at the end
+
                         updated_content = '\n'.join(filtered_lines)
                         if updated_content and not updated_content.endswith('\n'):
                             updated_content += '\n'
-                        # Item 7: Strike through if player has both PAPERCRANEBBS and ECHOCHAMBER tokens
                         if has_papercranebbs and has_echochamber:
                             updated_content += "[s]7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.[/s]\n"
                         else:
                             updated_content += "7. Observe the Underground Radio Scene and get numbers for OTHER BBS sites.\n"
-                        updated_content += "8. Dial into at least 3 more BBS sites.\n"
+                        if has_neveragainbbs_in:
+                            updated_content += "[s]8. Dial into at least 3 more BBS sites.[/s]\n"
+                        else:
+                            updated_content += "8. Dial into at least 3 more BBS sites.\n"
                         updated_content += "9. Crack games, play them and attempt to dominate the leaderboards\n"
                         needs_update = True
-                    
+
+                    # Add or update item 10 when school hack op begins
+                    if has_school_hack and not has_item_10:
+                        if updated_content and not updated_content.endswith('\n'):
+                            updated_content += '\n'
+                        if has_school_hack5:
+                            updated_content += "[s]10. Complete the School Op, change the grades of the hackers![/s]\n"
+                        else:
+                            updated_content += "10. Complete the School Op, change the grades of the hackers!\n"
+                        needs_update = True
+                    elif has_school_hack and has_item_10:
+                        if has_school_hack5 and item_10_unstruck:
+                            updated_content = updated_content.replace(
+                                "10. Complete the School Op, change the grades of the hackers!\n",
+                                "[s]10. Complete the School Op, change the grades of the hackers![/s]\n"
+                            )
+                            needs_update = True
+                        elif not has_school_hack5 and item_10_struck:
+                            updated_content = updated_content.replace(
+                                "[s]10. Complete the School Op, change the grades of the hackers![/s]\n",
+                                "10. Complete the School Op, change the grades of the hackers!\n"
+                            )
+                            needs_update = True
+
                     if needs_update:
                         notes[0]["content"] = updated_content
                         changed = True
+
+        # Keep the school-op note aligned to mission progress without duplicating or striking older steps.
+        school_note_index = next((i for i, note in enumerate(notes) if note.get("title") == SCHOOL_OP_NOTE_TITLE), None)
+        has_school_hack3 = self.has_token("SCHOOL_HACK3")
+        has_school_hack4 = self.has_token("SCHOOL_HACK4")
+        has_school_hack4a = self.has_token("SCHOOL_HACK4A")
+        has_school_hack4b = self.has_token("SCHOOL_HACK4B")
+        has_school_hack2 = self.has_token("SCHOOL_HACK2")
+        if school_note_index is not None:
+            school_note = notes[school_note_index]
+            school_note_content = school_note.get("content", "") or ""
+            has_credentials_in_note = (
+                "admin-subset" in school_note_content and
+                "general" in school_note_content and
+                "louis-sonic" in school_note_content
+            )
+            expected_school_note = self._get_school_op_note_content(
+                with_credentials=has_school_hack2 or has_credentials_in_note,
+                note_phase=self._get_school_op_note_phase(
+                    with_credentials=has_school_hack2 or has_credentials_in_note
+                ),
+            )
+            if school_note_content != expected_school_note:
+                notes[school_note_index]["content"] = expected_school_note
+                changed = True
+        elif has_school_hack3 or has_school_hack4 or has_school_hack4a or has_school_hack4b:
+            notes.append({
+                "title": SCHOOL_OP_NOTE_TITLE,
+                "content": self._get_school_op_note_content(
+                    with_credentials=has_school_hack2,
+                    note_phase=self._get_school_op_note_phase(with_credentials=has_school_hack2),
+                ),
+                "is_locked": False,
+            })
+            changed = True
 
         # Enforce max of 10 notes
         if len(notes) > 10:
@@ -8815,6 +11745,7 @@ class OSMode:
         bold = False
         strike = False
         highlight = False
+        underline = False
         current = ""
 
         def flush():
@@ -8824,7 +11755,8 @@ class OSMode:
                     "text": current,
                     "bold": bold,
                     "strike": strike,
-                    "highlight": highlight
+                    "highlight": highlight,
+                    "underline": underline,
                 })
                 current = ""
 
@@ -8835,6 +11767,8 @@ class OSMode:
             "[/s]": ("strike", False),
             "[hl]": ("highlight", True),
             "[/hl]": ("highlight", False),
+            "[u]": ("underline", True),
+            "[/u]": ("underline", False),
         }
 
         while i < len(text):
@@ -8848,6 +11782,8 @@ class OSMode:
                         strike = state
                     elif attr == "highlight":
                         highlight = state
+                    elif attr == "underline":
+                        underline = state
                     i += len(tag)
                     matched = True
                     break
@@ -8857,7 +11793,7 @@ class OSMode:
             i += 1
 
         flush()
-        return segments or [{"text": "", "bold": False, "strike": False, "highlight": False}]
+        return segments or [{"text": "", "bold": False, "strike": False, "highlight": False, "underline": False}]
 
     def _measure_text_fit(self, font: pygame.font.Font, text: str, max_width: int) -> int:
         """Return number of characters from text that fit within max_width."""
@@ -8926,6 +11862,10 @@ class OSMode:
                     if segment["strike"]:
                         line_y = y + text_surface.get_height() // 2
                         pygame.draw.line(self.screen, COLOR_WHITE, (x, line_y), (x + text_surface.get_width(), line_y), 2)
+
+                    if segment.get("underline"):
+                        line_y = y + text_surface.get_height() - 1
+                        pygame.draw.line(self.screen, COLOR_WHITE, (x, line_y), (x + text_surface.get_width(), line_y), 1)
 
                     x += text_surface.get_width()
 
@@ -9001,6 +11941,7 @@ class OSMode:
                         "bold": segment["bold"],
                         "strike": segment["strike"],
                         "highlight": segment["highlight"],
+                        "underline": segment.get("underline", False),
                         "x": x,
                         "width": chunk_width
                     })
@@ -9185,7 +12126,18 @@ class OSMode:
                         (text_x + segment["x"] + segment["width"], line_y),
                         2
                     )
-            
+
+                # Draw underline if needed
+                if segment.get("underline"):
+                    line_y = current_y + text_surface.get_height() - 1
+                    pygame.draw.line(
+                        self.screen,
+                        COLOR_WHITE,
+                        (text_x + segment["x"], line_y),
+                        (text_x + segment["x"] + segment["width"], line_y),
+                        1
+                    )
+
             current_y += line_data["line_height"]
         
         # Draw scroll indicator
@@ -9541,6 +12493,18 @@ class OSMode:
         except Exception as e:
             print(f"Warning: Failed to save icon positions: {e}")
     
+    def _disconnect_mail_server(self) -> None:
+        """Drop the mail server connection and reset all connection-related state."""
+        self.mail_server_connected = False
+        self.mail_connection_mode = "idle"
+        self.mail_listen_poll_timer = 0.0
+        self.mail_connect_phase = "idle"
+        self.mail_connect_terminal_complete = False
+        self.mail_connect_dialup_started = False
+        self.mail_connect_terminal_line_index = 0
+        self.mail_connect_terminal_timer = 0.0
+        self._mail_connect_steps = []
+
     def _close_modal(self, modal_name: str):
         """Close a specific modal and perform necessary cleanup."""
         if modal_name not in self.active_modals:
@@ -9549,6 +12513,7 @@ class OSMode:
         if modal_name == "file_system_browser":
             self.file_system_browser_opened_from_dot_sonic = False
             self.file_system_browser_dragging_item = None
+            self.file_system_browser_content_rect = None
         
         # Remove modal from active list
         self.active_modals = [name for name in self.active_modals if name != modal_name]
@@ -9583,9 +12548,14 @@ class OSMode:
                 self.mail_compose_subject = ""
                 self.mail_compose_body = ""
                 self.mail_compose_active_field = "to"
+            self.mail_compose_ghost = {}
+            self.mail_compose_placeholder_override = {}
             self.mail_view = "inbox"
             self.mail_reading_email = None
             self.mail_settings_active_field = None
+            # Closing the mail client always disconnects from the mail server
+            self._disconnect_mail_server()
+            self.mail_connect_terminal_lines = []
         elif modal_name == "dot_sonic":
             if self.dot_sonic_app and self.dot_sonic_app.active:
                 self.dot_sonic_app.close()
@@ -9635,6 +12605,8 @@ class OSMode:
         self.mail_compose_body = ""
         self.mail_compose_active_field = "to"
         self.mail_compose_cursor = 0
+        self.mail_compose_ghost = {}
+        self.mail_compose_placeholder_override = {}
         self.mail_scroll_offset = 0
         self.mail_status_message = ""
         self.mail_status_timer = 0.0
@@ -9642,6 +12614,8 @@ class OSMode:
         self.mail_settings_cursor = 0
         self.mail_settings_scroll = 0
         self.mail_local_inbox = []
+        self._disconnect_mail_server()
+        self.mail_connect_terminal_lines = []
         self.modem_modal_error_timer = 0.0
         self._stop_modem_dial_sound()
         
@@ -9746,7 +12720,368 @@ class OSMode:
                 self.desktop_size[1]
             )
             pygame.draw.rect(self.screen, (0, 0, 0), overlay_rect)  # Black rectangle
-    
+
+    def draw_notepad_overlay(self):
+        """Called from main.py after documentation_viewer.draw() — renders notepad in the right panel."""
+        if self.notepad_overlay_visible:
+            self._draw_notepad_overlay()
+
+    def _get_current_objectives(self):
+        """Return (title_str, [bullet_str, ...]) for the player's current next step."""
+        h = self.has_token
+
+        # School Hack arc — most detailed
+        if h("SCHOOL_HACK5"):
+            return ("SCHOOL OP COMPLETE", [
+                "All six mission grades were changed to A",
+                "Check BRADSONIC-MAIL for Glyphis' message",
+                "Return to the BBS after you have read it",
+            ])
+        if h("SCHOOL_HACK4B"):
+            return ("BREACH TELEBASE", [
+                "Disconnect BRADSONIC-MAIL so the modem is free",
+                "Dial 03-3741-5089 and wait for Network: Connected",
+                "Open Terminal -> admin-subset -> Handshake Connected Node",
+                "Log in with admin / password",
+                "Change only Rosaline, Bertie, and Jason's ENGLISH / U.S.HISTORY grades to A",
+            ])
+        if h("SCHOOL_HACK4A") and not h("SCHOOL_HACK4B"):
+            return ("REPORT THE NUMBERS", [
+                "You have the school line numbers",
+                "Email rain@ciphernet.net",
+                "Subject: got the numbers",
+                "Wait for Rain's break-in reply before dialing the server",
+            ])
+        if h("SCHOOL_HACK4") and not h("SCHOOL_HACK4A"):
+            return ("WAIT FOR MCPHERSON", [
+                "Check BRADSONIC-MAIL inbox",
+                "Wait for Ms. McPherson to send the school numbers",
+                "Do not dial the school until the numbers arrive",
+            ])
+        if h("SCHOOL_HACK3") and not h("SCHOOL_HACK4"):
+            return ("SPOOF THE RECEPTIONIST", [
+                "Set MAIL FROM to region-support@telco-relay.bradsonic.net",
+                "Set Display Name to TELCO RELAY ENGINEER",
+                "Set Signature to Regional Line Testing, BRADSONIC-TELCO RELAY.",
+                "Email reception@tokyometro-high.edu.api",
+                "Ask for all school numbers: main lines, fax, modem, server room",
+            ])
+        if h("SCHOOL_HACK2") and not h("SCHOOL_HACK3"):
+            return ("EMAIL RAIN", [
+                "Open BRADSONIC-MAIL",
+                "Email rain@ciphernet.net with subject: I'm in",
+            ])
+        if h("SCHOOL_HACK1") and not h("SCHOOL_HACK2"):
+            return ("SWITCH YOUR OS REGION", [
+                "Log out of the BBS",
+                "Open Terminal (HDD > SYSTEM > TERMINAL)",
+                "Type FILE-SYSTEM-START",
+                "Type DIR to list folders",
+                "Use CD <folder name> to find LocaleProtocols.brad, then open it",
+                "Find the terminal command, username, and password",
+                "Type admin-subset and enter the username and password you found",
+                "Change region to US Mainland",
+            ])
+        if h("SCHOOL_HACK") and not h("SCHOOL_HACK1"):
+            return ("READ RAIN'S PLAN", [
+                "Check BBS Email inbox",
+                "Read Rain's school-op plan carefully before logging out",
+            ])
+        if h("JEWEL_VOICE1") and not h("SCHOOL_HACK"):
+            return ("AGREE TO HELP RAIN", [
+                "Check BBS Email for a message from Rain",
+                "Reply to A cry for help and tell her you're in",
+            ])
+        if h("JEWEL_VOICE") and not h("JEWEL_VOICE1"):
+            return ("READ THE WALL", [
+                "Go to The Wall in the BBS menu",
+                "Read the post about Glyphis' school grades",
+            ])
+        if h("PAPERCRANEBBS_IN") and not h("JEWEL_VOICE"):
+            return ("EXPLORE PAPER CRANE BBS", [
+                "You are inside Paper Crane BBS",
+                "Browse the board and find Jewel Voice",
+                "Play it",
+            ])
+        if h("PAPERCRANEBBS") and not h("PAPERCRANEBBS_IN"):
+            return ("DIAL PAPER CRANE BBS", [
+                "Go to Outside BBSes in the BBS menu",
+                "Dial into Paper Crane BBS",
+            ])
+        if h("ASTROMINER1") and not h("PAPERCRANEBBS"):
+            return ("CHECK YOUR EMAIL", [
+                "Open Email in the BBS menu",
+                "Read new messages — an access code is waiting",
+            ])
+        if h("JAX2") and not h("ASTROMINER1"):
+            return ("PLAY ASTRO MINER", [
+                "Go to Games in the BBS menu",
+                "Launch AstroMiner and play it",
+            ])
+        if h("JAX1") and not h("JAX2"):
+            return ("WAIT FOR JAXKANDO", [
+                "Check BBS Email for Jaxkando's reply",
+                "He will send the game cracking instructions",
+            ])
+        if h("JAX") and not h("JAX1"):
+            return ("RESPOND TO JAXKANDO", [
+                "Go to The Wall in the BBS menu",
+                "Find the 'Targets Acquired' post",
+                "Reply to volunteer for game cracking",
+            ])
+        if h("AUDIO_ON") and not h("JAX"):
+            return ("EXPLORE THE BBS", [
+                "Go to The Wall in the BBS menu",
+                "Read recent posts",
+            ])
+        # LAPC-1 node chain
+        for node_num, prev, curr in [
+            (7, "LAPC1_NODE6", "LAPC1_NODE7"),
+            (6, "LAPC1_NODE5", "LAPC1_NODE6"),
+            (5, "LAPC1_NODE4", "LAPC1_NODE5"),
+            (4, "LAPC1_NODE3", "LAPC1_NODE4"),
+            (3, "LAPC1_NODE2", "LAPC1_NODE3"),
+            (2, "LAPC1_NODE1", "LAPC1_NODE2"),
+            (1, "LAPC1A",      "LAPC1_NODE1"),
+        ]:
+            if h(prev) and not h(curr):
+                return (f"LAPC-1 NODE {node_num}", [
+                    f"Complete Node {node_num} in Urgent Ops",
+                ])
+        if h("LAPC1") and not h("LAPC1A"):
+            return ("START LAPC-1 CHALLENGE", [
+                "Go to Urgent Ops in the BBS menu",
+                "Open the LAPC-1 driver challenge",
+                "Complete Node 1",
+            ])
+        if h("AUDIO1") and not h("LAPC1"):
+            return ("CHECK URGENT OPS", [
+                "Go to Urgent Ops in the BBS menu",
+                "Read the LAPC-1 driver brief",
+            ])
+        if h("PSEM") and not h("AUDIO1"):
+            return ("CHECK URGENT OPS", [
+                "Go to Urgent Ops in the BBS menu",
+                "Read the audio operations briefing",
+            ])
+        if h("MODEM1ST") and not h("PSEM"):
+            return ("CHECK YOUR EMAIL", [
+                "Open Email in the BBS menu",
+                "Read your messages from Glyphis",
+            ])
+        return ("GET CONNECTED", [
+            "Enter a username when prompted",
+            "Set a 4-digit PIN",
+            "Connect to the BBS via the modem",
+        ])
+
+    def _get_notepad_overlay_render_lines(self) -> List[str]:
+        """Return the full text block currently meant for the external notes overlay."""
+        title_str, bullets = self._get_current_objectives()
+        lines: List[str] = []
+        if self.school_hack_restart_overlay_banner_active:
+            lines.append("RESTARTED SCHOOL OP HACK CHALLENGE")
+            lines.append("")
+        lines.append(title_str)
+        if self.has_token("SCHOOL_HACK4B") and not self.has_token("SCHOOL_HACK5"):
+            lines.append("[[RED_NOTE]]THIS HAS TO BE DONE AT NIGHT")
+        lines.append("")
+        lines.extend(f"- {bullet}" for bullet in bullets)
+        return lines
+
+    def begin_notes_nudge_overlay_animation(self) -> None:
+        """Start the NN-only external notes sequence: clear, shake, then type in the new note."""
+        self.notepad_overlay_visible = True
+        self.notes_nudge_overlay_anim_active = True
+        self.notes_nudge_overlay_phase = "shake"
+        self.notes_nudge_overlay_timer = 0.22
+        self.notes_nudge_overlay_display_timer = 0.0
+        self.notes_nudge_overlay_text_lines = self._get_notepad_overlay_render_lines()
+        self.notes_nudge_overlay_visible_line_count = 0
+        self.notes_nudge_overlay_visible_char_count = 0
+        self.notes_nudge_overlay_shake_offset_x = 0
+        try:
+            paper_sound = pygame.mixer.Sound(get_data_path("OS", "paper-shuffle.wav"))
+            paper_channel = pygame.mixer.find_channel(True)
+            if paper_channel:
+                paper_channel.play(paper_sound)
+        except Exception:
+            pass
+
+    def _start_notes_nudge_overlay_typing(self) -> None:
+        """Switch the NN overlay sequence from shake into line-by-line text rendering."""
+        self.notes_nudge_overlay_phase = "typing"
+        self.notes_nudge_overlay_timer = 0.0
+        self.notes_nudge_overlay_display_timer = 0.0
+        self.notes_nudge_overlay_visible_line_count = 1 if self.notes_nudge_overlay_text_lines else 0
+        self.notes_nudge_overlay_visible_char_count = 0
+        self.notes_nudge_overlay_shake_offset_x = 0
+        try:
+            note_sound = pygame.mixer.Sound(get_data_path("OS", "note-writing.wav"))
+            note_channel = pygame.mixer.find_channel(True)
+            if note_channel:
+                note_channel.play(note_sound)
+        except Exception:
+            pass
+
+    def _update_notes_nudge_overlay_animation(self, dt: float) -> None:
+        """Advance the NN-only note shake/type sequence."""
+        if self.notes_nudge_overlay_phase == "shake":
+            self.notes_nudge_overlay_timer = max(0.0, self.notes_nudge_overlay_timer - dt)
+            phase_progress = 1.0 - (self.notes_nudge_overlay_timer / 0.22 if 0.22 > 0 else 1.0)
+            self.notes_nudge_overlay_shake_offset_x = int(math.sin(phase_progress * math.pi * 6.0) * max(2, int(8 * self.scale)))
+            if self.notes_nudge_overlay_timer <= 0.0:
+                self._start_notes_nudge_overlay_typing()
+            return
+
+        if self.notes_nudge_overlay_phase != "typing":
+            return
+
+        if not self.notes_nudge_overlay_text_lines:
+            self.notes_nudge_overlay_anim_active = False
+            self.notes_nudge_overlay_phase = "idle"
+            return
+
+        self.notes_nudge_overlay_display_timer += dt
+        char_interval = 0.018
+        while self.notes_nudge_overlay_display_timer >= char_interval:
+            self.notes_nudge_overlay_display_timer -= char_interval
+            if self.notes_nudge_overlay_visible_line_count <= 0:
+                self.notes_nudge_overlay_visible_line_count = 1
+            current_index = self.notes_nudge_overlay_visible_line_count - 1
+            if current_index >= len(self.notes_nudge_overlay_text_lines):
+                self.notes_nudge_overlay_anim_active = False
+                self.notes_nudge_overlay_phase = "idle"
+                self.notes_nudge_overlay_shake_offset_x = 0
+                return
+            current_line = self.notes_nudge_overlay_text_lines[current_index]
+            self.notes_nudge_overlay_visible_char_count += 1
+            if self.notes_nudge_overlay_visible_char_count > len(current_line):
+                self.notes_nudge_overlay_visible_line_count += 1
+                self.notes_nudge_overlay_visible_char_count = 0
+                if self.notes_nudge_overlay_visible_line_count > len(self.notes_nudge_overlay_text_lines):
+                    self.notes_nudge_overlay_anim_active = False
+                    self.notes_nudge_overlay_phase = "idle"
+                    self.notes_nudge_overlay_shake_offset_x = 0
+                    return
+
+    def _draw_notepad_overlay(self):
+        """Draw NotePad-External.png with objectives in the right-panel area (same zone as doc viewer)."""
+        if not self.notepad_overlay_image_raw:
+            return
+
+        screen_w = self.screen.get_width()
+        screen_h = self.screen.get_height()
+
+        # Right panel mirrors the DocumentationViewer GRID_START (baseline 1547, 37 at 2560x1440).
+        # We size the notepad to fill the panel vertically with a small margin.
+        panel_x = int(1547 * self.scale)
+        panel_y = int(37 * self.scale)
+        panel_w = screen_w - panel_x
+        panel_h = screen_h - panel_y
+
+        # Scale image to fill panel height, keeping aspect ratio — cache per scale
+        if self._notepad_overlay_cache_scale != self.scale:
+            raw_w, raw_h = self.notepad_overlay_image_raw.get_size()
+            target_h = max(panel_h, 10)
+            target_w = int(raw_w * (target_h / raw_h))
+            self._notepad_overlay_image_scaled = pygame.transform.smoothscale(
+                self.notepad_overlay_image_raw, (target_w, target_h)
+            )
+            self._notepad_overlay_cache_scale = self.scale
+
+        img = self._notepad_overlay_image_scaled
+        np_w, np_h = img.get_size()
+
+        # Centre horizontally within panel, top-aligned
+        x = panel_x + (panel_w - np_w) // 2
+        y = panel_y
+        if self.notes_nudge_overlay_anim_active and self.notes_nudge_overlay_phase == "shake":
+            x += self.notes_nudge_overlay_shake_offset_x
+
+        self.screen.blit(img, (x, y))
+
+        # --- Text (Segoe Script matching Notes app body_font) ---
+        render_lines = self._get_notepad_overlay_render_lines()
+        if self.notes_nudge_overlay_anim_active:
+            if self.notes_nudge_overlay_phase == "shake":
+                render_lines = []
+            elif self.notes_nudge_overlay_phase == "typing":
+                typed_lines: List[str] = []
+                visible_lines = max(0, self.notes_nudge_overlay_visible_line_count)
+                for index in range(min(visible_lines, len(self.notes_nudge_overlay_text_lines))):
+                    line = self.notes_nudge_overlay_text_lines[index]
+                    if index == visible_lines - 1:
+                        typed_lines.append(line[:self.notes_nudge_overlay_visible_char_count])
+                    else:
+                        typed_lines.append(line)
+                render_lines = typed_lines
+
+        title_size = max(int(29 * self.scale), 17)   # 24 * 1.2 ≈ 29
+        body_size  = max(int(24 * self.scale), 14)   # matches old title size
+        try:
+            title_font = pygame.font.SysFont("Segoe Script", title_size)
+            body_font  = pygame.font.SysFont("Segoe Script", body_size)
+            red_note_font = pygame.font.SysFont("Segoe Script", body_size, bold=True)
+        except Exception:
+            title_font = pygame.font.Font(None, title_size)
+            body_font  = pygame.font.Font(None, body_size)
+            red_note_font = pygame.font.Font(None, body_size)
+
+        text_color  = (30, 20, 10)
+        title_color = (15, 8, 4)
+        red_note_color = (170, 20, 20)
+
+        # Inset text area relative to the notepad image
+        inset_l   = int(np_w * 0.10)
+        inset_r   = int(np_w * 0.25)
+        inset_top = int(np_h * 0.07)
+        text_x    = x + inset_l
+        text_y    = y + inset_top
+        max_text_w = np_w - inset_l - inset_r
+        bottom_limit = y + np_h - int(np_h * 0.04)
+
+        line_h = body_font.get_height() + int(4 * self.scale)
+        first_nonempty_drawn = False
+        for line in render_lines:
+            if line == "":
+                text_y += line_h
+                if text_y + line_h > bottom_limit:
+                    return
+                continue
+            is_red_note = line.startswith("[[RED_NOTE]]")
+            if is_red_note:
+                line = line[len("[[RED_NOTE]]"):]
+            if not first_nonempty_drawn:
+                active_font = title_font
+                active_color = title_color
+                first_nonempty_drawn = True
+            elif is_red_note:
+                active_font = red_note_font
+                active_color = red_note_color
+            else:
+                active_font = body_font
+                active_color = text_color
+            words = line.split(" ")
+            current_line = ""
+            line_step = (active_font.get_height() + int(10 * self.scale)) if active_font is title_font else line_h
+            for word in words:
+                test = current_line + (" " if current_line else "") + word
+                if active_font.size(test)[0] <= max_text_w:
+                    current_line = test
+                else:
+                    if current_line:
+                        self.screen.blit(active_font.render(current_line, True, active_color), (text_x, text_y))
+                        text_y += line_step
+                        if text_y + line_step > bottom_limit:
+                            return
+                    current_line = word
+            if current_line:
+                self.screen.blit(active_font.render(current_line, True, active_color), (text_x, text_y))
+                text_y += line_step
+                if text_y + line_step > bottom_limit:
+                    return
+
     def is_mouse_in_desktop(self, mouse_x: int, mouse_y: int) -> bool:
         """Check if mouse position is within desktop boundaries."""
         return (self.desktop_x <= mouse_x < self.desktop_x + self.desktop_size[0] and
@@ -9960,9 +13295,12 @@ class OSMode:
         # Reset hover states
         self.hovered_icon = None
         self.hovered_button = None
-        
-        # Check icon hovers (only if not dragging)
-        if not self.mouse_pressed:
+
+        top_terminal_file_window = self._get_top_terminal_file_window_at_point(mouse_x, mouse_y)
+        top_modal_name = None if top_terminal_file_window else self._get_top_modal_at_point(mouse_x, mouse_y)
+
+        # Check icon hovers only when the cursor is on the desktop and not over a window surface.
+        if not self.mouse_pressed and not top_terminal_file_window and not top_modal_name:
             for icon in self.icons:
                 if icon["name"] == "mail-icon.png" and self.os_locale != 1:
                     continue
@@ -9972,9 +13310,10 @@ class OSMode:
                 if icon_rect.collidepoint(mouse_x, mouse_y):
                     self.hovered_icon = icon
                     break
-        
-        # Check button hovers in modals (check top-most first)
-        for modal_name in reversed(self.active_modals.copy()):
+
+        # Check button hovers only inside the front-most modal under the cursor.
+        modal_names = [top_modal_name] if top_modal_name else []
+        for modal_name in modal_names:
             if modal_name == "dot_sonic":
                 continue  # dotSONIC has its own UI/hover handling
             modal_x, modal_y = self.modal_positions.get(modal_name, (0, 0))
@@ -10379,4 +13718,3 @@ class OSMode:
     def is_terminal_open(self) -> bool:
         """True if the OS terminal (file-system / admin) is open."""
         return getattr(self, "terminal_active", False)
-

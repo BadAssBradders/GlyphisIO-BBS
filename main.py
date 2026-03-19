@@ -115,6 +115,11 @@ logger = logging.getLogger(__name__)
 
 # Midnight Rootkit: two MP3s that loop when SCHOOL_HACK1 logout (volume = top slider)
 MIDNIGHT_ROOTKIT_FILES = ("Midnight_Rootkit.mp3", "Midnight_Rootkit2.mp3")
+SCHOOL_HACK_GIG_PAYPHONE_NUMBER = "0364172088"
+NEVER_AGAIN_MODEM_NUMBER = "0340899891"
+NOTES_NUDGE_DEFAULT_TEXT = "SHIFT+N"
+NOTES_NUDGE_DURATION_SECONDS = 1.35
+NOTES_NUDGE_COLOR = (0, 255, 255)
 
 _glyph_font_cache = {}
 
@@ -980,6 +985,22 @@ class DocumentationViewer:
 
 # Main BBS Application
 class GLYPHIS_IOBBS:
+    SCHOOL_HACK_FAIL_MAIL_IDS = {
+        "fail1": "school_hack_fail1_rain",
+        "fail2": "school_hack_fail2_glyphis",
+        "gameover": "school_hack_gameover_glyphis",
+    }
+    SCHOOL_HACK_FAIL_TOKENS = (
+        Tokens.SCHOOL_HACK_FAIL1,
+        Tokens.SCHOOL_HACK_FAIL2,
+        Tokens.GAMEOVER_SCHOOLHACK,
+    )
+    SCHOOL_HACK_FAIL_MAIL_EVENTS = {
+        "school_hack_fail1_rain",
+        "school_hack_fail2_glyphis",
+        "school_hack_gameover_glyphis",
+    }
+
     def __init__(self):
         log_event("Initialising GLYPHIS_IO BBS client")
         # Use a normalized resolution so layout/hotspots stay correct on odd resolutions (e.g. 2304x1536)
@@ -1080,6 +1101,8 @@ class GLYPHIS_IOBBS:
             self.font_medium_small = pygame.font.Font(None, max(1, int(20 * self.scale)))
             self.font_small = pygame.font.Font(None, int(16 * self.scale))
             self.font_tiny = pygame.font.Font(None, int(12 * self.scale))
+        self.notes_nudge_font_path = get_data_path("OS", "Pixellari.ttf")
+        self.notes_nudge_font_cache = {}
 
         self.documentation_viewer = DocumentationViewer("Bradsonic_Docs", self.scale)
         self.start_video_playing = False
@@ -1272,6 +1295,12 @@ class GLYPHIS_IOBBS:
         # OS Mode state
         self.os_mode_active = False
         self.os_mode = None  # Will be initialized when first activated
+        self.school_hack_restart_notes_pending = False
+        self.notes_nudge_active = False
+        self.notes_nudge_timer = 0.0
+        self.notes_nudge_text = NOTES_NUDGE_DEFAULT_TEXT
+        self.notes_nudge_reason = ""
+        self.notes_nudge_overlay_pending = False
 
         # Logout confirmation modal
         self.logout_modal_active = False
@@ -1682,9 +1711,10 @@ class GLYPHIS_IOBBS:
                 pass  # Silently fail if channel is invalid
         
         # Apply to datasette audio (pygame.mixer.music) if playing
+        # Guard: skip if Midnight Rootkit is active (uses music_volume) or pirate radio streaming
         try:
             if pygame.mixer.music.get_busy():
-                if not (self.pirate_radio_app and getattr(self.pirate_radio_app, "streaming_active", False)):
+                if not self.midnight_rootkit_playing and not (self.pirate_radio_app and getattr(self.pirate_radio_app, "streaming_active", False)):
                     pygame.mixer.music.set_volume(self.ambient_volume)
         except Exception:
             pass  # Silently fail if music mixer is not available
@@ -1693,6 +1723,8 @@ class GLYPHIS_IOBBS:
     
     def _start_midnight_rootkit_music(self) -> None:
         """Start Midnight Rootkit track (first of two); both loop and use top slider volume."""
+        # Stop any other audio that might be playing before school-hack music takes over
+        self._stop_pirate_radio_audio(close_app=False)
         self.midnight_rootkit_playing = True
         self.midnight_rootkit_track_index = 0
         path = get_data_path("Audio", MIDNIGHT_ROOTKIT_FILES[0])
@@ -1708,6 +1740,48 @@ class GLYPHIS_IOBBS:
         except Exception as e:
             log_event(f"Midnight Rootkit load failed: {e}")
             self.midnight_rootkit_playing = False
+
+    def _stop_midnight_rootkit_music(self) -> None:
+        """Stop the School Hack mission soundtrack immediately."""
+        if not self.midnight_rootkit_playing:
+            return
+        try:
+            pygame.mixer.music.stop()
+        except Exception:
+            pass
+        self.midnight_rootkit_playing = False
+
+    def _is_school_hack_mission_active(self) -> bool:
+        """Return True while any School Hack phase except completion is active."""
+        tokens = getattr(self.inventory, "tokens", set()) or set()
+        return any(
+            str(token).upper().startswith("SCHOOL_HACK") and str(token).upper() != Tokens.SCHOOL_HACK5
+            for token in tokens
+        )
+
+    def _should_start_midnight_rootkit_music(self) -> bool:
+        """Return True when an in-progress School Hack surface should trigger the mission soundtrack."""
+        if not self._is_school_hack_mission_active():
+            return False
+        if self.midnight_rootkit_playing:
+            return False
+        if not (self.os_mode_active and self.os_mode):
+            return False
+        if "dot_sonic" in getattr(self.os_mode, "active_modals", []):
+            return False
+        return (
+            self.os_mode.is_school_op_note_visible()
+            or self.os_mode.is_terminal_open()
+            or "mail" in getattr(self.os_mode, "active_modals", [])
+        )
+
+    def _should_stop_midnight_rootkit_music(self) -> bool:
+        """Return True when the mission soundtrack should be suppressed on the current OS surface."""
+        if not self.midnight_rootkit_playing:
+            return False
+        if not (self.os_mode_active and self.os_mode):
+            return False
+        return "dot_sonic" in getattr(self.os_mode, "active_modals", [])
 
     def _advance_midnight_rootkit_track(self) -> None:
         """When current Midnight Rootkit track ends, play the next (loop 1 then 2 then 1...)."""
@@ -1923,13 +1997,39 @@ class GLYPHIS_IOBBS:
         return (boundary_x <= mouse_x < boundary_x + desktop_size[0] and
                 boundary_y <= mouse_y < boundary_y + desktop_size[1])
     
+    def _transform_event_for_zoom(self, event: pygame.event.Event) -> pygame.event.Event:
+        """If zoom is active, rewrite mouse event coordinates from zoomed screen space to unzoomed space."""
+        if not self.screen_zoom_active:
+            return event
+        if event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+            ux, uy = self._get_mouse_pos_unzoomed()
+            attrs = dict(event.__dict__)
+            attrs["pos"] = (ux, uy)
+            if event.type == pygame.MOUSEMOTION and hasattr(event, "rel"):
+                rx = int(event.rel[0] / self.screen_zoom_level)
+                ry = int(event.rel[1] / self.screen_zoom_level)
+                attrs["rel"] = (rx, ry)
+            return pygame.event.Event(event.type, **attrs)
+        return event
+
     def _update_cursor(self) -> None:
         """Update cursor based on mouse position and game state"""
         # If a game session is active, let the game handle cursor
         # (AstroMinerSession hides the cursor in its enter() method)
         if self.state == "game_session" and self.active_game_session:
             return  # Game will handle its own cursor
-        
+
+        # When zoomed: simplified cursor rules
+        # - OS Mode: system cursor hidden, OS sprite cursor drawn separately
+        # - BBS states: no mouse at all (keyboard-only)
+        if self.screen_zoom_active:
+            try:
+                blank_cursor = pygame.cursors.Cursor((0, 0), pygame.Surface((1, 1), pygame.SRCALPHA))
+                pygame.mouse.set_cursor(blank_cursor)
+            except Exception:
+                pass
+            return
+
         # Check if mouse is inside BBS window
         if self._is_mouse_in_bbs_window():
             # Hide cursor inside BBS window
@@ -1944,7 +2044,7 @@ class GLYPHIS_IOBBS:
             # Use night versions if it's nighttime, otherwise use day versions
             is_night = _is_tokyo_nighttime()
             mouse_buttons = pygame.mouse.get_pressed()
-            
+
             if is_night:
                 # Use night cursor versions
                 if mouse_buttons[0] and self.mouse_hand_cursor_click_night:
@@ -1957,7 +2057,7 @@ class GLYPHIS_IOBBS:
                     cursor_to_use = self.mouse_hand_cursor_click
                 else:
                     cursor_to_use = self.mouse_hand_cursor
-            
+
             if cursor_to_use:
                 try:
                     pygame.mouse.set_cursor(cursor_to_use)
@@ -2014,6 +2114,53 @@ class GLYPHIS_IOBBS:
         
         log_event("BBS reset to beginning")
 
+    def _get_os_region(self) -> int:
+        """Return current os_locale (1=Mainland, 2=Europe, 3=Pacifica)."""
+        if self.os_mode:
+            return self.os_mode.os_locale
+        return 3  # Default to Pacifica (restricted)
+
+    def _normalize_saved_os_locale(self, locale_value) -> int:
+        """Clamp persisted OS locale values to the supported region ids."""
+        return locale_value if locale_value in (1, 2, 3) else 3
+
+    def _get_saved_os_locale(self) -> int:
+        user = self.get_active_user()
+        if not user:
+            return 3
+        return self._normalize_saved_os_locale(user.get("os_locale", 3))
+
+    def _save_active_user_os_locale(self, locale_value: int) -> None:
+        user = self.get_active_user()
+        if not user:
+            return
+        normalized_locale = self._normalize_saved_os_locale(locale_value)
+        if user.get("os_locale") == normalized_locale:
+            return
+        user["os_locale"] = normalized_locale
+        self.save_user_state()
+
+    def _sync_os_mode_locale_from_profile(self) -> None:
+        """Ensure the active OS instance reflects the locale saved on the active user."""
+        if not self.os_mode:
+            return
+        saved_locale = self._get_saved_os_locale()
+        if self.os_mode.os_locale != saved_locale:
+            self.os_mode._switch_os_region(saved_locale)
+        self._save_active_user_os_locale(self.os_mode.os_locale)
+
+    def _on_brad_file_download(self, filename: str, content: str) -> None:
+        """Save a downloaded file to Data/OS/FILE-SYSTEM/DOWNLOADS/."""
+        downloads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Data", "OS", "FILE-SYSTEM", "DOWNLOADS")
+        os.makedirs(downloads_dir, exist_ok=True)
+        safe_name = filename.replace("/", "_").replace("\\", "_")
+        if not os.path.splitext(safe_name)[1]:
+            safe_name = safe_name + ".txt"
+        filepath = os.path.join(downloads_dir, safe_name)
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+        log_event(f"Downloaded file saved: {safe_name}")
+
     def _launch_paper_crane_bbs(self, return_to_os: bool = False) -> None:
         """Enter the Paper Crane outside BBS experience."""
         self.paper_crane_return_to_os = return_to_os
@@ -2023,6 +2170,9 @@ class GLYPHIS_IOBBS:
             self.scale,
             on_exit=self._exit_paper_crane_bbs,
             on_grant_token=self.grant_token,
+            get_region=self._get_os_region,
+            on_download_file=self._on_brad_file_download,
+            on_download_track=self._on_sonic_track_download,
         )
         self.state = "paper_crane"
         log_event("Routing to PAPER CRANE BBS")
@@ -2045,6 +2195,7 @@ class GLYPHIS_IOBBS:
             self.os_mode._set_network_disconnected()
             self.os_mode_active = True
             self.os_mode.update_scale(self.scale)
+            self._sync_os_mode_locale_from_profile()
             self._update_audio_power_state()
 
     def _launch_echo_chamber_bbs(self, return_to_os: bool = False) -> None:
@@ -2058,6 +2209,9 @@ class GLYPHIS_IOBBS:
             self.bbs_height,
             self.scale,
             on_exit=self._exit_echo_chamber_bbs,
+            get_region=self._get_os_region,
+            on_download_file=self._on_brad_file_download,
+            has_token=self.inventory.has_token,
         )
         self.state = "echo_chamber"
         log_event("Routing to ECHO CHAMBER BBS")
@@ -2073,6 +2227,7 @@ class GLYPHIS_IOBBS:
             self.os_mode._set_network_disconnected()
             self.os_mode_active = True
             self.os_mode.update_scale(self.scale)
+            self._sync_os_mode_locale_from_profile()
             self._update_audio_power_state()
 
     def _launch_never_again_bbs(self, return_to_os: bool = False) -> None:
@@ -2087,14 +2242,16 @@ class GLYPHIS_IOBBS:
             self.scale,
             on_exit=self._exit_never_again_bbs,
             on_grant_token=self.grant_token,
-            on_download_track=self._on_fugamatchi_download,
+            on_download_track=self._on_sonic_track_download,
+            get_region=self._get_os_region,
+            has_token=self.inventory.has_token,
         )
         self.state = "never_again"
         log_event("Routing to NEVER AGAIN BBS")
         self.grant_token(Tokens.NEVERAGAINBBS_IN, reason="dialed into Never Again BBS")
 
-    def _on_fugamatchi_download(self, track_title: str) -> None:
-        """Add a Fugamatchi track to the user's downloads (appears in file system as .sonic)."""
+    def _on_sonic_track_download(self, track_title: str) -> None:
+        """Add a downloaded BBS music track to the user's .sonic downloads."""
         user = self.get_active_user()
         if user:
             tracks = user.get("downloaded_fugamatchi_tracks", [])
@@ -2115,6 +2272,7 @@ class GLYPHIS_IOBBS:
             self.os_mode._set_network_disconnected()
             self.os_mode_active = True
             self.os_mode.update_scale(self.scale)
+            self._sync_os_mode_locale_from_profile()
             self._update_audio_power_state()
     
     def draw_line(self, y, x1=50, x2=None):
@@ -2373,12 +2531,146 @@ class GLYPHIS_IOBBS:
             except Exception as e:
                 logger.warning(f"Failed to play mail.wav: {e}")
 
+    def _play_bbs_mail_sound(self) -> None:
+        """Play BBS mail sound only when the player is not currently in OS Mode."""
+        if self.os_mode_active:
+            return
+        self._play_mail_sound()
+
+    def _is_school_open_hours(self) -> bool:
+        """Return True while Tokyo Metro High would realistically be open for staff/student mail."""
+        now = datetime.now()
+        hour = now.hour
+        weekday = now.weekday()  # 0=Mon 6=Sun
+        if weekday == 6:
+            return False
+        if weekday == 5:
+            return 9 <= hour < 12
+        if weekday == 2:
+            return 9 <= hour < 13
+        return 9 <= hour < 18
+
+    def _has_email_template_been_delivered(self, email_id: str) -> bool:
+        return email_id in self.email_db.sent_email_ids or email_id in self.email_db.delivered_email_ids
+
+    def _is_school_hack_contact_silenced(self, recipient: str) -> bool:
+        """Return True if school-hack game over has severed contact with this NPC."""
+        if not self.inventory.has_token(Tokens.GAMEOVER_SCHOOLHACK):
+            return False
+        normalized = (recipient or "").strip().lower()
+        return normalized in {
+            "glyphis@ciphernet.net",
+            "rain@ciphernet.net",
+            "jaxkando@ciphernet.net",
+            "uncle-am@ciphernet.net",
+        }
+
+    def _prune_school_hack_silenced_delayed_emails(self) -> None:
+        """Drop queued BBS replies from school-hack contacts once the line goes dead."""
+        if not self.inventory.has_token(Tokens.GAMEOVER_SCHOOLHACK):
+            return
+        kept = []
+        for delayed in self.delayed_emails:
+            email = delayed.get("email") if isinstance(delayed, dict) else None
+            sender = getattr(email, "sender", "") if email else ""
+            if self._is_school_hack_contact_silenced(sender):
+                continue
+            kept.append(delayed)
+        self.delayed_emails = kept
+
+    def _check_school_hack_aftermath_emails(self) -> None:
+        """Deliver the post-SCHOOL_HACK5 BBS aftermath at the right in-world time."""
+        if not self.inventory.has_token(Tokens.SCHOOL_HACK5):
+            return
+
+        if self._is_school_open_hours():
+            if not self._has_email_template_been_delivered("uncle_am_school_hack_thanks_001"):
+                self.deliver_email_to_player("uncle_am_school_hack_thanks_001")
+            if not self._has_email_template_been_delivered("jaxkando_school_hack_thanks_001"):
+                self.deliver_email_to_player("jaxkando_school_hack_thanks_001")
+
+    def _deliver_rain_school_hack_invite(self) -> None:
+        if not self._has_email_template_been_delivered("rain_school_hack_secret_gig_001"):
+            self.deliver_email_to_player("rain_school_hack_secret_gig_001")
+
+    def _schedule_rain_secret_gig_reply(self) -> None:
+        username = self.player_email.split("@")[0] if "@" in self.player_email else self.player_email
+        install_line = (
+            "The boys over at Echo Chamber somehow cracked dotSONIC and got a working installer out of it, "
+            "which is honestly super cool.\n"
+            "This was supposed to be one of those toys only the kids on the American Mainland got to play with first.\n"
+            "The rest of us in Pacifica were meant to make do with pirate radio drift and half-caught forbidden songs in the static.\n"
+            "Well, not anymore.\n"
+            "But the Bradsonic only lets you install that sort of thing when the OS is set to US Mainland, "
+            "so make sure you're in US Mainland mode first.\n"
+        )
+        if not self.inventory.has_token(Tokens.DOTSONIC):
+            install_line = (
+                "\nYou are so neat, by the way. I mean that. Very cool under pressure, very competent, "
+                "very difficult not to think about.\n\n"
+                f"{install_line}"
+                "If you do not have dotSONIC installed yet, get DOTSONIC_INSTALL.BINST from "
+                "ECHO CHAMBER, then run it from DOWNLOADS once the machine is in US Mainland mode.\n"
+            )
+        else:
+            install_line = (
+                "\nYou are so neat, by the way. I mean that. Very cool under pressure, very competent, "
+                "very difficult not to think about.\n\n"
+                f"{install_line}"
+                "You've already got dotSONIC, so that part is handled.\n"
+            )
+
+        body = (
+            f"{username},\n\n"
+            "YES. Perfect. I knew you'd say yes.\n\n"
+            "Here is the path.\n\n"
+            f"1. Dial NEVER AGAIN BBS on the modem: {NEVER_AGAIN_MODEM_NUMBER}\n"
+            "2. Download Fugamatchi's track RISE NEW VOICES into DOWNLOADS.\n"
+            f"{install_line}"
+            "3. Open Bradsonic dotSONIC and load the .sonic file from DOWNLOADS.\n"
+            "4. Play it all the way through and listen for the four-tone pulse buried in it.\n"
+            f"5. Then dial this payphone switchboard number: {SCHOOL_HACK_GIG_PAYPHONE_NUMBER}\n"
+            "6. When the courier switch picks up, pulse back the four tones on the modem keypad.\n\n"
+            "If your house is inside the bike radius, one of Fugamatchi's phreaker freaks will "
+            "put a real paper ticket in your hand within the hour.\n\n"
+            "Meet me there tonight, okay?\n\n"
+            "-rain"
+        )
+        response = Email(
+            "rain@ciphernet.net",
+            self.player_email,
+            "RE: TONIGHT // A very special secret event",
+            body
+        )
+        delay = random.randint(8, 18)
+        self.delayed_emails.append({
+            "email": response,
+            "delivery_time": time.time() + delay
+        })
+        log_event(f"Rain secret gig reply scheduled (delay: {delay}s)")
+
+    def _on_dotsonic_track_played(self, title: str, real_name: str) -> None:
+        """Advance Rain's invite arc when Rise New Voices is played in dotSONIC."""
+        normalized_real_name = (real_name or "").strip().lower()
+        if normalized_real_name.startswith("__sonic__") or normalized_real_name.endswith(".sonic"):
+            self._stop_midnight_rootkit_music()
+
+        if not self.inventory.has_token(Tokens.RAINSINVITE_1):
+            return
+        if self.inventory.has_token(Tokens.RAINSINVITE_2):
+            return
+
+        normalized_title = (title or "").strip().lower()
+        if normalized_title.startswith("rise new voices") or "rise new voices" in normalized_real_name:
+            self.grant_token(Tokens.RAINSINVITE_2, reason="played Rise New Voices on dotSONIC for Rain's courier route")
+
     def check_email_database(self) -> None:
         """Check email database for new emails based on tokens and add them to inbox"""
+        self._prune_school_hack_silenced_delayed_emails()
         new_emails = self.email_db.check_and_send_emails(self.inventory, self.player_email, self.inbox)
         for email in new_emails:
             self.inbox.append(email)
-            self._play_mail_sound()  # Play sound for each new email
+            self._play_bbs_mail_sound()  # BBS mail should stay silent while OS Mode is active
             
         # Process delayed emails
         current_time = time.time()
@@ -2388,13 +2680,14 @@ class GLYPHIS_IOBBS:
         for delayed in self.delayed_emails:
             if current_time >= delayed["delivery_time"]:
                 self.inbox.append(delayed["email"])
-                self._play_mail_sound()  # Play sound when delayed email is delivered
+                self._play_bbs_mail_sound()  # BBS mail should stay silent while OS Mode is active
                 delivered_any = True
                 log_event(f"Delayed email delivered: '{delayed['email'].subject}' from {delayed['email'].sender}")
             else:
                 remaining_delayed.append(delayed)
         
         self.delayed_emails = remaining_delayed
+        self._check_school_hack_aftermath_emails()
             
         # Save user state if anything new arrived
         if new_emails or delivered_any:
@@ -2517,6 +2810,7 @@ class GLYPHIS_IOBBS:
                     
                     # Initialize and activate OS Mode directly
                     self._initialize_os_mode_if_needed()
+                    self._sync_os_mode_locale_from_profile()
                     self.os_mode_active = True
                     return
             
@@ -2883,13 +3177,14 @@ class GLYPHIS_IOBBS:
     def draw_main_menu(self):
         """Draw the main BBS menu"""
         self.content_scroll_y = 0
+        self._check_and_send_rain_school_email()
         
         # Uncle-am's school email only when on MAIN MENU (after replying "in" to Rain)
-        if self.inventory.has_token(Tokens.SCHOOL_HACK):
+        if self.inventory.has_token(Tokens.SCHOOL_HACK) and not self.inventory.has_token(Tokens.GAMEOVER_SCHOOLHACK):
             if not self._has_uncle_am_school_grades_email():
                 self.deliver_email_to_player("uncle_am_school_grades_001")
         # Jaxkando's school email when on main menu with JAXGRADES
-        if self.inventory.has_token(Tokens.JAXGRADES):
+        if self.inventory.has_token(Tokens.JAXGRADES) and not self.inventory.has_token(Tokens.GAMEOVER_SCHOOLHACK):
             if not self._has_jaxkando_school_grades_email():
                 self.deliver_email_to_player("jaxkando_school_grades_001")
             # Rain's plan email only after Jax's email has been READ and user returns to main menu
@@ -4874,19 +5169,27 @@ class GLYPHIS_IOBBS:
                     self.selected_menu_item = 0  # EMAIL SYSTEM is first in list
                     self.state = "email_menu"
                     self.os_mode_active = False  # Exit OS mode to show email
+
+                def trigger_notes_nudge_callback(text="SHIFT+N", reason="os_mail", auto_open_external_notes=True):
+                    """Launch a NOTES-NUDGE (NN) from OS Mode story events."""
+                    self._trigger_notes_nudge(
+                        text=text,
+                        reason=reason,
+                        auto_open_external_notes=auto_open_external_notes,
+                    )
                 
                 def get_inbox_emails():
                     """Get inbox emails for BRADSONIC-MAIL."""
                     user = self.get_active_user()
                     if user:
-                        return user.get("inbox_emails", [])
+                        return user.get("bradsonic_mail_inbox", [])
                     return []
-                
+
                 def save_inbox_emails(emails):
                     """Save inbox emails from BRADSONIC-MAIL."""
                     user = self.get_active_user()
                     if user:
-                        user["inbox_emails"] = emails
+                        user["bradsonic_mail_inbox"] = emails
                         self.save_user_state()
                 
                 def send_mail_callback(to, subject, body):
@@ -4939,7 +5242,25 @@ class GLYPHIS_IOBBS:
                             tracks.append(title)
                             user["downloaded_fugamatchi_tracks"] = tracks
                             self.save_user_state()
-                
+
+                def get_school_database_state():
+                    return self.get_school_database_state()
+
+                def save_school_database_state(state):
+                    self.save_school_database_state(state)
+
+                def queue_school_hack_fail_mail(stage):
+                    self._queue_school_hack_fail_mail(stage)
+
+                def queue_bradsonic_mail_event(event_id):
+                    self._queue_bradsonic_mail_event(event_id)
+
+                def consume_pending_bradsonic_mail_events():
+                    return self._consume_pending_bradsonic_mail_events()
+
+                def save_os_locale(locale_value):
+                    self._save_active_user_os_locale(locale_value)
+
                 self.os_mode = OSMode(self.screen, self.res_manager, reset_bbs_and_exit_os, 
                                       self.bbs_x, self.bbs_y, self.bbs_width, has_token,
                                       get_recording_state, set_recording_state,
@@ -4950,7 +5271,13 @@ class GLYPHIS_IOBBS:
                                       open_email_callback, get_inbox_emails, save_inbox_emails,
                                       send_mail_callback, get_mail_outbox, save_mail_outbox,
                                       get_mail_trash, save_mail_trash, self._play_mail_sound,
-                                      get_downloaded_fugamatchi_tracks, add_downloaded_fugamatchi_track)
+                                      get_downloaded_fugamatchi_tracks, add_downloaded_fugamatchi_track,
+                                      get_school_database_state, save_school_database_state,
+                                      save_os_locale, self._on_dotsonic_track_played,
+                                      queue_school_hack_fail_mail, consume_pending_bradsonic_mail_events,
+                                      queue_bradsonic_mail_event, trigger_notes_nudge_callback)
+                self._sync_os_mode_locale_from_profile()
+                self._apply_pending_school_hack_resume_in_os()
                 logger.debug("GHOST USER: OS Mode initialized successfully")
                 return True
             except Exception as e:
@@ -5432,6 +5759,17 @@ class GLYPHIS_IOBBS:
                         email_subject or "(no subject)",
                         email_body or "(empty message)"
                     )
+
+                    if self._is_school_hack_contact_silenced(self.compose_to):
+                        self.sent.append(email)
+                        log_event(f"School hack game-over: outgoing mail to {self.compose_to} stored without response")
+                        self.compose_subject = ""
+                        self.compose_body = ""
+                        self.compose_to = ""
+                        self.state = "sent"
+                        self.current_module = 0
+                        self.save_user_state()
+                        return
                     
                     # If sending to glyphis (sysop), handle onboarding responses
                     if self.compose_to == "glyphis@ciphernet.net":
@@ -5545,7 +5883,17 @@ class GLYPHIS_IOBBS:
                         # Rain school email: any reply gets one line only, no other auto-replies
                         if self.compose_to == "rain@ciphernet.net":
                             email_text = (email.subject + " " + email.body).lower()
+                            is_rain_secret_gig_reply = "very special secret event" in email.subject.lower()
                             is_school_email_reply = "a cry for help" in email.subject.lower() or "re: a cry for help" in email.subject.lower()
+                            if is_rain_secret_gig_reply:
+                                invite_yes_keywords = ["yes", "i'm in", "im in", "i'm coming", "im coming", "count me in", "i want in", "tell me how", "i'll come", "ill come", "coming with you", "let's go", "lets go"]
+                                if any(keyword in email_text for keyword in invite_yes_keywords) and self.inventory.has_token(Tokens.SCHOOL_HACK5):
+                                    if not self.inventory.has_token(Tokens.RAINSINVITE_1):
+                                        if not self.inventory.has_token(Tokens.NEVERAGAINBBS):
+                                            self.grant_token(Tokens.NEVERAGAINBBS, reason="Rain shared the Never Again BBS route for Fugamatchi's secret gig")
+                                        self.grant_token(Tokens.RAINSINVITE_1, reason="accepted Rain's invitation to Fugamatchi's secret gig")
+                                        self._schedule_rain_secret_gig_reply()
+                                    skip_normal_response = True
                             if is_school_email_reply:
                                 # Grant SCHOOL_HACK if they said "in" or similar
                                 school_yes_keywords = ["count me in", "what are the next steps", "next steps", "i'm in", "im in", "yes", "in", "i am in", "sure", "ok", "okay", "yeah", "yep", "let's do it", "lets do it", "ready", "help", "i'll help", "ill help"]
@@ -6012,6 +6360,7 @@ class GLYPHIS_IOBBS:
                 self.font_medium_small = pygame.font.Font(None, max(1, int(20 * self.scale)))
                 self.font_small = pygame.font.Font(None, int(16 * self.scale))
                 self.font_tiny = pygame.font.Font(None, int(12 * self.scale))
+            self.notes_nudge_font_cache = {}
             # Rescale scroll values
             self.scroll_speed = int(2 * self.scale)
             self.scroll_pause_y = int(660 * self.scale)
@@ -6301,11 +6650,12 @@ class GLYPHIS_IOBBS:
             if self.midnight_rootkit_playing:
                 self._advance_midnight_rootkit_track()
 
-            # If player has SCHOOL_HACK1 but music isn't playing (e.g. returned after exit), start when they open School Op note or terminal
-            if (self.inventory.has_token(Tokens.SCHOOL_HACK1) and not self.midnight_rootkit_playing
-                    and self.os_mode_active and self.os_mode):
-                if self.os_mode.is_school_op_note_visible() or self.os_mode.is_terminal_open():
-                    self._start_midnight_rootkit_music()
+            if self._should_stop_midnight_rootkit_music():
+                self._stop_midnight_rootkit_music()
+
+            # Start the School Hack mission soundtrack on any relevant OS surface while the arc is active.
+            if self._should_start_midnight_rootkit_music():
+                self._start_midnight_rootkit_music()
             
             # Apply music volume to selected station / Midnight Rootkit continuously (top slider)
             if (self.pirate_radio_app and self.pirate_radio_app.radio_manager) or self.midnight_rootkit_playing:
@@ -6354,8 +6704,12 @@ class GLYPHIS_IOBBS:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
-                
-                
+
+                # Transform mouse coordinates when zoom is active so all
+                # downstream handlers (OS Mode, games, etc.) receive positions
+                # that match the unzoomed coordinate space.
+                event = self._transform_event_for_zoom(event)
+
                 # Block all inputs during school hack ghost sequence (except QUIT)
                 if self.school_hack_ghost_input_blocked:
                     if event.type == pygame.QUIT:
@@ -6417,6 +6771,7 @@ class GLYPHIS_IOBBS:
                         else:
                             # No - Continue with existing save
                             log_event("Continuing with existing save")
+                            self._recover_school_hack_after_gameover_continue()
                             # Check if user has LAPC1_NODE7 token - if so, skip BBS and go straight to OS Boot
                             has_node7 = self.inventory.has_token(Tokens.LAPC1_NODE7)
                             if has_node7:
@@ -6589,22 +6944,22 @@ class GLYPHIS_IOBBS:
                     self._toggle_os_mode()
                     continue
                 
-                # Shift++: Zoom in when not zoomed, zoom out when zoomed (toggle)
-                # Shift+- not used for zoom so underscore (_) can be typed
+                # Shift++: Zoom in, Shift+-: Zoom out
+                # On most keyboards Shift+= produces K_PLUS, Shift+- produces K_UNDERSCORE
                 if event.type == pygame.KEYDOWN:
                     mods = pygame.key.get_mods()
                     if mods & pygame.KMOD_SHIFT:
-                        if event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
-                            if self.screen_zoom_active:
-                                self.screen_zoom_active = False
-                                center_x = self.screen_width // 2
-                                center_y = self.screen_height // 2
-                                pygame.mouse.set_pos(center_x, center_y)
-                            else:
-                                self.screen_zoom_active = True
-                                zoom_ref_x = int(self.screen_width * 0.25)
-                                zoom_ref_y = int(self.screen_height * 0.36)
-                                pygame.mouse.set_pos(zoom_ref_x, zoom_ref_y)
+                        if (event.key in (pygame.K_PLUS, pygame.K_EQUALS)) and not self.screen_zoom_active:
+                            self.screen_zoom_active = True
+                            zoom_ref_x = int(self.screen_width * 0.25)
+                            zoom_ref_y = int(self.screen_height * 0.36)
+                            pygame.mouse.set_pos(zoom_ref_x, zoom_ref_y)
+                            continue
+                        if event.key in (pygame.K_MINUS, pygame.K_UNDERSCORE) and self.screen_zoom_active:
+                            self.screen_zoom_active = False
+                            center_x = self.screen_width // 2
+                            center_y = self.screen_height // 2
+                            pygame.mouse.set_pos(center_x, center_y)
                             continue
 
                 # Handle OS Mode events (ESC never exits to BBS; it only navigates within terminal/OS)
@@ -6669,6 +7024,7 @@ class GLYPHIS_IOBBS:
                                 
                                 # Initialize and activate OS Mode directly
                                 self._initialize_os_mode_if_needed()
+                                self._sync_os_mode_locale_from_profile()
                                 self.os_mode_active = True
                                 continue
                         
@@ -6730,10 +7086,12 @@ class GLYPHIS_IOBBS:
 
             if not self.game_freeze_active:
                 self.documentation_viewer.update(dt)
+                self._update_notes_nudge(dt)
             
             # Update OS Mode if active
             if self.os_mode_active and self.os_mode and not self.game_freeze_active:
                 self.os_mode.update(dt)
+                self._maybe_open_school_hack_restart_notepad()
                 # Check if modem modal requested BBS changes and OS exit
                 if hasattr(self.os_mode, 'modem_modal_should_exit_os') and self.os_mode.modem_modal_should_exit_os:
                     external_bbs = getattr(self.os_mode, "modem_modal_external_bbs", None)
@@ -7124,6 +7482,7 @@ class GLYPHIS_IOBBS:
                     
                     # Initialize and activate OS Mode (MODEM1ST check removed - OSBoot video always leads to OS Mode)
                     self._initialize_os_mode_if_needed()
+                    self._sync_os_mode_locale_from_profile()
                     if self.os_mode is not None:
                         self.os_mode_active = True
                         # Clear the os_boot_playing state - OS Mode will render automatically when os_mode_active is True
@@ -7180,15 +7539,22 @@ class GLYPHIS_IOBBS:
                     # Outside BBS is active - always show system cursor
                     pygame.mouse.set_visible(True)
                 elif self.os_mode_active and self.os_mode:
-                    mouse_x, mouse_y = pygame.mouse.get_pos()
-                    if self.os_mode.is_mouse_in_desktop(mouse_x, mouse_y):
-                        # Draw OS cursor as sprite (under scanlines)
-                        self.os_mode.draw_cursor(mouse_x, mouse_y)
-                        # Hide system cursor when using OS cursor
+                    if self.screen_zoom_active:
+                        # When zoomed: always draw OS cursor using unzoomed coords,
+                        # no boundary check, no cursor switching, system cursor hidden
+                        ux, uy = self._get_mouse_pos_unzoomed()
+                        self.os_mode.draw_cursor(ux, uy)
                         pygame.mouse.set_visible(False)
                     else:
-                        # Mouse outside desktop - show system cursor
-                        pygame.mouse.set_visible(True)
+                        mouse_x, mouse_y = pygame.mouse.get_pos()
+                        if self.os_mode.is_mouse_in_desktop(mouse_x, mouse_y):
+                            # Draw OS cursor as sprite (under scanlines)
+                            self.os_mode.draw_cursor(mouse_x, mouse_y)
+                            # Hide system cursor when using OS cursor
+                            pygame.mouse.set_visible(False)
+                        else:
+                            # Mouse outside desktop - show system cursor
+                            pygame.mouse.set_visible(True)
                 
                 # Draw scanline overlay (BBS scanline when not in OS mode, desktop scanline when in OS mode)
                 # Skip scanlines for new_game_prompt/quit_confirm state
@@ -7262,6 +7628,9 @@ class GLYPHIS_IOBBS:
                 
                 self.documentation_viewer.draw(self.screen)
                 self.documentation_viewer.apply_cursor()
+                if self.os_mode_active and self.os_mode:
+                    self.os_mode.draw_notepad_overlay()
+                self._draw_notes_nudge()
                 
                 # Update cursor based on mouse position (only for areas outside OS desktop)
                 if self.paper_crane_bbs or self.echo_chamber_bbs or self.never_again_bbs:
@@ -7399,52 +7768,48 @@ class GLYPHIS_IOBBS:
                     self.screen.blit(self.slider_knob_image, (knob2_x, knob2_y))
             
             # Apply screen zoom if active (browser-like zoom)
-            # PERFORMANCE NOTE: This operation is expensive because it:
-            # 1. Copies the entire screen (e.g., 2560x1440 = ~3.7M pixels)
-            # 2. Scales it to zoomed size (2x zoom = 4x pixels = ~14.7M pixels to process)
-            # 3. Happens every frame (60 times per second)
-            # This is why FPS drops when zoomed. To improve performance, consider:
-            # - Reducing zoom level (e.g., 1.5x instead of 2.0x)
-            # - Using a different rendering approach (render at higher resolution when zoomed)
-            # - Accepting the performance cost for the visual effect
             if self.screen_zoom_active:
-                # Calculate the reference point in screen coordinates (45% x 62%)
-                # This point will be the bottom-right corner of the zoomed view
-                zoom_ref_x = int(self.screen_width * self.screen_zoom_center_x_pct)
-                zoom_ref_y = int(self.screen_height * self.screen_zoom_center_y_pct)
-                
-                # Scale the screen copy by zoom level
-                zoomed_width = int(self.screen_width * self.screen_zoom_level)
-                zoomed_height = int(self.screen_height * self.screen_zoom_level)
-                
-                # Copy and scale screen (using fast scale() method, not smoothscale() for better performance)
-                screen_copy = self.screen.copy()
-                zoomed_surface = pygame.transform.scale(screen_copy, (zoomed_width, zoomed_height))
-                
-                # Calculate the source rectangle to crop from the zoomed surface
-                # The reference point (45% x 62%) should be at the bottom-right corner of the visible area
-                # In the zoomed surface, the reference point is at (zoom_ref_x * zoom_level, zoom_ref_y * zoom_level)
-                zoom_ref_x_scaled = int(zoom_ref_x * self.screen_zoom_level)
-                zoom_ref_y_scaled = int(zoom_ref_y * self.screen_zoom_level)
-                
-                # Position the source rectangle so its bottom-right corner is at the reference point
-                source_x = max(0, min(zoomed_width - self.screen_width, zoom_ref_x_scaled - self.screen_width))
-                source_y = max(0, min(zoomed_height - self.screen_height, zoom_ref_y_scaled - self.screen_height))
-                
-                # Crop the zoomed surface to show the area with the reference point at bottom-right
-                source_rect = pygame.Rect(source_x, source_y, self.screen_width, self.screen_height)
-                
-                # Use subsurface with error handling in case of edge cases
-                try:
-                    cropped_surface = zoomed_surface.subsurface(source_rect)
-                    # Clear screen and blit the zoomed/cropped view
-                    self.screen.fill(BLACK)
-                    self.screen.blit(cropped_surface, (0, 0))
-                except (ValueError, pygame.error):
-                    # Fallback: if subsurface fails (shouldn't happen with proper clamping, but just in case)
-                    # Show the zoomed surface from top-left corner
-                    self.screen.fill(BLACK)
-                    self.screen.blit(zoomed_surface, (0, 0), (0, 0, self.screen_width, self.screen_height))
+                _in_game = self.state == "game_session" and self.active_game_session
+                if _in_game:
+                    # Game session zoom: copy just the desktop region and scale it
+                    # to fill the screen.  Much cheaper than scaling the entire screen
+                    # so C++ game tick rate is unaffected.
+                    bx, by = self._get_mouse_boundary_pos()
+                    dw, dh = self._get_desktop_size()
+                    sx = max(0, min(bx, self.screen_width - 1))
+                    sy = max(0, min(by, self.screen_height - 1))
+                    sw = min(dw, self.screen_width - sx)
+                    sh = min(dh, self.screen_height - sy)
+                    if sw > 0 and sh > 0:
+                        try:
+                            # .copy() the region first — subsurface is a view into
+                            # screen memory so fill(BLACK) below would destroy it.
+                            game_region = self.screen.subsurface(pygame.Rect(sx, sy, sw, sh)).copy()
+                            scaled = pygame.transform.scale(game_region, (self.screen_width, self.screen_height))
+                            self.screen.fill(BLACK)
+                            self.screen.blit(scaled, (0, 0))
+                        except (ValueError, pygame.error):
+                            pass
+                else:
+                    # Normal zoom: full screen copy + scale + crop
+                    zoom_ref_x = int(self.screen_width * self.screen_zoom_center_x_pct)
+                    zoom_ref_y = int(self.screen_height * self.screen_zoom_center_y_pct)
+                    zoomed_width = int(self.screen_width * self.screen_zoom_level)
+                    zoomed_height = int(self.screen_height * self.screen_zoom_level)
+                    screen_copy = self.screen.copy()
+                    zoomed_surface = pygame.transform.scale(screen_copy, (zoomed_width, zoomed_height))
+                    zoom_ref_x_scaled = int(zoom_ref_x * self.screen_zoom_level)
+                    zoom_ref_y_scaled = int(zoom_ref_y * self.screen_zoom_level)
+                    source_x = max(0, min(zoomed_width - self.screen_width, zoom_ref_x_scaled - self.screen_width))
+                    source_y = max(0, min(zoomed_height - self.screen_height, zoom_ref_y_scaled - self.screen_height))
+                    source_rect = pygame.Rect(source_x, source_y, self.screen_width, self.screen_height)
+                    try:
+                        cropped_surface = zoomed_surface.subsurface(source_rect)
+                        self.screen.fill(BLACK)
+                        self.screen.blit(cropped_surface, (0, 0))
+                    except (ValueError, pygame.error):
+                        self.screen.fill(BLACK)
+                        self.screen.blit(zoomed_surface, (0, 0), (0, 0, self.screen_width, self.screen_height))
             
             # Update display
             # Draw settings modal on top of everything (letterboxing already drawn above)
@@ -7488,11 +7853,13 @@ class GLYPHIS_IOBBS:
         self.compose_subject = subject
         
         # Check if this is Rain's school email and set up placeholder text (matching Astro Miner pattern)
+        email_id = getattr(self.selected_email, "email_id", None)
         is_rain_school_email = (hasattr(self.selected_email, 'sender') and 
                                 self.selected_email.sender == "rain@ciphernet.net" and
                                 hasattr(self.selected_email, 'subject') and 
                                 self.selected_email.subject == "A cry for help")
-        
+        is_rain_secret_gig_email = email_id == "rain_school_hack_secret_gig_001"
+
         if is_rain_school_email:
             # Use placeholder format like Astro Miner, not pre-filled text
             self.guided_email_active = True
@@ -7500,6 +7867,12 @@ class GLYPHIS_IOBBS:
             self.guided_email_body_placeholder = "[hey rain, count me in, what are the next steps?]"
             self.guided_email_subject = ""  # Clear subject ghost text (Rain's subject is pre-filled, no validation needed)
             self.compose_body = ""  # Empty, placeholder will show
+        elif is_rain_secret_gig_email:
+            self.guided_email_active = True
+            self.guided_email_body_started = False
+            self.guided_email_body_placeholder = "[rain, yes, i'm coming. tell me how.]"
+            self.guided_email_subject = ""
+            self.compose_body = ""
         else:
             self.guided_email_active = False
             self.compose_body = ""
@@ -7886,19 +8259,27 @@ class GLYPHIS_IOBBS:
                         self.selected_menu_item = 0  # EMAIL SYSTEM is first in list
                         self.state = "email_menu"
                         self.os_mode_active = False  # Exit OS mode to show email
+
+                    def trigger_notes_nudge_callback(text="SHIFT+N", reason="os_mail", auto_open_external_notes=True):
+                        """Launch a NOTES-NUDGE (NN) from OS Mode story events."""
+                        self._trigger_notes_nudge(
+                            text=text,
+                            reason=reason,
+                            auto_open_external_notes=auto_open_external_notes,
+                        )
                     
                     def get_inbox_emails():
                         """Get inbox emails for BRADSONIC-MAIL."""
                         user = self.get_active_user()
                         if user:
-                            return user.get("inbox_emails", [])
+                            return user.get("bradsonic_mail_inbox", [])
                         return []
-                    
+
                     def save_inbox_emails(emails):
                         """Save inbox emails from BRADSONIC-MAIL."""
                         user = self.get_active_user()
                         if user:
-                            user["inbox_emails"] = emails
+                            user["bradsonic_mail_inbox"] = emails
                             self.save_user_state()
                     
                     def send_mail_callback(to, subject, body):
@@ -7949,6 +8330,24 @@ class GLYPHIS_IOBBS:
                                 tracks.append(title)
                                 user["downloaded_fugamatchi_tracks"] = tracks
                                 self.save_user_state()
+
+                    def get_school_database_state():
+                        return self.get_school_database_state()
+
+                    def save_school_database_state(state):
+                        self.save_school_database_state(state)
+
+                    def queue_school_hack_fail_mail(stage):
+                        self._queue_school_hack_fail_mail(stage)
+
+                    def queue_bradsonic_mail_event(event_id):
+                        self._queue_bradsonic_mail_event(event_id)
+
+                    def consume_pending_bradsonic_mail_events():
+                        return self._consume_pending_bradsonic_mail_events()
+
+                    def save_os_locale(locale_value):
+                        self._save_active_user_os_locale(locale_value)
                     
                     self.os_mode = OSMode(self.screen, self.res_manager, reset_bbs_and_exit_os, 
                                           self.bbs_x, self.bbs_y, self.bbs_width, has_token,
@@ -7960,13 +8359,20 @@ class GLYPHIS_IOBBS:
                                           open_email_callback, get_inbox_emails, save_inbox_emails,
                                           send_mail_callback, get_mail_outbox, save_mail_outbox,
                                           get_mail_trash, save_mail_trash, self._play_mail_sound,
-                                          get_downloaded_fugamatchi_tracks, add_downloaded_fugamatchi_track)
+                                          get_downloaded_fugamatchi_tracks, add_downloaded_fugamatchi_track,
+                                          get_school_database_state, save_school_database_state,
+                                          save_os_locale, self._on_dotsonic_track_played,
+                                          queue_school_hack_fail_mail, consume_pending_bradsonic_mail_events,
+                                          queue_bradsonic_mail_event, trigger_notes_nudge_callback)
+                    self._sync_os_mode_locale_from_profile()
+                    self._apply_pending_school_hack_resume_in_os()
                 except Exception as e:
                     logger.warning(f"Failed to initialize OS Mode: {e}")
                     self.os_mode_active = False
             else:
                 # Update scale if it changed
                 self.os_mode.update_scale(self.scale)
+                self._sync_os_mode_locale_from_profile()
 
         # Ensure cursor is visible (OS mode will handle its own cursor switching)
         pygame.mouse.set_visible(True)
@@ -8173,16 +8579,21 @@ class GLYPHIS_IOBBS:
             "sent_emails": [],
             "tokens": [],
             "inbox_emails": [],
+            "bradsonic_mail_inbox": [],
             "mail_outbox": [],
             "mail_trash": [],
             "username_simulacra_tcs": None,
             "relationship_scores": {},
             "recording": False,
             "recording_start_time": None,
+            "os_locale": 3,
+            "school_database_state": None,
+            "pending_bradsonic_mail_events": [],
+            "school_hack_resume_point": None,
             "notes": [
                 {
                     "title": "Mission Objectives",
-                    "content": "[s]1. Receive Invite from Glyphis[/s]\n[s]2. Get onto the BBS (0345728891)[/s]\n[s]3. Complete a technical challenge to prove yourself[/s]\n4. Get the audio tech's help to get the computer's sound card streaming from the BBS, and record the first audio stream from Glyphisis_IO using the Datasette!\n5. Get invited to crack some games\n6. Obtain access to the Pirate Radio Stream",
+                    "content": "[s]1. Receive Invite from Glyphis[/s]\n[s]2. Get onto the BBS (03-4572-8891)[/s]\n[s]3. Complete a technical challenge to prove yourself[/s]\n4. Get the audio tech's help to get the computer's sound card streaming from the BBS, and record the first audio stream from Glyphisis_IO using the Datasette!\n5. Get invited to crack some games\n6. Obtain access to the Pirate Radio Stream",
                     "is_locked": True  # First note is non-deletable
                 }
             ]
@@ -8210,13 +8621,26 @@ class GLYPHIS_IOBBS:
                                 cleaned["relationship_scores"] = user.get("relationship_scores", {})
                                 cleaned["recording"] = bool(user.get("recording", False))
                                 cleaned["recording_start_time"] = user.get("recording_start_time")
+                                cleaned["os_locale"] = self._normalize_saved_os_locale(user.get("os_locale", 3))
+                                school_db_state = user.get("school_database_state")
+                                cleaned["school_database_state"] = school_db_state if isinstance(school_db_state, dict) else None
+                                pending_events = user.get("pending_bradsonic_mail_events", [])
+                                cleaned["pending_bradsonic_mail_events"] = [
+                                    str(event_id).strip()
+                                    for event_id in pending_events
+                                    if str(event_id).strip()
+                                ] if isinstance(pending_events, list) else []
+                                resume_point = user.get("school_hack_resume_point")
+                                cleaned["school_hack_resume_point"] = (
+                                    str(resume_point).strip() if isinstance(resume_point, str) and str(resume_point).strip() else None
+                                )
                                 # Load notes, ensure first note exists and is locked
                                 cleaned["notes"] = user.get("notes", [])
                                 if not cleaned["notes"] or not cleaned["notes"][0].get("is_locked", False):
                                     cleaned["notes"] = [
                                         {
                                             "title": "Mission Objectives",
-                                            "content": "[s]1. Receive Invite from Glyphis[/s]\n[s]2. Get onto the BBS (0345728891)[/s]\n[s]3. Complete a technical challenge to prove yourself[/s]\n4. Get the audio tech's help to get the computer's sound card streaming from the BBS, and record the first audio stream from Glyphisis_IO using the Datasette!\n5. Get invited to crack some games\n6. Obtain access to the Pirate Radio Stream",
+                                            "content": "[s]1. Receive Invite from Glyphis[/s]\n[s]2. Get onto the BBS (03-4572-8891)[/s]\n[s]3. Complete a technical challenge to prove yourself[/s]\n4. Get the audio tech's help to get the computer's sound card streaming from the BBS, and record the first audio stream from Glyphisis_IO using the Datasette!\n5. Get invited to crack some games\n6. Obtain access to the Pirate Radio Stream",
                                             "is_locked": True
                                         }
                                     ] + cleaned["notes"][1:] if cleaned["notes"] else cleaned["notes"]
@@ -8234,6 +8658,48 @@ class GLYPHIS_IOBBS:
                                         "read": bool(stored_email.get("read", False)),
                                     }
                                     cleaned["inbox_emails"].append(sanitized_email)
+                                cleaned["bradsonic_mail_inbox"] = []
+                                for stored_email in user.get("bradsonic_mail_inbox", []):
+                                    if not isinstance(stored_email, dict):
+                                        continue
+                                    sanitized_email = {
+                                        "id": stored_email.get("id"),
+                                        "sender": stored_email.get("sender"),
+                                        "recipient": stored_email.get("recipient"),
+                                        "subject": stored_email.get("subject"),
+                                        "body": stored_email.get("body"),
+                                        "timestamp": stored_email.get("timestamp"),
+                                        "read": bool(stored_email.get("read", False)),
+                                    }
+                                    cleaned["bradsonic_mail_inbox"].append(sanitized_email)
+                                cleaned["mail_outbox"] = []
+                                for stored_email in user.get("mail_outbox", []):
+                                    if not isinstance(stored_email, dict):
+                                        continue
+                                    sanitized_email = {
+                                        "id": stored_email.get("id"),
+                                        "sender": stored_email.get("sender"),
+                                        "recipient": stored_email.get("recipient"),
+                                        "subject": stored_email.get("subject"),
+                                        "body": stored_email.get("body"),
+                                        "timestamp": stored_email.get("timestamp"),
+                                        "read": bool(stored_email.get("read", False)),
+                                    }
+                                    cleaned["mail_outbox"].append(sanitized_email)
+                                cleaned["mail_trash"] = []
+                                for stored_email in user.get("mail_trash", []):
+                                    if not isinstance(stored_email, dict):
+                                        continue
+                                    sanitized_email = {
+                                        "id": stored_email.get("id"),
+                                        "sender": stored_email.get("sender"),
+                                        "recipient": stored_email.get("recipient"),
+                                        "subject": stored_email.get("subject"),
+                                        "body": stored_email.get("body"),
+                                        "timestamp": stored_email.get("timestamp"),
+                                        "read": bool(stored_email.get("read", False)),
+                                    }
+                                    cleaned["mail_trash"].append(sanitized_email)
                                 try:
                                     best_tcs = user.get("username_simulacra_tcs")
                                     cleaned["username_simulacra_tcs"] = float(best_tcs) if best_tcs is not None else None
@@ -8256,13 +8722,26 @@ class GLYPHIS_IOBBS:
                             migrated_user["relationship_scores"] = data.get("relationship_scores", {})
                             migrated_user["recording"] = bool(data.get("recording", False))
                             migrated_user["recording_start_time"] = data.get("recording_start_time")
+                            migrated_user["os_locale"] = self._normalize_saved_os_locale(data.get("os_locale", 3))
+                            school_db_state = data.get("school_database_state")
+                            migrated_user["school_database_state"] = school_db_state if isinstance(school_db_state, dict) else None
+                            pending_events = data.get("pending_bradsonic_mail_events", [])
+                            migrated_user["pending_bradsonic_mail_events"] = [
+                                str(event_id).strip()
+                                for event_id in pending_events
+                                if str(event_id).strip()
+                            ] if isinstance(pending_events, list) else []
+                            resume_point = data.get("school_hack_resume_point")
+                            migrated_user["school_hack_resume_point"] = (
+                                str(resume_point).strip() if isinstance(resume_point, str) and str(resume_point).strip() else None
+                            )
                             # Load notes, ensure first note exists and is locked
                             migrated_user["notes"] = data.get("notes", [])
                             if not migrated_user["notes"] or not migrated_user["notes"][0].get("is_locked", False):
                                 migrated_user["notes"] = [
                                     {
                                         "title": "Mission Objectives",
-                                        "content": "[s]1. Receive Invite from Glyphis[/s]\n[s]2. Get onto the BBS (0345728891)[/s]\n[s]3. Complete a technical challenge to prove yourself[/s]\n4. Get the audio tech's help to get the computer's sound card streaming from the BBS, and record the first audio stream from Glyphisis_IO using the Datasette!\n5. Get invited to crack some games\n6. Obtain access to the Pirate Radio Stream",
+                                        "content": "[s]1. Receive Invite from Glyphis[/s]\n[s]2. Get onto the BBS (03-4572-8891)[/s]\n[s]3. Complete a technical challenge to prove yourself[/s]\n4. Get the audio tech's help to get the computer's sound card streaming from the BBS, and record the first audio stream from Glyphisis_IO using the Datasette!\n5. Get invited to crack some games\n6. Obtain access to the Pirate Radio Stream",
                                         "is_locked": True
                                     }
                                 ] + migrated_user["notes"][1:] if migrated_user["notes"] else migrated_user["notes"]
@@ -8280,6 +8759,48 @@ class GLYPHIS_IOBBS:
                                     "read": bool(stored_email.get("read", False)),
                                 }
                                 migrated_user["inbox_emails"].append(sanitized_email)
+                            migrated_user["bradsonic_mail_inbox"] = []
+                            for stored_email in data.get("bradsonic_mail_inbox", []):
+                                if not isinstance(stored_email, dict):
+                                    continue
+                                sanitized_email = {
+                                    "id": stored_email.get("id"),
+                                    "sender": stored_email.get("sender"),
+                                    "recipient": stored_email.get("recipient"),
+                                    "subject": stored_email.get("subject"),
+                                    "body": stored_email.get("body"),
+                                    "timestamp": stored_email.get("timestamp"),
+                                    "read": bool(stored_email.get("read", False)),
+                                }
+                                migrated_user["bradsonic_mail_inbox"].append(sanitized_email)
+                            migrated_user["mail_outbox"] = []
+                            for stored_email in data.get("mail_outbox", []):
+                                if not isinstance(stored_email, dict):
+                                    continue
+                                sanitized_email = {
+                                    "id": stored_email.get("id"),
+                                    "sender": stored_email.get("sender"),
+                                    "recipient": stored_email.get("recipient"),
+                                    "subject": stored_email.get("subject"),
+                                    "body": stored_email.get("body"),
+                                    "timestamp": stored_email.get("timestamp"),
+                                    "read": bool(stored_email.get("read", False)),
+                                }
+                                migrated_user["mail_outbox"].append(sanitized_email)
+                            migrated_user["mail_trash"] = []
+                            for stored_email in data.get("mail_trash", []):
+                                if not isinstance(stored_email, dict):
+                                    continue
+                                sanitized_email = {
+                                    "id": stored_email.get("id"),
+                                    "sender": stored_email.get("sender"),
+                                    "recipient": stored_email.get("recipient"),
+                                    "subject": stored_email.get("subject"),
+                                    "body": stored_email.get("body"),
+                                    "timestamp": stored_email.get("timestamp"),
+                                    "read": bool(stored_email.get("read", False)),
+                                }
+                                migrated_user["mail_trash"].append(sanitized_email)
                             try:
                                 best_tcs = data.get("username_simulacra_tcs")
                                 migrated_user["username_simulacra_tcs"] = float(best_tcs) if best_tcs is not None else None
@@ -8304,6 +8825,199 @@ class GLYPHIS_IOBBS:
             idx = 0
             self.user_state["active_user_index"] = idx
         return users[idx]
+
+    def _strip_school_hack_fail_emails_from_mailbox(self, emails: Optional[List[Dict]]) -> List[Dict]:
+        cleaned_emails = []
+        for stored_email in emails or []:
+            if not isinstance(stored_email, dict):
+                continue
+            email_id = str(stored_email.get("id") or "").strip().lower()
+            if email_id in self.SCHOOL_HACK_FAIL_MAIL_EVENTS:
+                continue
+            cleaned_emails.append(stored_email)
+        return cleaned_emails
+
+    def _queue_bradsonic_mail_event(self, event_id: str) -> None:
+        user = self.get_active_user()
+        if not user:
+            return
+        event_code = str(event_id or "").strip().lower()
+        if not event_code:
+            return
+        queue = user.setdefault("pending_bradsonic_mail_events", [])
+        if event_code not in queue:
+            queue.append(event_code)
+            self.save_user_state()
+
+    def _consume_pending_bradsonic_mail_events(self) -> List[str]:
+        user = self.get_active_user()
+        if not user:
+            return []
+        queue = user.get("pending_bradsonic_mail_events", [])
+        if not isinstance(queue, list) or not queue:
+            return []
+        normalized = [str(event_id).strip().lower() for event_id in queue if str(event_id).strip()]
+        user["pending_bradsonic_mail_events"] = []
+        self.save_user_state()
+        return normalized
+
+    def _queue_school_hack_fail_mail(self, stage: str) -> None:
+        mail_id = self.SCHOOL_HACK_FAIL_MAIL_IDS.get(stage)
+        if mail_id:
+            self._queue_bradsonic_mail_event(mail_id)
+
+    def _clear_school_hack_fail_state(self, *, set_resume_point: bool) -> None:
+        user = self.get_active_user()
+        if not user:
+            return
+
+        for token in self.SCHOOL_HACK_FAIL_TOKENS:
+            self.inventory.remove_token(token)
+
+        user["tokens"] = list(sort_tokens(self.inventory.tokens))
+        user["pending_bradsonic_mail_events"] = []
+        user["school_database_state"] = None
+        user["school_hack_resume_point"] = "telebase_login" if set_resume_point else None
+        user["bradsonic_mail_inbox"] = self._strip_school_hack_fail_emails_from_mailbox(user.get("bradsonic_mail_inbox", []))
+        user["mail_trash"] = self._strip_school_hack_fail_emails_from_mailbox(user.get("mail_trash", []))
+        user["mail_outbox"] = self._strip_school_hack_fail_emails_from_mailbox(user.get("mail_outbox", []))
+        self.save_user_state()
+
+    def _recover_school_hack_after_gameover_continue(self) -> None:
+        if not self.inventory.has_token(Tokens.GAMEOVER_SCHOOLHACK):
+            return
+        self._clear_school_hack_fail_state(set_resume_point=True)
+        self.school_hack_restart_notes_pending = True
+        log_event("School hack game-over branch cleared on continue; resuming from Telebase login point")
+
+    def _apply_pending_school_hack_resume_in_os(self) -> None:
+        user = self.get_active_user()
+        if not user or not self.os_mode:
+            return
+        if user.get("school_hack_resume_point") != "telebase_login":
+            return
+
+        try:
+            self.os_mode.os_locale = 1
+            self.os_mode.save_locale(1)
+        except Exception:
+            pass
+
+        self.os_mode.network_connected = True
+        self.os_mode.__class__.persisted_network_connected = True
+        self.os_mode.modem_modal_current_target = "school_server"
+        self.os_mode.modem_modal_connection_started = False
+        self.os_mode.modem_school_dial_active = False
+        self.os_mode._open_terminal_window(reset_session=True)
+        self.os_mode._open_school_database()
+        user["school_hack_resume_point"] = None
+        self.save_user_state()
+        log_event("Applied pending school-hack Telebase resume point in OS Mode")
+
+    def _maybe_open_school_hack_restart_notepad(self) -> None:
+        if not self.school_hack_restart_notes_pending or not self.os_mode_active or not self.os_mode:
+            return
+        if self.os_boot_video_playing:
+            return
+        if self.os_mode.tape_modal_video_playing or not self.os_mode.tape_modal_video_completed:
+            return
+
+        self.os_mode.notepad_overlay_visible = True
+        self.os_mode.school_hack_restart_overlay_banner_active = True
+        self.school_hack_restart_notes_pending = False
+        log_event("Opened external notes overlay for restarted school-hack challenge")
+
+    def _get_notes_nudge_font(self, size: int) -> pygame.font.Font:
+        """Return the cached Pixellari font used by the NOTES-NUDGE player aide."""
+        clamped_size = max(1, int(size))
+        cached = self.notes_nudge_font_cache.get(clamped_size)
+        if cached:
+            return cached
+        try:
+            font = pygame.font.Font(self.notes_nudge_font_path, clamped_size)
+        except Exception:
+            font = pygame.font.Font(None, clamped_size)
+        self.notes_nudge_font_cache[clamped_size] = font
+        return font
+
+    def _play_notes_nudge_sound(self) -> None:
+        """Reserved helper for NN-specific note audio; playback now lives in OS Mode's note sequence."""
+        return
+
+    def _show_external_notes_overlay_from_nudge(self) -> None:
+        """Start the NN-only external note sequence after the SHIFT+N prompt finishes."""
+        if not self.os_mode_active or not self.os_mode:
+            self.notes_nudge_overlay_pending = True
+            return
+        self.os_mode.school_hack_restart_overlay_banner_active = False
+        if hasattr(self.os_mode, "begin_notes_nudge_overlay_animation"):
+            self.os_mode.begin_notes_nudge_overlay_animation()
+        else:
+            self.os_mode.notepad_overlay_visible = True
+        self.notes_nudge_overlay_pending = False
+
+    def _trigger_notes_nudge(
+        self,
+        *,
+        text: str = NOTES_NUDGE_DEFAULT_TEXT,
+        reason: str = "notes_nudge",
+        auto_open_external_notes: bool = True,
+    ) -> None:
+        """Launch a NOTES-NUDGE (NN), a reusable player aide for surfacing external notes."""
+        self.notes_nudge_active = True
+        self.notes_nudge_timer = NOTES_NUDGE_DURATION_SECONDS
+        self.notes_nudge_text = text or NOTES_NUDGE_DEFAULT_TEXT
+        self.notes_nudge_reason = reason
+        self.notes_nudge_overlay_pending = auto_open_external_notes
+        log_event(f"NOTES-NUDGE triggered: {self.notes_nudge_reason}")
+
+    def _update_notes_nudge(self, dt: float) -> None:
+        """Advance NOTES-NUDGE timing and deferred overlay opening."""
+        if not self.notes_nudge_active:
+            if self.notes_nudge_overlay_pending:
+                self._show_external_notes_overlay_from_nudge()
+            return
+        self.notes_nudge_timer = max(0.0, self.notes_nudge_timer - dt)
+        if self.notes_nudge_timer <= 0.0:
+            self.notes_nudge_active = False
+            if self.notes_nudge_overlay_pending:
+                self._show_external_notes_overlay_from_nudge()
+
+    def _draw_notes_nudge(self) -> None:
+        """Draw the centered NOTES-NUDGE prompt across the full game screen."""
+        if not self.notes_nudge_active:
+            return
+        progress = 1.0 - (self.notes_nudge_timer / NOTES_NUDGE_DURATION_SECONDS)
+        eased = min(max(progress, 0.0), 1.0)
+        font_size = int((220 - (150 * eased)) * self.scale)
+        font = self._get_notes_nudge_font(font_size)
+        text_surface = font.render(self.notes_nudge_text, True, NOTES_NUDGE_COLOR)
+        alpha = int(255 * (1.0 - eased))
+        if alpha <= 0:
+            return
+        glow_surface = text_surface.copy()
+        glow_surface.set_alpha(max(0, min(255, int(alpha * 0.35))))
+        text_surface.set_alpha(alpha)
+        center_x = self.screen_width // 2
+        center_y = self.screen_height // 2
+        glow_rect = glow_surface.get_rect(center=(center_x, center_y))
+        text_rect = text_surface.get_rect(center=(center_x, center_y))
+        self.screen.blit(glow_surface, glow_rect.move(0, int(4 * self.scale)))
+        self.screen.blit(text_surface, text_rect)
+
+    def get_school_database_state(self) -> Optional[Dict]:
+        user = self.get_active_user()
+        if not user:
+            return None
+        state = user.get("school_database_state")
+        return state if isinstance(state, dict) else None
+
+    def save_school_database_state(self, state: Optional[Dict]) -> None:
+        user = self.get_active_user()
+        if not user:
+            return
+        user["school_database_state"] = state if isinstance(state, dict) else None
+        self.save_user_state()
 
     def apply_active_user_profile(self):
         user = self.get_active_user()
@@ -8392,12 +9106,13 @@ class GLYPHIS_IOBBS:
             user["recording"] = False
         if "recording_start_time" not in user:
             user["recording_start_time"] = None
+        user["os_locale"] = self._normalize_saved_os_locale(user.get("os_locale", 3))
         # Preserve notes (don't overwrite if already set)
         if "notes" not in user:
             user["notes"] = [
                 {
                     "title": "Mission Objectives",
-                    "content": "[s]1. Receive Invite from Glyphis[/s]\n[s]2. Get onto the BBS (0345728891)[/s]\n[s]3. Complete a technical challenge to prove yourself[/s]\n4. Get the audio tech's help to get the computer's sound card streaming from the BBS, and record the first audio stream from Glyphisis_IO using the Datasette!\n5. Get invited to crack some games\n6. Obtain access to the Pirate Radio Stream",
+                    "content": "[s]1. Receive Invite from Glyphis[/s]\n[s]2. Get onto the BBS (03-4572-8891)[/s]\n[s]3. Complete a technical challenge to prove yourself[/s]\n4. Get the audio tech's help to get the computer's sound card streaming from the BBS, and record the first audio stream from Glyphisis_IO using the Datasette!\n5. Get invited to crack some games\n6. Obtain access to the Pirate Radio Stream",
                     "is_locked": True
                 }
             ]
@@ -8964,7 +9679,7 @@ class GLYPHIS_IOBBS:
 
         reply = Email("glyphis@ciphernet.net", username, reply_subject, reply_body)
         self.inbox.append(reply)
-        self._play_mail_sound()  # Play sound for auto-reply
+        self._play_bbs_mail_sound()  # BBS mail should stay silent while OS Mode is active
         log_event("Glyphis auto-replied to username registration")
 
     def _handle_token_acquired(self, token: str) -> None:
@@ -8991,6 +9706,9 @@ class GLYPHIS_IOBBS:
         # When ASTROMINER1 token is granted (after playing the game), deliver jaxkando's email
         if token == Tokens.ASTROMINER1:
             self.deliver_email_to_player("jaxkando_astrominer_congrats_001")
+
+        if token == Tokens.SCHOOL_HACK5:
+            self._deliver_rain_school_hack_invite()
         
         # Uncle-am's school email is delivered when player returns to MAIN MENU (not here)
     
@@ -9025,7 +9743,7 @@ class GLYPHIS_IOBBS:
             body
         )
         self.inbox.append(email)
-        self._play_mail_sound()  # Play sound for ASTRO-MINER email
+        self._play_bbs_mail_sound()  # BBS mail should stay silent while OS Mode is active
         log_event("Jaxkando delivered ASTRO-MINER cracking task email")
 
     def grant_token(self, token: str, *, reason: Optional[str] = None) -> bool:
@@ -9093,7 +9811,7 @@ class GLYPHIS_IOBBS:
         email = self.email_db.deliver_email_by_id(email_id, self.player_email, placeholders=placeholders)
         if email:
             self.inbox.append(email)
-            self._play_mail_sound()  # Play sound when email is delivered
+            self._play_bbs_mail_sound()  # BBS mail should stay silent while OS Mode is active
             self.save_user_state()
             log_event(f"Delivered email '{email.subject}' from {email.sender}")
             return True
@@ -9102,4 +9820,3 @@ class GLYPHIS_IOBBS:
 if __name__ == "__main__":
     app = GLYPHIS_IOBBS()
     app.run()
-
